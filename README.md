@@ -2,28 +2,24 @@
 
 An automated registrar service for [Polkadot on-chain identities](https://wiki.polkadot.network/docs/learn-identity).
 
-**UNDER CONSTRUCTION**
-
 ```
 w3registrar/
+├── Cargo.lock
 ├── Cargo.toml
-├── config.toml
-├── src/
-│   ├── lib.rs
-│   ├── config.rs
-│   ├── watcher/
-│   │   ├── mod.rs
-│   │   └── watcher.rs
-│   ├── challenger/
-│   │   ├── mod.rs
-│   │   ├── matrix.rs
-│   │   └── bot.rs
-│   └── bin/
-│       ├── watcher.rs
-│       └── challenger.rs
-├── tests/
-│   ├── watcher_tests.rs
-│   └── challenger_tests.rs
-└── www/
-    ├──src/
+├── config.example.toml
+├── LICENSE
+├── README.md
+├── src
+│  ├── bin
+│  │  ├── challenger.rs
+│  │  └── watcher.rs
+│  ├── challenger
+│  │  ├── matrix.rs
+│  │  └── mod.rs
+│  ├── config.rs
+│  ├── lib.rs
+│  └── watcher
+│     ├── mod.rs
+│     └── watcher.rs
+└── www
 ```
