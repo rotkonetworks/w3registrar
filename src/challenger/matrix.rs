@@ -9,6 +9,9 @@ use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk::matrix_auth::MatrixSession;
 use tokio::time::sleep;
 use tokio::time::Duration;
+use tracing::info;
+use serde::Deserialize;
+use crate::config::MatrixConfig;
 
 use std::path::Path;
 
@@ -26,7 +29,7 @@ pub struct BotConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Nickname(String);
 
-pub async fn start_bot(cfg: BotConfig) -> anyhow::Result<()> {
+pub async fn start_bot(cfg: MatrixConfig) -> anyhow::Result<()> {
     let state_dir = Path::new(STATE_DIR);
     let session_path = state_dir.join("session.json");
 
