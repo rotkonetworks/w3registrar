@@ -1,19 +1,23 @@
 {
   "compilerOptions": {
     "target": "ESNext",
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
     "module": "ESNext",
+    "skipLibCheck": true,
+
+    /* Bundler mode */
     "moduleResolution": "bundler",
-    "allowSyntheticDefaultImports": true,
-    "esModuleInterop": true,
-    "jsx": "preserve",
-    "jsxImportSource": "solid-js",
-    "allowJs": true,
-    "noEmit": true,
-    "strict": true,
-    "types": ["vinxi/types/client"],
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
     "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    "baseUrl": ".",
     "paths": {
-      "~/*": ["./src/*"]
+        "~/*": ["src/*"]
     }
-  }
+  },
+  "include": ["src"],
+  "references": [{ "path": "./tsconfig.node.json" }]
 }

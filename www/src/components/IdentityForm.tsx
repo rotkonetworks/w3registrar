@@ -1,51 +1,50 @@
-import { Component, For } from 'solid-js';
-import { createStore } from 'solid-js/store';
-import { IdentityField } from '../types';
-import Input from './Input';
+import React, { useState, useEffect } from 'react';
 
-interface IdentityFormProps {
-  fields: IdentityField[];
-}
-
-const IdentityForm: Component<IdentityFormProps> = (props) => {
-  const [formData, setFormData] = createStore(
-    props.fields.reduce((acc, field) => ({ ...acc, [field.id]: '' }), {})
-  );
-
-  const handleInputChange = (id: string, value: string) => {
-    setFormData({ [id]: value });
+const IdentityForm = ({ identity, setIdentity, onSubmit, error }) => {
+  const handleChange = (key, value) => {
+    setIdentity(prev => ({ ...prev, [key]: value }));
   };
 
-  const handleSubmit = (e: Event) => {
-    e.preventDefault();
-    console.log('Form submitted with data:', formData);
+  const fieldNames = {
+    displayName: 'Display Name',
+    matrix: 'Matrix',
+    email: 'Email',
+    discord: 'Discord',
+    twitter: 'Twitter'
+  };
+
+  const placeholders = {
+    displayName: 'Alice',
+    matrix: '@alice:matrix.org',
+    email: 'alice@w3reg.org',
+    discord: 'alice#123',
+    twitter: '@alice'
   };
 
   return (
-    <form onSubmit={handleSubmit} class="space-y-4">
-      <div class="text-center">
-        <h2 class="text-2xl font-bold">Identity</h2>
-      </div>
-      <div class="space-y-2">
-        <For each={props.fields}>
-          {(field) => (
-            <Input
-              id={field.id}
-              placeholder={field.placeholder}
-              type={field.type}
-              value={formData[field.id]}
-              onInput={(e) => handleInputChange(field.id, (e.target as HTMLInputElement).value)}
-            />
-          )}
-        </For>
-      </div>
+    <div className="space-y-4">
+      <h2 className="text-xl font-bold mb-4 text-stone-800">Identity</h2>
+      {Object.entries(identity).map(([key, value]) => (
+        <div key={key} className="flex flex-col">
+          <label className="text-sm text-stone-600 mb-1">{fieldNames[key]}</label>
+          <input
+            type="text"
+            value={value}
+            onChange={(e) => handleChange(key, e.target.value)}
+            placeholder={placeholders[key]}
+            className="border-b border-stone-400 px-0 py-2 text-sm text-stone-800 focus:outline-none focus:border-stone-600 placeholder-stone-400"
+            required={key === 'displayName'}
+          />
+        </div>
+      ))}
+      {error && <p className="text-red-700 text-sm">{error}</p>}
       <button
-        type="submit"
-        class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2 w-full mt-4"
+        onClick={onSubmit}
+        className="mt-6 w-full bg-stone-700 hover:bg-stone-800 text-white py-2 text-sm font-semibold transition duration-300"
       >
         Submit
       </button>
-    </form>
+    </div>
   );
 };
 
