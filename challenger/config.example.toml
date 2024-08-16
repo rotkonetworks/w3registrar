@@ -11,9 +11,3 @@ admins = [
     "@sara:matrix.org",
     "@bill:matrix.org",
 ]
-
-# IdentityChain configuration
-[watcher]
-endpoint = "wss://dev.rotko.net/rococo-people"
-registrar_index = 0
-keystore_path = "/path/to/your/keystore"

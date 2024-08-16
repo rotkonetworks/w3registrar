@@ -11,14 +11,13 @@ use tokio::time::sleep;
 use tokio::time::Duration;
 use tracing::info;
 use serde::Deserialize;
-use crate::config::MatrixConfig;
 
 use std::path::Path;
 
 const STATE_DIR: &str = "/tmp/matrix";
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct BotConfig {
+pub struct Config {
     pub homeserver: String,
     pub username: String,
     pub password: String,
@@ -29,7 +28,7 @@ pub struct BotConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Nickname(String);
 
-pub async fn start_bot(cfg: MatrixConfig) -> anyhow::Result<()> {
+pub async fn start_bot(cfg: Config) -> anyhow::Result<()> {
     let state_dir = Path::new(STATE_DIR);
     let session_path = state_dir.join("session.json");
 
