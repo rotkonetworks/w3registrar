@@ -1,3 +1,5 @@
+mod substrate;
+
 use anyhow::Result;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing::Level;
@@ -6,9 +8,6 @@ use subxt::{OnlineClient, SubstrateConfig};
 use subxt::utils::H256;
 
 use std::fs;
-
-#[subxt::subxt(runtime_metadata_path = "metadata.scale")]
-pub mod substrate {}
 
 #[tokio::main]
 async fn main() -> Result<()> {
