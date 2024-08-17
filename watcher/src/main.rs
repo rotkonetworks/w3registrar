@@ -3,6 +3,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing::Level;
 use serde::Deserialize;
 use subxt::{OnlineClient, SubstrateConfig};
+use subxt::utils::H256;
 
 use std::fs;
 
@@ -17,13 +18,25 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::load()?;
+    run(&config.endpoint).await
+}
 
-    let api = OnlineClient::<SubstrateConfig>::from_url(config.endpoint).await?;
-    let events = api.events().at_latest().await?;
+async fn run(url: &str) -> Result<()> {
+    let api = OnlineClient::<SubstrateConfig>::from_url(url).await?;
+
+    // Get block 96
+    // TODO: Figure out how to properly construct block hashes of the right type.
+
+    let hash: H256 = "0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65".parse()?;
+    let block = api.blocks().at(hash).await?;
+
+    println!("Block {}:\n", block.header().number);
+
+    let events = block.events().await?;
     for event in events.iter() {
         let event = event?;
         if let Ok(e) = event.as_root_event::<substrate::Event>() {
-            println!("{:?}", e);
+            println!("{:?}\n", e);
         } else {
             println!("<Cannot decode event>");
         }
