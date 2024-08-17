@@ -11,9 +11,7 @@ async fn main() -> Result<()> {
     let config = Config::load()?;
 
     tracing_subscriber::fmt()
-        .with_max_level(config.log_level
-            .parse::<Level>()
-            .expect("Failed to parse log level"))
+        .with_max_level(Level::INFO)
         .with_span_events(FmtSpan::CLOSE)
         .init();
 
@@ -25,7 +23,6 @@ async fn main() -> Result<()> {
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    pub log_level: String,
     pub matrix: matrix::Config,
 }
 
