@@ -1,5 +1,8 @@
 mod substrate;
 
+use crate::substrate::Event;
+use crate::substrate::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
+
 use anyhow::Result;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing::Level;
@@ -29,15 +32,25 @@ async fn run(url: &str) -> Result<()> {
     let hash: H256 = "0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65".parse()?;
     let block = api.blocks().at(hash).await?;
 
-    println!("Block {}:\n", block.header().number);
-
     let events = block.events().await?;
     for event in events.iter() {
         let event = event?;
-        if let Ok(e) = event.as_root_event::<substrate::Event>() {
-            println!("{:?}\n", e);
-        } else {
-            println!("<Cannot decode event>");
+        if let Ok(event) = event.as_root_event::<Event>() {
+            if let Some(id_event) = match event {
+                Event::Identity(e) => {
+                    use IdentityEvent::*;
+                    match e {
+                        IdentitySet { .. } => Some(e),
+                        JudgementRequested { .. } => Some(e),
+                        JudgementUnrequested { .. } => Some(e),
+                        JudgementGiven { .. } => Some(e),
+                        _ => None,
+                    }
+                }
+                _ => None
+            } {
+                println!("{:?}", id_event);
+            }
         }
     }
 
