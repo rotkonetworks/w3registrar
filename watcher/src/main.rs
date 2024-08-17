@@ -41,6 +41,8 @@ async fn run(url: &str) -> Result<()> {
                     use IdentityEvent::*;
                     match e {
                         IdentitySet { .. } => Some(e),
+                        IdentityCleared { .. } => Some(e),
+                        IdentityKilled { .. } => Some(e),
                         JudgementRequested { .. } => Some(e),
                         JudgementUnrequested { .. } => Some(e),
                         JudgementGiven { .. } => Some(e),
