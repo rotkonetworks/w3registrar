@@ -2,12 +2,12 @@ use anyhow::Result;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing::Level;
 use serde::Deserialize;
-use subxt::{OnlineClient, PolkadotConfig};
+use subxt::{OnlineClient, SubstrateConfig};
 
 use std::fs;
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
-pub mod polkadot {}
+pub mod substrate {}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -18,11 +18,11 @@ async fn main() -> Result<()> {
 
     let config = Config::load()?;
 
-    let api = OnlineClient::<PolkadotConfig>::from_url(config.endpoint).await?;
+    let api = OnlineClient::<SubstrateConfig>::from_url(config.endpoint).await?;
     let events = api.events().at_latest().await?;
     for event in events.iter() {
         let event = event?;
-        if let Ok(e) = event.as_root_event::<polkadot::Event>() {
+        if let Ok(e) = event.as_root_event::<substrate::Event>() {
             println!("{:?}", e);
         } else {
             println!("<Cannot decode event>");
