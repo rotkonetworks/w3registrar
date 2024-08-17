@@ -1,7 +1,7 @@
 mod substrate;
 
-use crate::substrate::Event;
-use crate::substrate::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
+use substrate::Event;
+use substrate::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
 
 use anyhow::Result;
 use tracing_subscriber::fmt::format::FmtSpan;
