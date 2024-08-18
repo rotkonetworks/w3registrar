@@ -1,5 +1,7 @@
 mod chain;
 
+use chain::identity::storage::types::identity_of::IdentityOf;
+use chain::runtime_types::pallet_identity::types::Data;
 use chain::Event;
 use chain::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
 
@@ -11,7 +13,6 @@ use subxt::{OnlineClient, SubstrateConfig};
 use subxt::utils::{AccountId32, H256};
 
 use std::fs;
-use crate::chain::identity::storage::types::identity_of::IdentityOf;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -65,8 +66,14 @@ impl Watcher {
                 use IdentityEvent::*;
                 match e {
                     JudgementRequested { who, .. } => {
-                        let id = self.fetch_identity_of(who).await?;
-                        println!("{:#?}", id);
+                        let (reg, _) = self.fetch_identity_of(who).await?;
+                        let info = reg.info;
+
+                        println!("{:#?}\n", info);
+
+                        println!("display: {:?}", decode_string_data(info.display));
+                        println!(" matrix: {:?}", decode_string_data(info.matrix));
+                        println!("twitter: {:?}", decode_string_data(info.twitter));
                     }
                     JudgementUnrequested { .. } => {}
                     JudgementGiven { .. } => {}
@@ -99,6 +106,49 @@ impl Watcher {
             None => Err(anyhow!("Identity not found")),
         }
     }
+}
+
+fn decode_string_data(d: Data) -> Option<String> {
+    match d {
+        Data::Raw0(b) => Some(string_from_bytes(&b)),
+        Data::Raw1(b) => Some(string_from_bytes(&b)),
+        Data::Raw2(b) => Some(string_from_bytes(&b)),
+        Data::Raw3(b) => Some(string_from_bytes(&b)),
+        Data::Raw4(b) => Some(string_from_bytes(&b)),
+        Data::Raw5(b) => Some(string_from_bytes(&b)),
+        Data::Raw6(b) => Some(string_from_bytes(&b)),
+        Data::Raw7(b) => Some(string_from_bytes(&b)),
+        Data::Raw8(b) => Some(string_from_bytes(&b)),
+        Data::Raw9(b) => Some(string_from_bytes(&b)),
+        Data::Raw10(b) => Some(string_from_bytes(&b)),
+        Data::Raw11(b) => Some(string_from_bytes(&b)),
+        Data::Raw12(b) => Some(string_from_bytes(&b)),
+        Data::Raw13(b) => Some(string_from_bytes(&b)),
+        Data::Raw14(b) => Some(string_from_bytes(&b)),
+        Data::Raw15(b) => Some(string_from_bytes(&b)),
+        Data::Raw16(b) => Some(string_from_bytes(&b)),
+        Data::Raw17(b) => Some(string_from_bytes(&b)),
+        Data::Raw18(b) => Some(string_from_bytes(&b)),
+        Data::Raw19(b) => Some(string_from_bytes(&b)),
+        Data::Raw20(b) => Some(string_from_bytes(&b)),
+        Data::Raw21(b) => Some(string_from_bytes(&b)),
+        Data::Raw22(b) => Some(string_from_bytes(&b)),
+        Data::Raw23(b) => Some(string_from_bytes(&b)),
+        Data::Raw24(b) => Some(string_from_bytes(&b)),
+        Data::Raw25(b) => Some(string_from_bytes(&b)),
+        Data::Raw26(b) => Some(string_from_bytes(&b)),
+        Data::Raw27(b) => Some(string_from_bytes(&b)),
+        Data::Raw28(b) => Some(string_from_bytes(&b)),
+        Data::Raw29(b) => Some(string_from_bytes(&b)),
+        Data::Raw30(b) => Some(string_from_bytes(&b)),
+        Data::Raw31(b) => Some(string_from_bytes(&b)),
+        Data::Raw32(b) => Some(string_from_bytes(&b)),
+        _ => None,
+    }
+}
+
+fn string_from_bytes(bytes: &[u8]) -> String {
+    std::str::from_utf8(&bytes).unwrap_or("").to_string()
 }
 
 //------------------------------------------------------------------------------
