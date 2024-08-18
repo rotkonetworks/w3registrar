@@ -44,23 +44,23 @@ async fn run(url: &str) -> Result<()> {
 }
 
 async fn handle_event(event: Event) {
-    if let Some(id_event) = match event {
+    match event {
         Event::Identity(e) => {
             use IdentityEvent::*;
             match e {
-                IdentitySet { .. } => Some(e),
-                IdentityCleared { .. } => Some(e),
-                IdentityKilled { .. } => Some(e),
-                JudgementRequested { .. } => Some(e),
-                JudgementUnrequested { .. } => Some(e),
-                JudgementGiven { .. } => Some(e),
-                _ => None,
-            }
+                JudgementRequested { .. } => {
+                    println!("{:#?}", e);
+                }
+                JudgementUnrequested { .. } => {}
+                JudgementGiven { .. } => {}
+                IdentitySet { .. } => {}
+                IdentityCleared { .. } => {}
+                IdentityKilled { .. } => {}
+                _ => {}
+            };
         }
-        _ => None
-    } {
-        println!("{:?}", id_event);
-    }
+        _ => {}
+    };
 }
 
 #[derive(Debug, Deserialize)]
