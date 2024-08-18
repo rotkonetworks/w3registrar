@@ -3,14 +3,15 @@ mod chain;
 use chain::Event;
 use chain::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing::Level;
 use serde::Deserialize;
 use subxt::{OnlineClient, SubstrateConfig};
-use subxt::utils::H256;
+use subxt::utils::{AccountId32, H256};
 
 use std::fs;
+use crate::chain::identity::storage::types::identity_of::IdentityOf;
 
 type Client = OnlineClient<SubstrateConfig>;
 
@@ -51,20 +52,8 @@ async fn handle_event(client: &OnlineClient<SubstrateConfig>, event: Event) -> R
             use IdentityEvent::*;
             match e {
                 JudgementRequested { who, .. } => {
-                    let query = chain::storage()
-                        .identity()
-                        .identity_of(&who);
-
-                    let identity = client
-                        .storage()
-                        .at_latest()
-                        .await?
-                        .fetch(&query)
-                        .await?;
-
-                    if let Some(id) = identity {
-                        print!("{:#?}", id);
-                    }
+                    let id = fetch_identity_of(&client, who).await?;
+                    println!("{:#?}", id);
                 }
                 JudgementUnrequested { .. } => {}
                 JudgementGiven { .. } => {}
@@ -78,6 +67,24 @@ async fn handle_event(client: &OnlineClient<SubstrateConfig>, event: Event) -> R
     };
 
     Ok(())
+}
+
+async fn fetch_identity_of(client: &OnlineClient<SubstrateConfig>, id: AccountId32) -> Result<IdentityOf> {
+    let query = chain::storage()
+        .identity()
+        .identity_of(&id);
+
+    let identity = client
+        .storage()
+        .at_latest()
+        .await?
+        .fetch(&query)
+        .await?;
+
+    match identity {
+        Some(identity) => Ok(identity),
+        None => Err(anyhow!("Identity not found")),
+    }
 }
 
 //------------------------------------------------------------------------------
