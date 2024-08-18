@@ -13,6 +13,7 @@ use subxt::{OnlineClient, SubstrateConfig};
 use subxt::utils::{AccountId32, H256};
 
 use std::fs;
+use crate::chain::runtime_types::people_rococo_runtime::people::IdentityInfo;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -68,12 +69,10 @@ impl Watcher {
                     JudgementRequested { who, .. } => {
                         let (reg, _) = self.fetch_identity_of(who).await?;
                         let info = reg.info;
-
                         println!("{:#?}\n", info);
 
-                        println!("display: {:?}", decode_string_data(info.display));
-                        println!(" matrix: {:?}", decode_string_data(info.matrix));
-                        println!("twitter: {:?}", decode_string_data(info.twitter));
+                        let ids = decode_identity_info(info);
+                        println!("{:?}", ids)
                     }
                     JudgementUnrequested { .. } => {}
                     JudgementGiven { .. } => {}
@@ -108,42 +107,83 @@ impl Watcher {
     }
 }
 
+//------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Hash)]
+struct Id(IdKey, String);
+
+// TODO: Add PgpFingerprint
+#[derive(Debug, Copy, Clone, PartialEq, Hash)]
+enum IdKey {
+    Display,
+    Legal,
+    Web,
+    Matrix,
+    Email,
+    Image,
+    Twitter,
+    Github,
+    Discord,
+}
+
+fn decode_identity_info(info: IdentityInfo) -> Vec<Id> {
+    use IdKey::*;
+    let mut ids = vec![];
+    decode_id_field_into(Display, info.display, &mut ids);
+    decode_id_field_into(Legal, info.legal, &mut ids);
+    decode_id_field_into(Web, info.web, &mut ids);
+    decode_id_field_into(Matrix, info.matrix, &mut ids);
+    decode_id_field_into(Email, info.email, &mut ids);
+    decode_id_field_into(Image, info.image, &mut ids);
+    decode_id_field_into(Twitter, info.twitter, &mut ids);
+    decode_id_field_into(Github, info.github, &mut ids);
+    decode_id_field_into(Discord, info.discord, &mut ids);
+    ids
+}
+
+fn decode_id_field_into(key: IdKey, value: Data, ids: &mut Vec<Id>) {
+    if let Some(s) = decode_string_data(value) {
+        ids.push(Id(key, s));
+    }
+}
+
 fn decode_string_data(d: Data) -> Option<String> {
+    use Data::*;
     match d {
-        Data::Raw0(b) => Some(string_from_bytes(&b)),
-        Data::Raw1(b) => Some(string_from_bytes(&b)),
-        Data::Raw2(b) => Some(string_from_bytes(&b)),
-        Data::Raw3(b) => Some(string_from_bytes(&b)),
-        Data::Raw4(b) => Some(string_from_bytes(&b)),
-        Data::Raw5(b) => Some(string_from_bytes(&b)),
-        Data::Raw6(b) => Some(string_from_bytes(&b)),
-        Data::Raw7(b) => Some(string_from_bytes(&b)),
-        Data::Raw8(b) => Some(string_from_bytes(&b)),
-        Data::Raw9(b) => Some(string_from_bytes(&b)),
-        Data::Raw10(b) => Some(string_from_bytes(&b)),
-        Data::Raw11(b) => Some(string_from_bytes(&b)),
-        Data::Raw12(b) => Some(string_from_bytes(&b)),
-        Data::Raw13(b) => Some(string_from_bytes(&b)),
-        Data::Raw14(b) => Some(string_from_bytes(&b)),
-        Data::Raw15(b) => Some(string_from_bytes(&b)),
-        Data::Raw16(b) => Some(string_from_bytes(&b)),
-        Data::Raw17(b) => Some(string_from_bytes(&b)),
-        Data::Raw18(b) => Some(string_from_bytes(&b)),
-        Data::Raw19(b) => Some(string_from_bytes(&b)),
-        Data::Raw20(b) => Some(string_from_bytes(&b)),
-        Data::Raw21(b) => Some(string_from_bytes(&b)),
-        Data::Raw22(b) => Some(string_from_bytes(&b)),
-        Data::Raw23(b) => Some(string_from_bytes(&b)),
-        Data::Raw24(b) => Some(string_from_bytes(&b)),
-        Data::Raw25(b) => Some(string_from_bytes(&b)),
-        Data::Raw26(b) => Some(string_from_bytes(&b)),
-        Data::Raw27(b) => Some(string_from_bytes(&b)),
-        Data::Raw28(b) => Some(string_from_bytes(&b)),
-        Data::Raw29(b) => Some(string_from_bytes(&b)),
-        Data::Raw30(b) => Some(string_from_bytes(&b)),
-        Data::Raw31(b) => Some(string_from_bytes(&b)),
-        Data::Raw32(b) => Some(string_from_bytes(&b)),
-        _ => None,
+        Raw0(b) => Some(string_from_bytes(&b)),
+        Raw1(b) => Some(string_from_bytes(&b)),
+        Raw2(b) => Some(string_from_bytes(&b)),
+        Raw3(b) => Some(string_from_bytes(&b)),
+        Raw4(b) => Some(string_from_bytes(&b)),
+        Raw5(b) => Some(string_from_bytes(&b)),
+        Raw6(b) => Some(string_from_bytes(&b)),
+        Raw7(b) => Some(string_from_bytes(&b)),
+        Raw8(b) => Some(string_from_bytes(&b)),
+        Raw9(b) => Some(string_from_bytes(&b)),
+        Raw10(b) => Some(string_from_bytes(&b)),
+        Raw11(b) => Some(string_from_bytes(&b)),
+        Raw12(b) => Some(string_from_bytes(&b)),
+        Raw13(b) => Some(string_from_bytes(&b)),
+        Raw14(b) => Some(string_from_bytes(&b)),
+        Raw15(b) => Some(string_from_bytes(&b)),
+        Raw16(b) => Some(string_from_bytes(&b)),
+        Raw17(b) => Some(string_from_bytes(&b)),
+        Raw18(b) => Some(string_from_bytes(&b)),
+        Raw19(b) => Some(string_from_bytes(&b)),
+        Raw20(b) => Some(string_from_bytes(&b)),
+        Raw21(b) => Some(string_from_bytes(&b)),
+        Raw22(b) => Some(string_from_bytes(&b)),
+        Raw23(b) => Some(string_from_bytes(&b)),
+        Raw24(b) => Some(string_from_bytes(&b)),
+        Raw25(b) => Some(string_from_bytes(&b)),
+        Raw26(b) => Some(string_from_bytes(&b)),
+        Raw27(b) => Some(string_from_bytes(&b)),
+        Raw28(b) => Some(string_from_bytes(&b)),
+        Raw29(b) => Some(string_from_bytes(&b)),
+        Raw30(b) => Some(string_from_bytes(&b)),
+        Raw31(b) => Some(string_from_bytes(&b)),
+        Raw32(b) => Some(string_from_bytes(&b)),
+        _ => Option::None,
     }
 }
 
