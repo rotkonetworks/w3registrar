@@ -58,7 +58,7 @@ impl Watcher {
         Ok(())
     }
 
-    async fn handle_event(&self, event: Event) -> anyhow::Result<()> {
+    async fn handle_event(&self, event: Event) -> Result<()> {
         match event {
             Event::Identity(e) => {
                 use crate::chain::api::runtime_types::pallet_identity::pallet::Event::*;
@@ -85,7 +85,7 @@ impl Watcher {
         Ok(())
     }
 
-    async fn fetch_identity_of(&self, id: AccountId32) -> anyhow::Result<IdentityOf> {
+    async fn fetch_identity_of(&self, id: AccountId32) -> Result<IdentityOf> {
         let query = api::storage()
             .identity()
             .identity_of(&id);
