@@ -69,12 +69,12 @@ impl Watcher {
         use IdentityEvent::*;
         match event {
             JudgementRequested { who, .. } => {
-                let (reg, _) = self.fetch_identity_of(who).await?;
+                let (reg, _) = self.fetch_identity_of(&who).await?;
                 let info = reg.info;
-                println!("{:#?}\n", info);
-
                 let ids = decode_identity_info(info);
-                println!("{:?}", ids)
+                let req = JudgementRequest::new(who, ids);
+
+                println!("{:#?}", req);
             }
             JudgementUnrequested { .. } => {}
             JudgementGiven { .. } => {}
@@ -86,10 +86,10 @@ impl Watcher {
         Ok(())
     }
 
-    async fn fetch_identity_of(&self, id: AccountId32) -> Result<IdentityOf> {
+    async fn fetch_identity_of(&self, id: &AccountId32) -> Result<IdentityOf> {
         let query = api::storage()
             .identity()
-            .identity_of(&id);
+            .identity_of(id);
 
         let identity = self.client
             .storage()
@@ -107,8 +107,22 @@ impl Watcher {
 
 //------------------------------------------------------------------------------
 
+#[derive(Debug, Clone, PartialEq)]
+struct JudgementRequest {
+    who: AccountId32,
+    ids: HashSet<Id>,
+}
+
+impl JudgementRequest {
+    fn new(who: AccountId32, ids: HashSet<Id>) -> Self {
+        Self { who, ids }
+    }
+}
+
+//------------------------------------------------------------------------------
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct Id(IdKey, String);
+struct Id(IdKey, IdValue);
 
 // TODO: Add PgpFingerprint
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -124,22 +138,24 @@ enum IdKey {
     Discord,
 }
 
-fn decode_identity_info(info: IdentityInfo) -> HashSet<Id> {
+type IdValue = String;
+
+fn decode_identity_info(fields: IdentityInfo) -> HashSet<Id> {
     use IdKey::*;
     let mut ids = HashSet::new();
-    decode_id_field_into(Display, info.display, &mut ids);
-    decode_id_field_into(Legal, info.legal, &mut ids);
-    decode_id_field_into(Web, info.web, &mut ids);
-    decode_id_field_into(Matrix, info.matrix, &mut ids);
-    decode_id_field_into(Email, info.email, &mut ids);
-    decode_id_field_into(Image, info.image, &mut ids);
-    decode_id_field_into(Twitter, info.twitter, &mut ids);
-    decode_id_field_into(Github, info.github, &mut ids);
-    decode_id_field_into(Discord, info.discord, &mut ids);
+    decode_identity_field_into(Display, fields.display, &mut ids);
+    decode_identity_field_into(Legal, fields.legal, &mut ids);
+    decode_identity_field_into(Web, fields.web, &mut ids);
+    decode_identity_field_into(Matrix, fields.matrix, &mut ids);
+    decode_identity_field_into(Email, fields.email, &mut ids);
+    decode_identity_field_into(Image, fields.image, &mut ids);
+    decode_identity_field_into(Twitter, fields.twitter, &mut ids);
+    decode_identity_field_into(Github, fields.github, &mut ids);
+    decode_identity_field_into(Discord, fields.discord, &mut ids);
     ids
 }
 
-fn decode_id_field_into(key: IdKey, value: Data, ids: &mut HashSet<Id>) {
+fn decode_identity_field_into(key: IdKey, value: Data, ids: &mut HashSet<Id>) {
     if let Some(s) = decode_string_data(value) {
         ids.insert(Id(key, s));
     }
