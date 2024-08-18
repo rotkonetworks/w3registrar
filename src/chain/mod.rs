@@ -1,9 +1,9 @@
-mod chain;
+mod api;
 
-use chain::Event;
-use chain::identity::storage::types::identity_of::IdentityOf;
-use chain::runtime_types::pallet_identity::types::Data;
-use chain::runtime_types::people_rococo_runtime::people::IdentityInfo;
+use api::Event;
+use api::identity::storage::types::identity_of::IdentityOf;
+use api::runtime_types::pallet_identity::types::Data;
+use api::runtime_types::people_rococo_runtime::people::IdentityInfo;
 
 use subxt::{OnlineClient, SubstrateConfig};
 use subxt::utils::{AccountId32, H256};
@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use std::collections::HashSet;
 
-pub async fn run(config: Config) -> Result<()> {
+pub async fn run_watcher(config: Config) -> Result<()> {
     let client = Client::from_url(config.endpoint).await?;
     let watcher = Watcher::new(client);
     watcher.run().await
@@ -61,7 +61,7 @@ impl Watcher {
     async fn handle_event(&self, event: Event) -> anyhow::Result<()> {
         match event {
             Event::Identity(e) => {
-                use crate::watcher::chain::runtime_types::pallet_identity::pallet::Event::*;
+                use crate::chain::api::runtime_types::pallet_identity::pallet::Event::*;
                 match e {
                     JudgementRequested { who, .. } => {
                         let (reg, _) = self.fetch_identity_of(who).await?;
@@ -86,7 +86,7 @@ impl Watcher {
     }
 
     async fn fetch_identity_of(&self, id: AccountId32) -> anyhow::Result<IdentityOf> {
-        let query = chain::storage()
+        let query = api::storage()
             .identity()
             .identity_of(&id);
 
@@ -143,7 +143,7 @@ fn decode_id_field_into(key: IdKey, value: Data, ids: &mut HashSet<Id>) {
 }
 
 fn decode_string_data(d: Data) -> Option<String> {
-    use crate::watcher::chain::runtime_types::pallet_identity::types::Data::*;
+    use crate::chain::api::runtime_types::pallet_identity::types::Data::*;
     match d {
         Raw0(b) => Some(string_from_bytes(&b)),
         Raw1(b) => Some(string_from_bytes(&b)),
