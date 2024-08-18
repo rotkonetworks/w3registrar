@@ -12,6 +12,8 @@ use subxt::utils::H256;
 
 use std::fs;
 
+type Client = OnlineClient<SubstrateConfig>;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -24,32 +26,45 @@ async fn main() -> Result<()> {
 }
 
 async fn run(url: &str) -> Result<()> {
-    let api = OnlineClient::<SubstrateConfig>::from_url(url).await?;
+    let client = Client::from_url(url).await?;
 
     // Get block 96
     // TODO: Figure out how to properly construct block hashes of the right type.
 
     let hash: H256 = "0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65".parse()?;
-    let block = api.blocks().at(hash).await?;
+    let block = client.blocks().at(hash).await?;
 
     let events = block.events().await?;
     for event in events.iter() {
         let event = event?;
         if let Ok(event) = event.as_root_event::<Event>() {
-            handle_event(event).await;
+            handle_event(&client, event).await?;
         }
     }
 
     Ok(())
 }
 
-async fn handle_event(event: Event) {
+async fn handle_event(client: &OnlineClient<SubstrateConfig>, event: Event) -> Result<()> {
     match event {
         Event::Identity(e) => {
             use IdentityEvent::*;
             match e {
-                JudgementRequested { .. } => {
-                    println!("{:#?}", e);
+                JudgementRequested { who, .. } => {
+                    let query = substrate::storage()
+                        .system()
+                        .account(&who);
+
+                    let account = client
+                        .storage()
+                        .at_latest()
+                        .await?
+                        .fetch(&query)
+                        .await?;
+
+                    if let Some(account) = account {
+                        print!("{:#?}", account);
+                    }
                 }
                 JudgementUnrequested { .. } => {}
                 JudgementGiven { .. } => {}
@@ -61,7 +76,11 @@ async fn handle_event(event: Event) {
         }
         _ => {}
     };
+
+    Ok(())
 }
+
+//------------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
