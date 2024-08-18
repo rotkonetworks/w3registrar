@@ -1,7 +1,7 @@
-mod substrate;
+mod chain;
 
-use substrate::Event;
-use substrate::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
+use chain::Event;
+use chain::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
 
 use anyhow::Result;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -51,7 +51,7 @@ async fn handle_event(client: &OnlineClient<SubstrateConfig>, event: Event) -> R
             use IdentityEvent::*;
             match e {
                 JudgementRequested { who, .. } => {
-                    let query = substrate::storage()
+                    let query = chain::storage()
                         .system()
                         .account(&who);
 
