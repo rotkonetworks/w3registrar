@@ -52,18 +52,18 @@ async fn handle_event(client: &OnlineClient<SubstrateConfig>, event: Event) -> R
             match e {
                 JudgementRequested { who, .. } => {
                     let query = chain::storage()
-                        .system()
-                        .account(&who);
+                        .identity()
+                        .identity_of(&who);
 
-                    let account = client
+                    let identity = client
                         .storage()
                         .at_latest()
                         .await?
                         .fetch(&query)
                         .await?;
 
-                    if let Some(account) = account {
-                        print!("{:#?}", account);
+                    if let Some(id) = identity {
+                        print!("{:#?}", id);
                     }
                 }
                 JudgementUnrequested { .. } => {}
