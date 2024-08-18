@@ -13,8 +13,6 @@ use subxt::utils::{AccountId32, H256};
 use std::fs;
 use crate::chain::identity::storage::types::identity_of::IdentityOf;
 
-type Client = OnlineClient<SubstrateConfig>;
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -23,67 +21,83 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::load()?;
-    run(&config.endpoint).await
+    let client = Client::from_url(config.endpoint).await?;
+    let watcher = Watcher::new(client);
+
+    watcher.process_events().await
 }
 
-async fn run(url: &str) -> Result<()> {
-    let client = Client::from_url(url).await?;
+//------------------------------------------------------------------------------
 
-    // Get block 96
-    // TODO: Figure out how to properly construct block hashes of the right type.
+type Client = OnlineClient<SubstrateConfig>;
 
-    let hash: H256 = "0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65".parse()?;
-    let block = client.blocks().at(hash).await?;
+#[derive(Debug, Clone)]
+struct Watcher {
+    client: Client,
+}
 
-    let events = block.events().await?;
-    for event in events.iter() {
-        let event = event?;
-        if let Ok(event) = event.as_root_event::<Event>() {
-            handle_event(&client, event).await?;
-        }
+impl Watcher {
+    fn new(client: Client) -> Self {
+        Self { client}
     }
 
-    Ok(())
-}
+    async fn process_events(&self) -> Result<()> {
+        // Get block 96
+        // TODO: Figure out how to properly construct block hashes of the right type.
 
-async fn handle_event(client: &OnlineClient<SubstrateConfig>, event: Event) -> Result<()> {
-    match event {
-        Event::Identity(e) => {
-            use IdentityEvent::*;
-            match e {
-                JudgementRequested { who, .. } => {
-                    let id = fetch_identity_of(&client, who).await?;
-                    println!("{:#?}", id);
-                }
-                JudgementUnrequested { .. } => {}
-                JudgementGiven { .. } => {}
-                IdentitySet { .. } => {}
-                IdentityCleared { .. } => {}
-                IdentityKilled { .. } => {}
-                _ => {}
-            };
+        let hash: H256 = "0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65".parse()?;
+        let block = self.client.blocks().at(hash).await?;
+
+        let events = block.events().await?;
+        for event in events.iter() {
+            let event = event?;
+            if let Ok(event) = event.as_root_event::<Event>() {
+                self.handle_event(event).await?;
+            }
         }
-        _ => {}
-    };
 
-    Ok(())
-}
+        Ok(())
+    }
 
-async fn fetch_identity_of(client: &OnlineClient<SubstrateConfig>, id: AccountId32) -> Result<IdentityOf> {
-    let query = chain::storage()
-        .identity()
-        .identity_of(&id);
+    async fn handle_event(&self, event: Event) -> Result<()> {
+        match event {
+            Event::Identity(e) => {
+                use IdentityEvent::*;
+                match e {
+                    JudgementRequested { who, .. } => {
+                        let id = self.fetch_identity_of(who).await?;
+                        println!("{:#?}", id);
+                    }
+                    JudgementUnrequested { .. } => {}
+                    JudgementGiven { .. } => {}
+                    IdentitySet { .. } => {}
+                    IdentityCleared { .. } => {}
+                    IdentityKilled { .. } => {}
+                    _ => {}
+                };
+            }
+            _ => {}
+        };
 
-    let identity = client
-        .storage()
-        .at_latest()
-        .await?
-        .fetch(&query)
-        .await?;
+        Ok(())
+    }
+    
+    async fn fetch_identity_of(&self, id: AccountId32) -> Result<IdentityOf> {
+        let query = chain::storage()
+            .identity()
+            .identity_of(&id);
 
-    match identity {
-        Some(identity) => Ok(identity),
-        None => Err(anyhow!("Identity not found")),
+        let identity = self.client
+            .storage()
+            .at_latest()
+            .await?
+            .fetch(&query)
+            .await?;
+
+        match identity {
+            Some(identity) => Ok(identity),
+            None => Err(anyhow!("Identity not found")),
+        }
     }
 }
 
