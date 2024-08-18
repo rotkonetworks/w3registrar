@@ -15,3 +15,4 @@ subxt = "0.37.0"
 serde_json = "1.0.125"
 hex = "0.4.3"
 matrix-sdk = "0.7.1"
+uuid = { version = "1.10.0", features = ["v4", "macro-diagnostics"] }
