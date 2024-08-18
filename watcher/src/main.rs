@@ -36,27 +36,31 @@ async fn run(url: &str) -> Result<()> {
     for event in events.iter() {
         let event = event?;
         if let Ok(event) = event.as_root_event::<Event>() {
-            if let Some(id_event) = match event {
-                Event::Identity(e) => {
-                    use IdentityEvent::*;
-                    match e {
-                        IdentitySet { .. } => Some(e),
-                        IdentityCleared { .. } => Some(e),
-                        IdentityKilled { .. } => Some(e),
-                        JudgementRequested { .. } => Some(e),
-                        JudgementUnrequested { .. } => Some(e),
-                        JudgementGiven { .. } => Some(e),
-                        _ => None,
-                    }
-                }
-                _ => None
-            } {
-                println!("{:?}", id_event);
-            }
+            handle_event(event).await;
         }
     }
 
     Ok(())
+}
+
+async fn handle_event(event: Event) {
+    if let Some(id_event) = match event {
+        Event::Identity(e) => {
+            use IdentityEvent::*;
+            match e {
+                IdentitySet { .. } => Some(e),
+                IdentityCleared { .. } => Some(e),
+                IdentityKilled { .. } => Some(e),
+                JudgementRequested { .. } => Some(e),
+                JudgementUnrequested { .. } => Some(e),
+                JudgementGiven { .. } => Some(e),
+                _ => None,
+            }
+        }
+        _ => None
+    } {
+        println!("{:?}", id_event);
+    }
 }
 
 #[derive(Debug, Deserialize)]
