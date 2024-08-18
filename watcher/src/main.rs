@@ -1,5 +1,6 @@
 mod chain;
 
+use std::collections::HashSet;
 use chain::identity::storage::types::identity_of::IdentityOf;
 use chain::runtime_types::pallet_identity::types::Data;
 use chain::Event;
@@ -109,11 +110,11 @@ impl Watcher {
 
 //------------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Id(IdKey, String);
 
 // TODO: Add PgpFingerprint
-#[derive(Debug, Copy, Clone, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 enum IdKey {
     Display,
     Legal,
@@ -126,9 +127,9 @@ enum IdKey {
     Discord,
 }
 
-fn decode_identity_info(info: IdentityInfo) -> Vec<Id> {
+fn decode_identity_info(info: IdentityInfo) -> HashSet<Id> {
     use IdKey::*;
-    let mut ids = vec![];
+    let mut ids = HashSet::new();
     decode_id_field_into(Display, info.display, &mut ids);
     decode_id_field_into(Legal, info.legal, &mut ids);
     decode_id_field_into(Web, info.web, &mut ids);
@@ -141,9 +142,9 @@ fn decode_identity_info(info: IdentityInfo) -> Vec<Id> {
     ids
 }
 
-fn decode_id_field_into(key: IdKey, value: Data, ids: &mut Vec<Id>) {
+fn decode_id_field_into(key: IdKey, value: Data, ids: &mut HashSet<Id>) {
     if let Some(s) = decode_string_data(value) {
-        ids.push(Id(key, s));
+        ids.insert(Id(key, s));
     }
 }
 
