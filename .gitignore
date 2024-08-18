@@ -1,3 +1,5 @@
+target
+config.toml
 .idea
 .vscode
 .DS_Store

@@ -1,35 +1,34 @@
 mod matrix;
+mod watcher;
 
 use anyhow::Result;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing::Level;
-use std::fs;
 use serde::Deserialize;
+use std::fs;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = Config::load()?;
-
     tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
         .with_span_events(FmtSpan::CLOSE)
         .init();
 
-    tracing::info!("Starting Matrix bot");
-    matrix::start_bot(config.matrix).await?;
+    let config = Config::load_from("config.toml")?;
 
-    Ok(())
+    watcher::run(config.watcher).await
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub matrix: matrix::Config,
+    pub watcher: watcher::Config,
 }
 
 impl Config {
-    fn load() -> Result<Self> {
-        let content = fs::read_to_string("config.toml")
-            .map_err(|_| anyhow::anyhow!("Failed to open config at `config.toml`."))?;
+    fn load_from(path: &str) -> Result<Self> {
+        let content = fs::read_to_string(path)
+            .map_err(|_| anyhow::anyhow!("Failed to open config `{}`.", path))?;
 
         toml::from_str::<Self>(&content)
             .map_err(|err| anyhow::anyhow!("Failed to parse config: {:?}", err))

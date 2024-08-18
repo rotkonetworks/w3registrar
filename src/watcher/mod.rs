@@ -1,50 +1,46 @@
 mod chain;
 
-use std::collections::HashSet;
+use chain::Event;
 use chain::identity::storage::types::identity_of::IdentityOf;
 use chain::runtime_types::pallet_identity::types::Data;
-use chain::Event;
-use chain::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
+use chain::runtime_types::people_rococo_runtime::people::IdentityInfo;
 
-use anyhow::{anyhow, Result};
-use tracing_subscriber::fmt::format::FmtSpan;
-use tracing::Level;
-use serde::Deserialize;
 use subxt::{OnlineClient, SubstrateConfig};
 use subxt::utils::{AccountId32, H256};
+use anyhow::anyhow;
+use anyhow::Result;
+use serde::Deserialize;
 
-use std::fs;
-use crate::chain::runtime_types::people_rococo_runtime::people::IdentityInfo;
+use std::collections::HashSet;
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .with_span_events(FmtSpan::CLOSE)
-        .init();
-
-    let config = Config::load()?;
+pub async fn run(config: Config) -> Result<()> {
     let client = Client::from_url(config.endpoint).await?;
     let watcher = Watcher::new(client);
+    watcher.run().await
+}
 
-    watcher.process_events().await
+#[derive(Debug, Deserialize)]
+pub struct Config {
+    pub endpoint: String,
+    pub registrar_index: u32,
+    pub keystore_path: String,
 }
 
 //------------------------------------------------------------------------------
 
-type Client = OnlineClient<SubstrateConfig>;
+pub type Client = OnlineClient<SubstrateConfig>;
 
 #[derive(Debug, Clone)]
-struct Watcher {
+pub struct Watcher {
     client: Client,
 }
 
 impl Watcher {
-    fn new(client: Client) -> Self {
+    pub fn new(client: Client) -> Self {
         Self { client}
     }
 
-    async fn process_events(&self) -> Result<()> {
+    pub async fn run(&self) -> Result<()> {
         // Get block 96
         // TODO: Figure out how to properly construct block hashes of the right type.
 
@@ -62,10 +58,10 @@ impl Watcher {
         Ok(())
     }
 
-    async fn handle_event(&self, event: Event) -> Result<()> {
+    async fn handle_event(&self, event: Event) -> anyhow::Result<()> {
         match event {
             Event::Identity(e) => {
-                use IdentityEvent::*;
+                use crate::watcher::chain::runtime_types::pallet_identity::pallet::Event::*;
                 match e {
                     JudgementRequested { who, .. } => {
                         let (reg, _) = self.fetch_identity_of(who).await?;
@@ -88,8 +84,8 @@ impl Watcher {
 
         Ok(())
     }
-    
-    async fn fetch_identity_of(&self, id: AccountId32) -> Result<IdentityOf> {
+
+    async fn fetch_identity_of(&self, id: AccountId32) -> anyhow::Result<IdentityOf> {
         let query = chain::storage()
             .identity()
             .identity_of(&id);
@@ -107,8 +103,6 @@ impl Watcher {
         }
     }
 }
-
-//------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Id(IdKey, String);
@@ -149,7 +143,7 @@ fn decode_id_field_into(key: IdKey, value: Data, ids: &mut HashSet<Id>) {
 }
 
 fn decode_string_data(d: Data) -> Option<String> {
-    use Data::*;
+    use crate::watcher::chain::runtime_types::pallet_identity::types::Data::*;
     match d {
         Raw0(b) => Some(string_from_bytes(&b)),
         Raw1(b) => Some(string_from_bytes(&b)),
@@ -190,23 +184,4 @@ fn decode_string_data(d: Data) -> Option<String> {
 
 fn string_from_bytes(bytes: &[u8]) -> String {
     std::str::from_utf8(&bytes).unwrap_or("").to_string()
-}
-
-//------------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-pub struct Config {
-    pub endpoint: String,
-    pub registrar_index: u32,
-    pub keystore_path: String,
-}
-
-impl Config {
-    fn load() -> Result<Self> {
-        let content = fs::read_to_string("config.toml")
-            .map_err(|_| anyhow::anyhow!("Failed to open config at `config.toml`."))?;
-
-        toml::from_str::<Self>(&content)
-            .map_err(|err| anyhow::anyhow!("Failed to parse config: {:?}", err))
-    }
 }

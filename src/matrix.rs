@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use matrix_sdk::ruma::events::room::message::MessageType;
 use matrix_sdk::ruma::events::room::message::OriginalSyncRoomMessageEvent;
 use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;

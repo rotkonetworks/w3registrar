@@ -1,3 +1,0 @@
-endpoint = "wss://kusama-rpc.polkadot.io/"
-registrar_index = 0
-keystore_path = "/path/to/your/keystore"
