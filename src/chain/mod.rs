@@ -4,6 +4,7 @@ use api::Event;
 use api::identity::storage::types::identity_of::IdentityOf;
 use api::runtime_types::pallet_identity::types::Data;
 use api::runtime_types::people_rococo_runtime::people::IdentityInfo;
+use api::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
 
 use subxt::{OnlineClient, SubstrateConfig};
 use subxt::utils::{AccountId32, H256};
@@ -49,8 +50,7 @@ impl Watcher {
 
         let events = block.events().await?;
         for event in events.iter() {
-            let event = event?;
-            if let Ok(event) = event.as_root_event::<Event>() {
+            if let Ok(event) = event?.as_root_event::<Event>() {
                 self.handle_event(event).await?;
             }
         }
@@ -60,28 +60,29 @@ impl Watcher {
 
     async fn handle_event(&self, event: Event) -> Result<()> {
         match event {
-            Event::Identity(e) => {
-                use crate::chain::api::runtime_types::pallet_identity::pallet::Event::*;
-                match e {
-                    JudgementRequested { who, .. } => {
-                        let (reg, _) = self.fetch_identity_of(who).await?;
-                        let info = reg.info;
-                        println!("{:#?}\n", info);
+            Event::Identity(e) => self.handle_identity_event(e).await,
+            _ => Ok(()),
+        }
+    }
 
-                        let ids = decode_identity_info(info);
-                        println!("{:?}", ids)
-                    }
-                    JudgementUnrequested { .. } => {}
-                    JudgementGiven { .. } => {}
-                    IdentitySet { .. } => {}
-                    IdentityCleared { .. } => {}
-                    IdentityKilled { .. } => {}
-                    _ => {}
-                };
+    async fn handle_identity_event(&self, event: IdentityEvent) -> Result<()> {
+        use IdentityEvent::*;
+        match event {
+            JudgementRequested { who, .. } => {
+                let (reg, _) = self.fetch_identity_of(who).await?;
+                let info = reg.info;
+                println!("{:#?}\n", info);
+
+                let ids = decode_identity_info(info);
+                println!("{:?}", ids)
             }
+            JudgementUnrequested { .. } => {}
+            JudgementGiven { .. } => {}
+            IdentitySet { .. } => {}
+            IdentityCleared { .. } => {}
+            IdentityKilled { .. } => {}
             _ => {}
         };
-
         Ok(())
     }
 
@@ -103,6 +104,8 @@ impl Watcher {
         }
     }
 }
+
+//------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Id(IdKey, String);
