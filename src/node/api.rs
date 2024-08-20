@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use subxt::{OnlineClient, SubstrateConfig};
 
 pub use crate::node::substrate::api::storage;

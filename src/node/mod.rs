@@ -1,23 +1,23 @@
 mod substrate;
 mod api;
 
-use subxt::utils::H256;
 use anyhow::anyhow;
 use anyhow::Result;
 use serde::Deserialize;
+use subxt::utils::H256;
 
-use std::collections::HashSet;
-
-#[derive(Debug, Clone)]
-pub struct Client {
-    inner: api::Client,
-}
+use std::collections::HashMap;
 
 #[derive(Debug, Deserialize)]
 pub struct ClientConfig {
     pub endpoint: String,
     pub registrar_index: u32,
     pub keystore_path: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct Client {
+    inner: api::Client,
 }
 
 impl Client {
@@ -40,7 +40,7 @@ impl Client {
         let mut events = vec![];
         for event in block.events().await?.iter() {
             if let Ok(event) = event?.as_root_event::<api::Event>() {
-                if let Some(event) = self.process_event(event).await? {
+                if let Some(event) = decode_api_event(event) {
                     events.push(event);
                 }
             }
@@ -49,32 +49,7 @@ impl Client {
         Ok(events)
     }
 
-    async fn process_event(&self, event: api::Event) -> Result<Option<Event>> {
-        match event {
-            api::Event::Identity(e) => self.process_identity_event(e).await,
-            _ => Ok(None),
-        }
-    }
-
-    async fn process_identity_event(&self, event: api::IdentityEvent) -> Result<Option<Event>> {
-        use api::IdentityEvent::*;
-        match event {
-            JudgementRequested { who, .. } => {
-                let (reg, _) = self.fetch_identity_of(&who).await?;
-                let info = reg.info;
-                let ids = decode_identity_info(info);
-                Ok(Some(Event::JudgementRequested(who, ids)))
-            },
-            // JudgementUnrequested { .. } => {}
-            // JudgementGiven { .. } => {}
-            // IdentitySet { .. } => {}
-            // IdentityCleared { .. } => {}
-            // IdentityKilled { .. } => {}
-            _ => Ok(None),
-        }
-    }
-
-    async fn fetch_identity_of(&self, id: &AccountId) -> Result<api::IdentityOf> {
+    pub async fn fetch_contact(&self, id: &AccountId) -> Result<Contact> {
         let query = api::storage()
             .identity()
             .identity_of(id);
@@ -87,7 +62,9 @@ impl Client {
             .await?;
 
         match identity {
-            Some(identity) => Ok(identity),
+            Some((reg, _)) => {
+                Ok(Contact::new(id.clone(), decode_identity_info(reg.info)))
+            },
             None => Err(anyhow!("Identity not found")),
         }
     }
@@ -97,19 +74,55 @@ impl Client {
 
 pub use subxt::utils::AccountId32 as AccountId;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Event {
-    JudgementRequested(AccountId, HashSet<Id>),
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct Contact {
+    pub id: AccountId,
+    pub fields: FieldMap,
 }
 
-pub type Id = (IdKey, IdValue);
+impl Contact {
+    pub fn new(id: AccountId, fields: FieldMap) -> Self {
+        Self { id, fields }
+    }
+}
 
-// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-// pub struct Id(pub IdKey, pub IdValue);
+//------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    JudgementRequested(AccountId),
+}
+
+fn decode_api_event(event: api::Event) -> Option<Event> {
+    match event {
+        api::Event::Identity(e) => decode_api_identity_event(e),
+        _ => None,
+    }
+}
+
+fn decode_api_identity_event(event: api::IdentityEvent) -> Option<Event> {
+    use api::IdentityEvent::*;
+    match event {
+        JudgementRequested { who, .. } => {
+            Some(Event::JudgementRequested(who))
+        },
+        // JudgementUnrequested { .. } => {}
+        // JudgementGiven { .. } => {}
+        // IdentitySet { .. } => {}
+        // IdentityCleared { .. } => {}
+        // IdentityKilled { .. } => {}
+        _ => None,
+    }
+}
+
+//------------------------------------------------------------------------------
+
+pub type FieldMap = HashMap<FieldKey, String>;
 
 // TODO: Add PgpFingerprint
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum IdKey {
+pub enum FieldKey {
     Display,
     Legal,
     Web,
@@ -121,32 +134,30 @@ pub enum IdKey {
     Discord,
 }
 
-pub type IdValue = String;
-
-fn decode_identity_info(fields: api::IdentityInfo) -> HashSet<Id> {
-    use IdKey::*;
-    let mut ids = HashSet::new();
-    decode_identity_field_into(Display, fields.display, &mut ids);
-    decode_identity_field_into(Legal, fields.legal, &mut ids);
-    decode_identity_field_into(Web, fields.web, &mut ids);
-    decode_identity_field_into(Matrix, fields.matrix, &mut ids);
-    decode_identity_field_into(Email, fields.email, &mut ids);
-    decode_identity_field_into(Image, fields.image, &mut ids);
-    decode_identity_field_into(Twitter, fields.twitter, &mut ids);
-    decode_identity_field_into(Github, fields.github, &mut ids);
-    decode_identity_field_into(Discord, fields.discord, &mut ids);
-    ids
+fn decode_identity_info(info: api::IdentityInfo) -> FieldMap {
+    use FieldKey::*;
+    let mut fields = HashMap::new();
+    decode_identity_field_into(Display, info.display, &mut fields);
+    decode_identity_field_into(Legal, info.legal, &mut fields);
+    decode_identity_field_into(Web, info.web, &mut fields);
+    decode_identity_field_into(Matrix, info.matrix, &mut fields);
+    decode_identity_field_into(Email, info.email, &mut fields);
+    decode_identity_field_into(Image, info.image, &mut fields);
+    decode_identity_field_into(Twitter, info.twitter, &mut fields);
+    decode_identity_field_into(Github, info.github, &mut fields);
+    decode_identity_field_into(Discord, info.discord, &mut fields);
+    fields
 }
 
-fn decode_identity_field_into(key: IdKey, value: api::Data, ids: &mut HashSet<Id>) {
+fn decode_identity_field_into(key: FieldKey, value: api::Data, fields: &mut FieldMap) {
     if let Some(s) = decode_string_data(value) {
-        ids.insert((key, s));
+        fields.insert(key, s);
     }
 }
 
-fn decode_string_data(d: api::Data) -> Option<String> {
+fn decode_string_data(data: api::Data) -> Option<String> {
     use api::Data::*;
-    match d {
+    match data {
         Raw0(b) => Some(string_from_bytes(&b)),
         Raw1(b) => Some(string_from_bytes(&b)),
         Raw2(b) => Some(string_from_bytes(&b)),

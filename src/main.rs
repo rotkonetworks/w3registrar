@@ -6,6 +6,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing::Level;
 use serde::Deserialize;
 use std::fs;
+use crate::node::Event;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -24,7 +25,14 @@ async fn process_events(client_config: node::ClientConfig) -> Result<()> {
 
     let events = client.fetch_events().await?;
     for event in events.iter() {
-        println!("{:#?}", event);
+        println!("{:#?}\n", event);
+
+        match event {
+            Event::JudgementRequested(who) => {
+                let contact = client.fetch_contact(who).await?;
+                println!("{:#?}", contact);
+            }
+        }
     }
 
     Ok(())
