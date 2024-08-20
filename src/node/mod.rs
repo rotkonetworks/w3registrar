@@ -9,44 +9,44 @@ use serde::Deserialize;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone)]
-pub struct Watcher {
-    client: api::Client,
+pub struct Client {
+    inner: api::Client,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct WatcherConfig {
+pub struct ClientConfig {
     pub endpoint: String,
     pub registrar_index: u32,
     pub keystore_path: String,
 }
 
-impl Watcher {
-    pub async fn with_config(config: WatcherConfig) -> Result<Self> {
-        let client = api::Client::from_url(config.endpoint).await?;
-        Ok(Self::new(client))
+impl Client {
+    pub async fn with_config(config: ClientConfig) -> Result<Self> {
+        Ok(Self::new(api::Client::from_url(config.endpoint).await?))
     }
 
-    fn new(client: api::Client) -> Self {
-        Self { client}
+    fn new(inner: api::Client) -> Self {
+        Self { inner }
     }
 
-    pub async fn run(&self) -> Result<()> {
+    // TODO: Return a stream.
+    pub async fn fetch_events(&self) -> Result<Vec<Event>> {
         // Get block 96
         // TODO: Figure out how to properly construct block hashes of the right type.
 
         let hash: H256 = "0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65".parse()?;
-        let block = self.client.blocks().at(hash).await?;
+        let block = self.inner.blocks().at(hash).await?;
 
-        let events = block.events().await?;
-        for event in events.iter() {
+        let mut events = vec![];
+        for event in block.events().await?.iter() {
             if let Ok(event) = event?.as_root_event::<api::Event>() {
                 if let Some(event) = self.process_event(event).await? {
-                    println!("{:#?}", event);
+                    events.push(event);
                 }
             }
         }
 
-        Ok(())
+        Ok(events)
     }
 
     async fn process_event(&self, event: api::Event) -> Result<Option<Event>> {
@@ -79,7 +79,7 @@ impl Watcher {
             .identity()
             .identity_of(id);
 
-        let identity = self.client
+        let identity = self.inner
             .storage()
             .at_latest()
             .await?
@@ -101,8 +101,6 @@ pub use subxt::utils::AccountId32 as AccountId;
 pub enum Event {
     JudgementRequested(AccountId, HashSet<Id>),
 }
-
-//------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Id(pub IdKey, pub IdValue);
