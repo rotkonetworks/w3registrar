@@ -16,7 +16,11 @@ async fn main() -> Result<()> {
 
     let config = Config::load_from("config.toml")?;
 
-    let client = node::Client::with_config(config.watcher).await?;
+    process_events(config.watcher).await
+}
+
+async fn process_events(client_config: node::ClientConfig) -> Result<()> {
+    let client = node::Client::with_config(client_config).await?;
 
     let events = client.fetch_events().await?;
     for event in events.iter() {
@@ -25,6 +29,8 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+
+//------------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
