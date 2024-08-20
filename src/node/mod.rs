@@ -2,7 +2,7 @@ mod substrate;
 mod api;
 
 use subxt::{OnlineClient, SubstrateConfig};
-use subxt::utils::{AccountId32, H256};
+use subxt::utils::H256;
 use anyhow::anyhow;
 use anyhow::Result;
 use serde::Deserialize;
@@ -43,42 +43,41 @@ impl Watcher {
         let events = block.events().await?;
         for event in events.iter() {
             if let Ok(event) = event?.as_root_event::<api::Event>() {
-                self.handle_event(event).await?;
+                if let Some(event) = self.process_event(event).await? {
+                    println!("{:#?}", event);
+                }
             }
         }
 
         Ok(())
     }
 
-    async fn handle_event(&self, event: api::Event) -> Result<()> {
+    async fn process_event(&self, event: api::Event) -> Result<Option<Event>> {
         match event {
-            api::Event::Identity(e) => self.handle_identity_event(e).await,
-            _ => Ok(()),
+            api::Event::Identity(e) => self.process_identity_event(e).await,
+            _ => Ok(None),
         }
     }
 
-    async fn handle_identity_event(&self, event: api::IdentityEvent) -> Result<()> {
+    async fn process_identity_event(&self, event: api::IdentityEvent) -> Result<Option<Event>> {
         use api::IdentityEvent::*;
         match event {
             JudgementRequested { who, .. } => {
                 let (reg, _) = self.fetch_identity_of(&who).await?;
                 let info = reg.info;
                 let ids = decode_identity_info(info);
-                let req = JudgementRequest::new(who, ids);
-
-                println!("{:#?}", req);
-            }
-            JudgementUnrequested { .. } => {}
-            JudgementGiven { .. } => {}
-            IdentitySet { .. } => {}
-            IdentityCleared { .. } => {}
-            IdentityKilled { .. } => {}
-            _ => {}
-        };
-        Ok(())
+                Ok(Some(Event::JudgementRequested(who, ids)))
+            },
+            // JudgementUnrequested { .. } => {}
+            // JudgementGiven { .. } => {}
+            // IdentitySet { .. } => {}
+            // IdentityCleared { .. } => {}
+            // IdentityKilled { .. } => {}
+            _ => Ok(None),
+        }
     }
 
-    async fn fetch_identity_of(&self, id: &AccountId32) -> Result<api::IdentityOf> {
+    async fn fetch_identity_of(&self, id: &AccountId) -> Result<api::IdentityOf> {
         let query = api::storage()
             .identity()
             .identity_of(id);
@@ -99,26 +98,21 @@ impl Watcher {
 
 //------------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
-struct JudgementRequest {
-    who: AccountId32,
-    ids: HashSet<Id>,
-}
+pub use subxt::utils::AccountId32 as AccountId;
 
-impl JudgementRequest {
-    fn new(who: AccountId32, ids: HashSet<Id>) -> Self {
-        Self { who, ids }
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    JudgementRequested(AccountId, HashSet<Id>),
 }
 
 //------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct Id(IdKey, IdValue);
+pub struct Id(pub IdKey, pub IdValue);
 
 // TODO: Add PgpFingerprint
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-enum IdKey {
+pub enum IdKey {
     Display,
     Legal,
     Web,
@@ -130,7 +124,7 @@ enum IdKey {
     Discord,
 }
 
-type IdValue = String;
+pub type IdValue = String;
 
 fn decode_identity_info(fields: api::IdentityInfo) -> HashSet<Id> {
     use IdKey::*;
