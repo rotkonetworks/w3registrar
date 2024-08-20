@@ -1,10 +1,11 @@
 mod substrate;
+mod api;
 
-use substrate::api::Event;
-use substrate::api::identity::storage::types::identity_of::IdentityOf;
-use substrate::api::runtime_types::pallet_identity::types::Data;
-use substrate::api::runtime_types::people_rococo_runtime::people::IdentityInfo;
-use substrate::api::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
+use api::Event;
+use api::IdentityOf;
+use api::Data;
+use api::IdentityInfo;
+use api::IdentityEvent;
 
 use subxt::{OnlineClient, SubstrateConfig};
 use subxt::utils::{AccountId32, H256};
@@ -87,7 +88,7 @@ impl Watcher {
     }
 
     async fn fetch_identity_of(&self, id: &AccountId32) -> Result<IdentityOf> {
-        let query = substrate::api::storage()
+        let query = api::storage()
             .identity()
             .identity_of(id);
 
@@ -162,7 +163,7 @@ fn decode_identity_field_into(key: IdKey, value: Data, ids: &mut HashSet<Id>) {
 }
 
 fn decode_string_data(d: Data) -> Option<String> {
-    use substrate::api::runtime_types::pallet_identity::types::Data::*;
+    use Data::*;
     match d {
         Raw0(b) => Some(string_from_bytes(&b)),
         Raw1(b) => Some(string_from_bytes(&b)),
