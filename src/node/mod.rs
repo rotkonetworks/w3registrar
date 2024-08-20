@@ -102,8 +102,10 @@ pub enum Event {
     JudgementRequested(AccountId, HashSet<Id>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Id(pub IdKey, pub IdValue);
+pub type Id = (IdKey, IdValue);
+
+// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+// pub struct Id(pub IdKey, pub IdValue);
 
 // TODO: Add PgpFingerprint
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -138,7 +140,7 @@ fn decode_identity_info(fields: api::IdentityInfo) -> HashSet<Id> {
 
 fn decode_identity_field_into(key: IdKey, value: api::Data, ids: &mut HashSet<Id>) {
     if let Some(s) = decode_string_data(value) {
-        ids.insert(Id(key, s));
+        ids.insert((key, s));
     }
 }
 
