@@ -1,7 +1,6 @@
 mod substrate;
 mod api;
 
-use subxt::{OnlineClient, SubstrateConfig};
 use subxt::utils::H256;
 use anyhow::anyhow;
 use anyhow::Result;
@@ -9,11 +8,9 @@ use serde::Deserialize;
 
 use std::collections::HashSet;
 
-type Client = OnlineClient<SubstrateConfig>;
-
 #[derive(Debug, Clone)]
 pub struct Watcher {
-    client: Client,
+    client: api::Client,
 }
 
 #[derive(Debug, Deserialize)]
@@ -25,11 +22,11 @@ pub struct WatcherConfig {
 
 impl Watcher {
     pub async fn with_config(config: WatcherConfig) -> Result<Self> {
-        let client = Client::from_url(config.endpoint).await?;
+        let client = api::Client::from_url(config.endpoint).await?;
         Ok(Self::new(client))
     }
 
-    fn new(client: Client) -> Self {
+    fn new(client: api::Client) -> Self {
         Self { client}
     }
 
