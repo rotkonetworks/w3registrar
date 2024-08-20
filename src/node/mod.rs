@@ -1,12 +1,6 @@
 mod substrate;
 mod api;
 
-use api::Event;
-use api::IdentityOf;
-use api::Data;
-use api::IdentityInfo;
-use api::IdentityEvent;
-
 use subxt::{OnlineClient, SubstrateConfig};
 use subxt::utils::{AccountId32, H256};
 use anyhow::anyhow;
@@ -48,7 +42,7 @@ impl Watcher {
 
         let events = block.events().await?;
         for event in events.iter() {
-            if let Ok(event) = event?.as_root_event::<Event>() {
+            if let Ok(event) = event?.as_root_event::<api::Event>() {
                 self.handle_event(event).await?;
             }
         }
@@ -56,15 +50,15 @@ impl Watcher {
         Ok(())
     }
 
-    async fn handle_event(&self, event: Event) -> Result<()> {
+    async fn handle_event(&self, event: api::Event) -> Result<()> {
         match event {
-            Event::Identity(e) => self.handle_identity_event(e).await,
+            api::Event::Identity(e) => self.handle_identity_event(e).await,
             _ => Ok(()),
         }
     }
 
-    async fn handle_identity_event(&self, event: IdentityEvent) -> Result<()> {
-        use IdentityEvent::*;
+    async fn handle_identity_event(&self, event: api::IdentityEvent) -> Result<()> {
+        use api::IdentityEvent::*;
         match event {
             JudgementRequested { who, .. } => {
                 let (reg, _) = self.fetch_identity_of(&who).await?;
@@ -84,7 +78,7 @@ impl Watcher {
         Ok(())
     }
 
-    async fn fetch_identity_of(&self, id: &AccountId32) -> Result<IdentityOf> {
+    async fn fetch_identity_of(&self, id: &AccountId32) -> Result<api::IdentityOf> {
         let query = api::storage()
             .identity()
             .identity_of(id);
@@ -138,7 +132,7 @@ enum IdKey {
 
 type IdValue = String;
 
-fn decode_identity_info(fields: IdentityInfo) -> HashSet<Id> {
+fn decode_identity_info(fields: api::IdentityInfo) -> HashSet<Id> {
     use IdKey::*;
     let mut ids = HashSet::new();
     decode_identity_field_into(Display, fields.display, &mut ids);
@@ -153,14 +147,14 @@ fn decode_identity_info(fields: IdentityInfo) -> HashSet<Id> {
     ids
 }
 
-fn decode_identity_field_into(key: IdKey, value: Data, ids: &mut HashSet<Id>) {
+fn decode_identity_field_into(key: IdKey, value: api::Data, ids: &mut HashSet<Id>) {
     if let Some(s) = decode_string_data(value) {
         ids.insert(Id(key, s));
     }
 }
 
-fn decode_string_data(d: Data) -> Option<String> {
-    use Data::*;
+fn decode_string_data(d: api::Data) -> Option<String> {
+    use api::Data::*;
     match d {
         Raw0(b) => Some(string_from_bytes(&b)),
         Raw1(b) => Some(string_from_bytes(&b)),
