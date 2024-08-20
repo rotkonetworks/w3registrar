@@ -16,13 +16,14 @@ async fn main() -> Result<()> {
 
     let config = Config::load_from("config.toml")?;
 
-    node::run_watcher(config.watcher).await
+    let watcher = node::Watcher::with_config(config.watcher).await?;
+    watcher.run().await
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub matrix: matrix::Config,
-    pub watcher: node::Config,
+    pub watcher: node::WatcherConfig,
 }
 
 impl Config {

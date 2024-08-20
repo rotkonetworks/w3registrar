@@ -15,30 +15,27 @@ use serde::Deserialize;
 
 use std::collections::HashSet;
 
-pub async fn run_watcher(config: Config) -> Result<()> {
-    let client = Client::from_url(config.endpoint).await?;
-    let watcher = Watcher::new(client);
-    watcher.run().await
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Config {
-    pub endpoint: String,
-    pub registrar_index: u32,
-    pub keystore_path: String,
-}
-
-//------------------------------------------------------------------------------
-
-pub type Client = OnlineClient<SubstrateConfig>;
+type Client = OnlineClient<SubstrateConfig>;
 
 #[derive(Debug, Clone)]
 pub struct Watcher {
     client: Client,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct WatcherConfig {
+    pub endpoint: String,
+    pub registrar_index: u32,
+    pub keystore_path: String,
+}
+
 impl Watcher {
-    pub fn new(client: Client) -> Self {
+    pub async fn with_config(config: WatcherConfig) -> Result<Self> {
+        let client = Client::from_url(config.endpoint).await?;
+        Ok(Self::new(client))
+    }
+
+    fn new(client: Client) -> Self {
         Self { client}
     }
 
