@@ -1,5 +1,5 @@
 mod matrix;
-mod chain;
+mod node;
 
 use anyhow::Result;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -16,13 +16,13 @@ async fn main() -> Result<()> {
 
     let config = Config::load_from("config.toml")?;
 
-    chain::run_watcher(config.watcher).await
+    node::run_watcher(config.watcher).await
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub matrix: matrix::Config,
-    pub watcher: chain::Config,
+    pub watcher: node::Config,
 }
 
 impl Config {
