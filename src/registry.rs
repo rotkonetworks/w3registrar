@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::node;
-use crate::node::{AccountId, Client, Command, Field, FieldKey, FieldMap, MaxFee};
+use crate::node::{AccountId, Field, FieldKey, FieldMap, MaxFee};
 
 use anyhow::Result;
 use uuid::Uuid;
@@ -48,54 +48,33 @@ impl Message {
 #[derive(Debug, Clone)]
 pub struct Judgement;
 
-// -> WEBAPP
-
-pub async fn submit(node: &Client, req: JudgementRequest) -> Result<()> {
-    node.exec(Command::Batch(vec![
-        Command::SetIdentity(req.who, req.fields),
-        Command::RequestJudgement(req.max_fee),
-    ])).await?;
-
-    Ok(())
-}
-
 // -> ADAPTERS
 
 pub async fn verify(msg: Message) -> Result<()> {
     if let Some(who) = get_account_id_for(msg.as_challenge()).await? {
         save(Event::FieldWasVerified(who, msg.source_key())).await?;
     }
-
     Ok(())
 }
 
 // -> NODE
 
-pub async fn handle_node_event(event: node::Event, node: &Client) -> Result<()> {
+pub async fn handle_node_event(event: node::Event) -> Result<()> {
     use node::Event::*;
-
     match event {
-        JudgementRequested(who) => {
-            let contact = node.fetch_contact(&who).await?;
-
+        JudgementRequested(who, fields) => {
             let mut challenges: FieldMap = HashMap::new();
-            for k in contact.fields.keys() {
+            for k in fields.keys() {
                 challenges.insert(*k, generate_challenge());
             }
-
             save(Event::GeneratedChallenges(who, challenges)).await?;
         }
     };
-
     Ok(())
 }
 
-fn generate_challenge() -> String {
-    Uuid::new_v4().to_string()
-}
-
 //------------------------------------------------------------------------------
-// DATABASE
+// PRIVATE
 
 async fn save(_event: Event) -> Result<()> {
     todo!()
@@ -103,4 +82,8 @@ async fn save(_event: Event) -> Result<()> {
 
 async fn get_account_id_for(_challenge: Challenge) -> Result<Option<AccountId>> {
     todo!()
+}
+
+fn generate_challenge() -> String {
+    Uuid::new_v4().to_string()
 }

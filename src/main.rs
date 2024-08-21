@@ -26,13 +26,6 @@ async fn run_watcher(config: node::ClientConfig) -> Result<()> {
     let events = client.fetch_events().await?;
     for event in events.iter() {
         println!("{:#?}\n", event);
-
-        match event {
-            node::Event::JudgementRequested(who) => {
-                let contact = client.fetch_contact(who).await?;
-                println!("{:#?}", contact);
-            }
-        }
     }
 
     Ok(())
