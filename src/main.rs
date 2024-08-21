@@ -1,5 +1,6 @@
 mod matrix;
 mod node;
+mod registry;
 
 use anyhow::Result;
 use tracing_subscriber::fmt::format::FmtSpan;
