@@ -42,12 +42,13 @@ async fn process_event(event: node::Event, client: &node::Client) -> Result<()> 
 
     match event {
         JudgementRequested(who) => {
-            let fields = client.fetch_contact_details(&who).await?;
-            let mut challenges = FieldMap::new();
-            for k in fields.keys() {
-                challenges.insert(*k, generate_challenge());
+            if let Some(fields) = client.fetch_contact_details(&who).await? {
+                let mut challenges = FieldMap::new();
+                for k in fields.keys() {
+                    challenges.insert(*k, generate_challenge());
+                }
+                registry::save(registry::Event::GeneratedChallenges(who, challenges)).await?;
             }
-            registry::save(registry::Event::GeneratedChallenges(who, challenges)).await?;
         }
     };
     Ok(())

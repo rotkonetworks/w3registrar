@@ -3,9 +3,8 @@
 mod substrate;
 mod api;
 
-use anyhow::anyhow;
-use anyhow::Result;
 use subxt::utils::H256;
+use anyhow::Result;
 use serde::Deserialize;
 
 use std::collections::HashMap;
@@ -58,7 +57,7 @@ impl Client {
         Ok(events)
     }
 
-    pub async fn fetch_contact_details(&self, id: &AccountId) -> Result<FieldMap> {
+    pub async fn fetch_contact_details(&self, id: &AccountId) -> Result<Option<FieldMap>> {
         let query = api::storage()
             .identity()
             .identity_of(id);
@@ -70,12 +69,9 @@ impl Client {
             .fetch(&query)
             .await?;
 
-        match identity {
-            Some((reg, _)) => {
-                Ok(decode_identity_info(reg.info))
-            },
-            None => Err(anyhow!("Identity not found")),
-        }
+        Ok(identity.map(|(reg, _)| {
+            decode_identity_info(reg.info)
+        }))
     }
 }
 
