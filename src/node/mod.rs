@@ -39,7 +39,7 @@ impl Client {
         Self { inner, registrar_index }
     }
 
-    pub async fn exec(&self, _cmd: &Command) -> Result<()> {
+    pub async fn exec(&self, _cmd: Command) -> Result<()> {
         todo!()
     }
 
@@ -146,6 +146,9 @@ impl Contact {
 //------------------------------------------------------------------------------
 
 pub type FieldMap = HashMap<FieldKey, String>;
+
+// TODO: Name?
+pub type Field = (FieldKey, String);
 
 // TODO: Add PgpFingerprint
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
