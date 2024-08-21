@@ -89,9 +89,11 @@ impl Contact {
 
 //------------------------------------------------------------------------------
 
+pub type RegistrarIndex = u32;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    JudgementRequested(AccountId),
+    JudgementRequested(AccountId, RegistrarIndex),
 }
 
 fn decode_api_event(event: api::Event) -> Option<Event> {
@@ -104,8 +106,8 @@ fn decode_api_event(event: api::Event) -> Option<Event> {
 fn decode_api_identity_event(event: api::IdentityEvent) -> Option<Event> {
     use api::IdentityEvent::*;
     match event {
-        JudgementRequested { who, .. } => {
-            Some(Event::JudgementRequested(who))
+        JudgementRequested { who, registrar_index } => {
+            Some(Event::JudgementRequested(who, registrar_index))
         },
         // JudgementUnrequested { .. } => {}
         // JudgementGiven { .. } => {}

@@ -28,7 +28,7 @@ async fn process_events(client_config: node::ClientConfig) -> Result<()> {
         println!("{:#?}\n", event);
 
         match event {
-            Event::JudgementRequested(who) => {
+            Event::JudgementRequested(who, _) => {
                 let contact = client.fetch_contact(who).await?;
                 println!("{:#?}", contact);
             }
