@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod substrate;
 mod api;
 
@@ -6,6 +8,14 @@ use anyhow::Result;
 use subxt::utils::H256;
 
 use std::collections::HashMap;
+
+pub use subxt::utils::AccountId32 as AccountId;
+
+pub type RegistrarIndex = u32;
+
+pub type MaxFee = f64;
+
+//------------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -19,6 +29,10 @@ impl Client {
 
     fn new(inner: api::Client) -> Self {
         Self { inner }
+    }
+
+    pub async fn exec(&self, _cmd: &Command) -> Result<()> {
+        todo!()
     }
 
     // TODO: Return a stream.
@@ -64,24 +78,12 @@ impl Client {
 
 //------------------------------------------------------------------------------
 
-pub use subxt::utils::AccountId32 as AccountId;
-
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct Contact {
-    pub id: AccountId,
-    pub fields: FieldMap,
+#[derive(Debug, Clone, PartialEq)]
+pub enum Command {
+    Batch(Vec<Self>),
+    SetIdentity(AccountId, FieldMap),
+    RequestJudgement(RegistrarIndex, MaxFee),
 }
-
-impl Contact {
-    pub fn new(id: AccountId, fields: FieldMap) -> Self {
-        Self { id, fields }
-    }
-}
-
-//------------------------------------------------------------------------------
-
-pub type RegistrarIndex = u32;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
@@ -107,6 +109,21 @@ fn decode_api_identity_event(event: api::IdentityEvent) -> Option<Event> {
         // IdentityCleared { .. } => {}
         // IdentityKilled { .. } => {}
         _ => None,
+    }
+}
+
+//------------------------------------------------------------------------------
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct Contact {
+    pub id: AccountId,
+    pub fields: FieldMap,
+}
+
+impl Contact {
+    pub fn new(id: AccountId, fields: FieldMap) -> Self {
+        Self { id, fields }
     }
 }
 
