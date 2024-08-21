@@ -11,6 +11,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 pub use subxt::utils::AccountId32 as AccountId;
+
 pub type RegistrarIndex = u32;
 pub type MaxFee = f64;
 
@@ -120,11 +121,18 @@ impl Client {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     RequestJudgement(AccountId, MaxFee, FieldMap),
+    ProvideJudgement(AccountId, Judgement),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     JudgementRequested(AccountId, FieldMap),
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum Judgement {
+    Good,
+    Bad,
 }
 
 //------------------------------------------------------------------------------

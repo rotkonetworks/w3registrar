@@ -7,6 +7,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing::Level;
 use serde::Deserialize;
 use std::fs;
+use crate::node::{Command, Judgement};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -16,18 +17,27 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::load_from("config.toml")?;
+    let client = node::Client::from_config(config.watcher).await?;
 
-    run_watcher(config.watcher).await
+    fetch_events(&client).await?;
+    provide_judgements(&client).await?;
+
+    Ok(())
 }
 
-async fn run_watcher(config: node::ClientConfig) -> Result<()> {
-    let client = node::Client::from_config(config).await?;
-
+async fn fetch_events(client: &node::Client) -> Result<()> {
     let events = client.fetch_events().await?;
-    for event in events.iter() {
-        println!("{:#?}\n", event);
+    for event in events.into_iter() {
+        registry::handle_node_event(event).await?;
     }
+    Ok(())
+}
 
+async fn provide_judgements(client: &node::Client) -> Result<()> {
+    let ids = registry::fetch_verified_identities().await?;
+    for id in ids.into_iter() {
+        client.exec(Command::ProvideJudgement(id.who, Judgement::Good)).await?;
+    }
     Ok(())
 }
 

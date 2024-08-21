@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::node;
-use crate::node::{AccountId, Field, FieldKey, FieldMap, MaxFee};
+use crate::node::{AccountId, Field, FieldKey, FieldMap, Judgement, MaxFee};
 
 use anyhow::Result;
 use uuid::Uuid;
@@ -13,6 +13,12 @@ pub struct JudgementRequest {
     pub who: AccountId,
     pub fields: FieldMap,
     pub max_fee: MaxFee,
+}
+
+#[derive(Debug, Clone)]
+pub struct Identity {
+    pub who: AccountId,
+    pub fields: FieldMap,
 }
 
 #[derive(Debug, Clone)]
@@ -45,10 +51,7 @@ impl Message {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Judgement;
-
-// -> ADAPTERS
+// FROM ADAPTERS
 
 pub async fn verify(msg: Message) -> Result<()> {
     if let Some(who) = get_account_id_for(msg.as_challenge()).await? {
@@ -57,27 +60,39 @@ pub async fn verify(msg: Message) -> Result<()> {
     Ok(())
 }
 
-// -> NODE
+// FROM NODE
 
 pub async fn handle_node_event(event: node::Event) -> Result<()> {
     use node::Event::*;
+
+    println!("handle {:#?}\n", event);
+
     match event {
         JudgementRequested(who, fields) => {
             let mut challenges: FieldMap = HashMap::new();
             for k in fields.keys() {
                 challenges.insert(*k, generate_challenge());
             }
-            save(Event::GeneratedChallenges(who, challenges)).await?;
+
+            let event = Event::GeneratedChallenges(who, challenges);
+            save(event).await?;
         }
     };
     Ok(())
 }
 
+// TO NODE
+
+pub async fn fetch_verified_identities() -> Result<Vec<Identity>> {
+    Ok(vec![])
+}
+
 //------------------------------------------------------------------------------
 // PRIVATE
 
-async fn save(_event: Event) -> Result<()> {
-    todo!()
+async fn save(event: Event) -> Result<()> {
+    println!("save {:#?}\n", event);
+    Ok(())
 }
 
 async fn get_account_id_for(_challenge: Challenge) -> Result<Option<AccountId>> {
