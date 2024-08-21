@@ -6,29 +6,37 @@ mod api;
 use anyhow::anyhow;
 use anyhow::Result;
 use subxt::utils::H256;
+use serde::Deserialize;
 
 use std::collections::HashMap;
 
 pub use subxt::utils::AccountId32 as AccountId;
-
 pub type RegistrarIndex = u32;
-
 pub type MaxFee = f64;
 
 //------------------------------------------------------------------------------
 
+#[derive(Debug, Deserialize)]
+pub struct ClientConfig {
+    pub endpoint: String,
+    pub registrar_index: RegistrarIndex,
+    pub keystore_path: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Client {
     inner: api::Client,
+    registrar_index: RegistrarIndex,
 }
 
 impl Client {
-    pub async fn from_url(url: &str) -> Result<Self> {
-        Ok(Self::new(api::Client::from_url(url).await?))
+    pub async fn from_config(config: ClientConfig) -> Result<Self> {
+        let inner = api::Client::from_url(config.endpoint).await?;
+        Ok(Self::new(inner, config.registrar_index))
     }
 
-    fn new(inner: api::Client) -> Self {
-        Self { inner }
+    pub fn new(inner: api::Client, registrar_index: RegistrarIndex) -> Self {
+        Self { inner, registrar_index }
     }
 
     pub async fn exec(&self, _cmd: &Command) -> Result<()> {
@@ -46,7 +54,7 @@ impl Client {
         let mut events = vec![];
         for event in block.events().await?.iter() {
             if let Ok(event) = event?.as_root_event::<api::Event>() {
-                if let Some(event) = decode_api_event(event) {
+                if let Some(event) = self.decode_api_event(event) {
                     events.push(event);
                 }
             }
@@ -76,40 +84,48 @@ impl Client {
     }
 }
 
+// PRIVATE
+
+impl Client {
+    fn decode_api_event(&self, event: api::Event) -> Option<Event> {
+        match event {
+            api::Event::Identity(e) => self.decode_api_identity_event(e),
+            _ => None,
+        }
+    }
+
+    fn decode_api_identity_event(&self, event: api::IdentityEvent) -> Option<Event> {
+        use api::IdentityEvent::*;
+        match event {
+            JudgementRequested { who, registrar_index } => {
+                if registrar_index == self.registrar_index {
+                    Some(Event::JudgementRequested(who))
+                } else {
+                    None
+                }
+            },
+            // JudgementUnrequested { .. } => {}
+            // JudgementGiven { .. } => {}
+            // IdentitySet { .. } => {}
+            // IdentityCleared { .. } => {}
+            // IdentityKilled { .. } => {}
+            _ => None,
+        }
+    }
+}
+
 //------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Batch(Vec<Self>),
     SetIdentity(AccountId, FieldMap),
-    RequestJudgement(RegistrarIndex, MaxFee),
+    RequestJudgement(MaxFee),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    JudgementRequested(AccountId, RegistrarIndex),
-}
-
-fn decode_api_event(event: api::Event) -> Option<Event> {
-    match event {
-        api::Event::Identity(e) => decode_api_identity_event(e),
-        _ => None,
-    }
-}
-
-fn decode_api_identity_event(event: api::IdentityEvent) -> Option<Event> {
-    use api::IdentityEvent::*;
-    match event {
-        JudgementRequested { who, registrar_index } => {
-            Some(Event::JudgementRequested(who, registrar_index))
-        },
-        // JudgementUnrequested { .. } => {}
-        // JudgementGiven { .. } => {}
-        // IdentitySet { .. } => {}
-        // IdentityCleared { .. } => {}
-        // IdentityKilled { .. } => {}
-        _ => None,
-    }
+    JudgementRequested(AccountId),
 }
 
 //------------------------------------------------------------------------------

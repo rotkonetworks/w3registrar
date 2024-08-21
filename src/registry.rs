@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::node;
-use crate::node::{AccountId, FieldKey, FieldMap, RegistrarIndex};
+use crate::node::{AccountId, FieldKey, FieldMap};
 
 use anyhow::Result;
 

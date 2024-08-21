@@ -20,15 +20,15 @@ async fn main() -> Result<()> {
     run_watcher(config.watcher).await
 }
 
-async fn run_watcher(config: WatcherConfig) -> Result<()> {
-    let client = node::Client::from_url(config.endpoint.as_str()).await?;
+async fn run_watcher(config: node::ClientConfig) -> Result<()> {
+    let client = node::Client::from_config(config).await?;
 
     let events = client.fetch_events().await?;
     for event in events.iter() {
         println!("{:#?}\n", event);
 
         match event {
-            node::Event::JudgementRequested(who, _) => {
+            node::Event::JudgementRequested(who) => {
                 let contact = client.fetch_contact(who).await?;
                 println!("{:#?}", contact);
             }
@@ -44,15 +44,7 @@ async fn run_watcher(config: WatcherConfig) -> Result<()> {
 #[derive(Debug, Deserialize)]
 struct Config {
     pub matrix: matrix::Config,
-    pub watcher: WatcherConfig,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct WatcherConfig {
-    pub endpoint: String,
-    pub registrar_index: node::RegistrarIndex,
-    pub keystore_path: String,
+    pub watcher: node::ClientConfig,
 }
 
 impl Config {
