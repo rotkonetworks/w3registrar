@@ -49,7 +49,7 @@ impl Client {
         let mut events = vec![];
         for event in block.events().await?.iter() {
             if let Ok(event) = event?.as_root_event::<api::Event>() {
-                if let Some(event) = self.decode_api_event(event).await? {
+                if let Some(event) = self.decode_api_event(event) {
                     events.push(event);
                 }
             }
@@ -57,45 +57,8 @@ impl Client {
 
         Ok(events)
     }
-}
 
-// PRIVATE
-
-impl Client {
-    fn new(inner: api::Client, registrar_index: RegistrarIndex) -> Self {
-        Self { inner, registrar_index }
-    }
-
-    async fn decode_api_event(&self, event: api::Event) -> Result<Option<Event>> {
-        match event {
-            api::Event::Identity(e) => {
-                self.decode_api_identity_event(e).await
-            },
-            _ => Ok(None),
-        }
-    }
-
-    async fn decode_api_identity_event(&self, event: api::IdentityEvent) -> Result<Option<Event>> {
-        use api::IdentityEvent::*;
-         match event {
-            JudgementRequested { who, registrar_index } => {
-                if registrar_index == self.registrar_index {
-                    let fields = self.fetch_contact_details(&who).await?;
-                    Ok(Some(Event::JudgementRequested(who, fields)))
-                } else {
-                    Err(anyhow!("Invalid registrar index {}", registrar_index))
-                }
-            },
-            // JudgementUnrequested { .. } => {}
-            // JudgementGiven { .. } => {}
-            // IdentitySet { .. } => {}
-            // IdentityCleared { .. } => {}
-            // IdentityKilled { .. } => {}
-            _ => Ok(None),
-        }
-    }
-
-    async fn fetch_contact_details(&self, id: &AccountId) -> Result<FieldMap> {
+    pub async fn fetch_contact_details(&self, id: &AccountId) -> Result<FieldMap> {
         let query = api::storage()
             .identity()
             .identity_of(id);
@@ -116,17 +79,52 @@ impl Client {
     }
 }
 
+// PRIVATE
+
+impl Client {
+    fn new(inner: api::Client, registrar_index: RegistrarIndex) -> Self {
+        Self { inner, registrar_index }
+    }
+
+    fn decode_api_event(&self, event: api::Event) -> Option<Event> {
+        match event {
+            api::Event::Identity(e) => self.decode_api_identity_event(e),
+            _ => None,
+        }
+    }
+
+    fn decode_api_identity_event(&self, event: api::IdentityEvent) -> Option<Event> {
+        use api::IdentityEvent::*;
+         match event {
+            JudgementRequested { who, registrar_index } => {
+                if registrar_index == self.registrar_index {
+                    Some(Event::JudgementRequested(who))
+                } else {
+                    None
+                }
+            },
+            // JudgementUnrequested { .. } => {}
+            // JudgementGiven { .. } => {}
+            // IdentitySet { .. } => {}
+            // IdentityCleared { .. } => {}
+            // IdentityKilled { .. } => {}
+            _ => None,
+        }
+    }
+}
+
 //------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    RequestJudgement(AccountId, MaxFee, FieldMap),
+    Batch(Vec<Self>),
+    RequestJudgement(AccountId, MaxFee),
     ProvideJudgement(AccountId, Judgement),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    JudgementRequested(AccountId, FieldMap),
+    JudgementRequested(AccountId),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
