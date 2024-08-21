@@ -6,7 +6,6 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing::Level;
 use serde::Deserialize;
 use std::fs;
-use crate::node::Event;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,18 +16,18 @@ async fn main() -> Result<()> {
 
     let config = Config::load_from("config.toml")?;
 
-    process_events(config.watcher).await
+    run_watcher(config.watcher).await
 }
 
-async fn process_events(client_config: node::ClientConfig) -> Result<()> {
-    let client = node::Client::with_config(client_config).await?;
+async fn run_watcher(config: WatcherConfig) -> Result<()> {
+    let client = node::Client::from_url(config.endpoint.as_str()).await?;
 
     let events = client.fetch_events().await?;
     for event in events.iter() {
         println!("{:#?}\n", event);
 
         match event {
-            Event::JudgementRequested(who, _) => {
+            node::Event::JudgementRequested(who, _) => {
                 let contact = client.fetch_contact(who).await?;
                 println!("{:#?}", contact);
             }
@@ -40,10 +39,19 @@ async fn process_events(client_config: node::ClientConfig) -> Result<()> {
 
 //------------------------------------------------------------------------------
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
-pub struct Config {
+struct Config {
     pub matrix: matrix::Config,
-    pub watcher: node::ClientConfig,
+    pub watcher: WatcherConfig,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct WatcherConfig {
+    pub endpoint: String,
+    pub registrar_index: node::RegistrarIndex,
+    pub keystore_path: String,
 }
 
 impl Config {

@@ -3,17 +3,9 @@ mod api;
 
 use anyhow::anyhow;
 use anyhow::Result;
-use serde::Deserialize;
 use subxt::utils::H256;
 
 use std::collections::HashMap;
-
-#[derive(Debug, Deserialize)]
-pub struct ClientConfig {
-    pub endpoint: String,
-    pub registrar_index: u32,
-    pub keystore_path: String,
-}
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -21,8 +13,8 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn with_config(config: ClientConfig) -> Result<Self> {
-        Ok(Self::new(api::Client::from_url(config.endpoint).await?))
+    pub async fn from_url(url: &str) -> Result<Self> {
+        Ok(Self::new(api::Client::from_url(url).await?))
     }
 
     fn new(inner: api::Client) -> Self {
