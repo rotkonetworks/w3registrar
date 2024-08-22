@@ -13,20 +13,14 @@ pub type RegistrarIndex = u32;
 pub type MaxFee = f64;
 
 pub async fn run_watcher(config: ClientConfig) -> Result<()> {
-    // Create a client to use:
-    let api = api::Client::from_url(config.endpoint).await?;
+    let client = api::Client::from_url(config.endpoint).await?;
 
-    // Subscribe to all finalized blocks:
-    let mut blocks_sub = api.blocks().subscribe_finalized().await?;
+    let mut sub = client.blocks().subscribe_finalized().await?;
 
-    // For each block, print a bunch of information about it:
-    while let Some(block) = blocks_sub.next().await {
+    while let Some(block) = sub.next().await {
         let block = block?;
-
-        let number = block.header().number;
-        let hash = block.hash();
-
-        println!("Block #{}, {}", number, hash);
+        let block = decode_block(block, config.registrar_index).await?;
+        println!("{:#?}\n", block);
     }
 
     Ok(())
@@ -60,21 +54,7 @@ impl Client {
     pub async fn fetch_block(&self, hash: &str) -> Result<Block> {
         let hash = hash.parse::<H256>()?;
         let block = self.inner.blocks().at(hash).await?;
-
-        let mut events = vec![];
-        for event in block.events().await?.iter() {
-            if let Ok(event) = event?.as_root_event::<api::Event>() {
-                if let Some(event) = decode_api_event(event, self.registrar_index) {
-                    events.push(event);
-                }
-            }
-        }
-
-        Ok(Block {
-            number: block.number().into(),
-            hash: hash.to_string(),
-            events,
-        })
+        decode_block(block, self.registrar_index).await
     }
 }
 
@@ -110,6 +90,23 @@ impl Event {
             }
         }
     }
+}
+
+async fn decode_block(block: api::Block, ri: RegistrarIndex) -> Result<Block> {
+    let mut events = vec![];
+    for event in block.events().await?.iter() {
+        if let Ok(event) = event?.as_root_event::<api::Event>() {
+            if let Some(event) = decode_api_event(event, ri) {
+                events.push(event);
+            }
+        }
+    }
+
+    Ok(Block {
+        number: block.number().into(),
+        hash: block.hash().to_string(),
+        events,
+    })
 }
 
 fn decode_api_event(event: api::Event, ri: RegistrarIndex) -> Option<Event> {
