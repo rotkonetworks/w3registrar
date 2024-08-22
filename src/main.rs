@@ -51,11 +51,12 @@ async fn process_event(event: node::Event, client: &Client) -> Result<()> {
                 registry::save(registry::Event::GeneratedChallenges(who, challenges)).await?;
             }
         }
+        _ => {}
     };
     Ok(())
 }
 
-async fn provide_judgements(client: &node::Client) -> Result<()> {
+async fn provide_judgements(client: &Client) -> Result<()> {
     let ids = registry::fetch_verified_identities().await?;
     for id in ids.into_iter() {
         client.exec(Command::ProvideJudgement(id.who, Judgement::Good)).await?;

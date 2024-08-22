@@ -59,7 +59,7 @@ impl Client {
             events,
         })
     }
-    
+
     pub async fn fetch_contact_details(&self, id: &AccountId) -> Result<Option<FieldMap>> {
         let query = api::storage()
             .identity()
@@ -94,20 +94,35 @@ impl Client {
 
     fn decode_api_identity_event(&self, event: api::IdentityEvent) -> Option<Event> {
         use api::IdentityEvent::*;
-         match event {
-            JudgementRequested { who, registrar_index } => {
-                if registrar_index == self.registrar_index {
-                    Some(Event::JudgementRequested(who))
-                } else {
-                    None
-                }
-            },
-            // JudgementUnrequested { .. } => {}
-            // JudgementGiven { .. } => {}
-            // IdentitySet { .. } => {}
-            // IdentityCleared { .. } => {}
-            // IdentityKilled { .. } => {}
-            _ => None,
+        match event {
+            IdentitySet { who } => {
+                Some(Event::IdentitySet(who))
+            }
+
+            IdentityCleared { who, .. } => {
+                Some(Event::IdentityCleared(who))
+            }
+
+            IdentityKilled { who, .. } => {
+                Some(Event::IdentityKilled(who))
+            }
+
+            JudgementRequested { who, registrar_index }
+            if registrar_index == self.registrar_index => {
+                Some(Event::JudgementRequested(who))
+            }
+
+            JudgementUnrequested { who, registrar_index }
+            if registrar_index == self.registrar_index => {
+                Some(Event::JudgementUnrequested(who))
+            }
+
+            JudgementGiven { target, registrar_index }
+            if registrar_index == self.registrar_index => {
+                Some(Event::JudgementGiven(target))
+            }
+
+            _ => None
         }
     }
 }
@@ -130,7 +145,12 @@ pub enum Command {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
+    IdentitySet(AccountId),
+    IdentityCleared(AccountId),
+    IdentityKilled(AccountId),
     JudgementRequested(AccountId),
+    JudgementUnrequested(AccountId),
+    JudgementGiven(AccountId),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
