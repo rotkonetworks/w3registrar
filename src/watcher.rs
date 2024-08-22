@@ -2,7 +2,7 @@
 
 use crate::{repo, node};
 use crate::node::{BlockHash, Client, RegistrarIndex};
-use crate::repo::{Block, Event};
+use crate::repo::{Block, Db, Event};
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -15,25 +15,28 @@ pub struct Config {
     pub keystore_path: String,
 }
 
-pub async fn run(cfg: Config) -> Result<()> {
+pub async fn run(cfg: Config, db: &Db) -> Result<()> {
     let client = Client::from_url(cfg.endpoint).await?;
 
     let mut sub = client.blocks().subscribe_finalized().await?;
 
-    let mut last_hash = repo::get_last_block_hash().await?;
+    let mut last_hash = repo::get_last_block_hash(&db).await?;
 
     while let Some(block) = sub.next().await {
         let block = block?;
 
         if let Some(end_hash) = last_hash {
-            info!("Fetching previous blocks");
+            info!("Fetching backwards to block {:?}", end_hash);
+
+            let start_hash = block.header().parent_hash;
 
             let client = client.clone();
-            let start_hash = block.header().parent_hash;
+            let db = db.clone();
 
             tokio::spawn(async move {
                 process_blocks_in_range(
                     &client,
+                    &db,
                     cfg.registrar_index,
                     start_hash,
                     end_hash
@@ -45,6 +48,8 @@ pub async fn run(cfg: Config) -> Result<()> {
 
         let block = decode_block(&block, cfg.registrar_index).await?;
         warn!("Received {:#?}", block);
+
+        repo::save_block(db, &block).await?;
     }
 
     Ok(())
@@ -61,6 +66,7 @@ pub async fn fetch_block(cfg: Config, hash: &str) -> Result<Block> {
 
 async fn process_blocks_in_range(
     client: &Client,
+    db: &Db,
     ri: RegistrarIndex,
     start_hash: BlockHash,
     end_hash: BlockHash
@@ -73,7 +79,10 @@ async fn process_blocks_in_range(
         let block = client.at(current_hash).await?;
         let parent_hash = block.header().parent_hash;
 
-        info!("Fetched {:#?}", decode_block(&block, ri).await?);
+        let block = decode_block(&block, ri).await?;
+        info!("Fetched {:#?}", block);
+
+        repo::save_block(db, &block).await?;
 
         // if parent_hash == block.hash() {
         //     info!("Reached the genesis block");

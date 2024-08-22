@@ -4,6 +4,12 @@ use crate::node::{AccountId, BlockHash, BlockNumber};
 
 use anyhow::Result;
 
+pub use tokio_rusqlite::Connection as Db;
+use tokio_rusqlite::params;
+use tracing::info;
+
+const DB_SCHEMA: &str = include_str!("db_schema.sql");
+
 #[derive(Debug, Clone)]
 pub struct Block {
     pub number: BlockNumber,
@@ -91,6 +97,17 @@ impl AccountState {
 
 //------------------------------------------------------------------------------
 
+pub async fn open_db(path: &str) -> Result<Db> {
+    let db = Db::open(path).await?;
+
+    db.call(|db| {
+        db.execute(DB_SCHEMA, [])?;
+        Ok(())
+    }).await?;
+
+    Ok(db)
+}
+
 pub async fn process_block(block: Block) -> Result<()> {
     for event in block.events.into_iter() {
         handle_event(event, block.number).await?;
@@ -98,9 +115,31 @@ pub async fn process_block(block: Block) -> Result<()> {
     Ok(())
 }
 
-pub async fn get_last_block_hash() -> Result<Option<BlockHash>> {
-    let h = "0x34b869a8c2bbc55337a923e2e517851abe33ea06797292b05e2b79570f821c80".parse::<BlockHash>()?;
-    Ok(Some(h))
+pub async fn get_last_block_hash(db: &Db) -> Result<Option<BlockHash>> {
+    let opt_hash = db.call(|db| {
+        let mut st = db.prepare("select hash from blocks order by number desc limit 1")?;
+        let mut rows = st.query([])?;
+        info!("Got rows");
+        match rows.next()? {
+            None => Ok(None),
+            Some(row) => {
+                info!("Got first row");
+                let hash: String = row.get(0)?;
+                info!("{}", hash);
+                Ok(Some(hash))
+            }
+        }
+    }).await?;
+
+    match opt_hash {
+        None => Ok(None),
+        Some(hash) => {
+            Ok(Some(hash.parse::<BlockHash>()?))
+        },
+    }
+
+    // let h = "0x34b869a8c2bbc55337a923e2e517851abe33ea06797292b05e2b79570f821c80".parse::<BlockHash>()?;
+    // Ok(Some(h))
 }
 
 async fn handle_event(event: Event, source: BlockNumber) -> Result<()> {
@@ -126,8 +165,20 @@ async fn handle_event(event: Event, source: BlockNumber) -> Result<()> {
 //------------------------------------------------------------------------------
 // DB - WRITE
 
-async fn save_block(_block: &Block) -> Result<()> {
-    todo!()
+pub async fn save_block(db: &Db, block: &Block) -> Result<()> {
+    let block = block.clone();
+    // BlockHash::to_string() truncates the hash with ellipses.
+    let hash = format!("{:#?}", block.hash);
+
+    db.call(move |db| {
+        db.execute(
+            "insert or replace into blocks (number, hash, event_count) values (?1, ?2, ?3)",
+            params![block.number, hash, block.events.len()],
+        )?;
+        Ok(())
+    }).await?;
+
+    Ok(())
 }
 
 async fn save_account_state(_id: &AccountId, _state: AccountState) -> Result<()> {

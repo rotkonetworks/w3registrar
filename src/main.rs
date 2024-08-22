@@ -16,9 +16,11 @@ async fn main() -> Result<()> {
         .with_span_events(FmtSpan::CLOSE)
         .init();
 
-    let config = Config::load_from("config.toml")?;
 
-    watcher::run(config.watcher).await?;
+    let config = Config::load_from("config.toml")?;
+    let db = repo::open_db("/tmp/w3reg.sqlite").await?;
+
+    watcher::run(config.watcher, &db).await?;
 
     Ok(())
 }
