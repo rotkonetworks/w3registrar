@@ -1,8 +1,42 @@
 #![allow(dead_code)]
 
-use crate::watcher::{AccountId, Block, Event};
+use crate::watcher::AccountId;
 
 use anyhow::Result;
+
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub number: u64,
+    pub hash: String,
+    pub events: Vec<Event>,
+}
+
+//------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    IdentitySet(AccountId),
+    IdentityCleared(AccountId),
+    IdentityKilled(AccountId),
+    JudgementRequested(AccountId),
+    JudgementUnrequested(AccountId),
+    JudgementGiven(AccountId),
+}
+
+impl Event {
+    pub fn target(&self) -> &AccountId {
+        match self {
+            | Event::IdentitySet(id)
+            | Event::IdentityCleared(id)
+            | Event::IdentityKilled(id)
+            | Event::JudgementRequested(id)
+            | Event::JudgementUnrequested(id)
+            | Event::JudgementGiven(id) => {
+                id
+            }
+        }
+    }
+}
 
 //------------------------------------------------------------------------------
 
@@ -69,3 +103,4 @@ pub fn get_last_block_hash() -> Result<Option<String>> {
 pub fn get_pending_events() -> Result<Vec<Event>> {
     todo!()
 }
+

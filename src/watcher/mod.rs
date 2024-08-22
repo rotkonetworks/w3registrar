@@ -5,6 +5,8 @@ mod api;
 
 pub use api::AccountId;
 
+use crate::db::{Block, Event};
+
 use subxt::utils::H256;
 use anyhow::Result;
 use serde::Deserialize;
@@ -41,38 +43,6 @@ pub struct Config {
     pub endpoint: String,
     pub registrar_index: RegistrarIndex,
     pub keystore_path: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct Block {
-    pub number: u64,
-    pub hash: String,
-    pub events: Vec<Event>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Event {
-    IdentitySet(AccountId),
-    IdentityCleared(AccountId),
-    IdentityKilled(AccountId),
-    JudgementRequested(AccountId),
-    JudgementUnrequested(AccountId),
-    JudgementGiven(AccountId),
-}
-
-impl Event {
-    pub fn target(&self) -> &AccountId {
-        match self {
-            | Event::IdentitySet(id)
-            | Event::IdentityCleared(id)
-            | Event::IdentityKilled(id)
-            | Event::JudgementRequested(id)
-            | Event::JudgementUnrequested(id)
-            | Event::JudgementGiven(id) => {
-                id
-            }
-        }
-    }
 }
 
 async fn decode_block(block: api::Block, ri: RegistrarIndex) -> Result<Block> {
