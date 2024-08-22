@@ -1,6 +1,7 @@
 mod matrix;
 mod watcher;
 mod db;
+pub mod node;
 
 use anyhow::Result;
 use serde::Deserialize;

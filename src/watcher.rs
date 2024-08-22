@@ -1,20 +1,21 @@
 #![allow(dead_code)]
 
-mod substrate;
-mod api;
-
-pub use api::AccountId;
-
+use crate::node;
+use crate::node::{BlockHash, Client, RegistrarIndex};
 use crate::db::{Block, Event};
 
-use subxt::utils::H256;
 use anyhow::Result;
 use serde::Deserialize;
 
-pub type RegistrarIndex = u32;
+#[derive(Debug, Deserialize)]
+pub struct Config {
+    pub endpoint: String,
+    pub registrar_index: RegistrarIndex,
+    pub keystore_path: String,
+}
 
 pub async fn run(cfg: Config) -> Result<()> {
-    let client = api::Client::from_url(cfg.endpoint).await?;
+    let client = Client::from_url(cfg.endpoint).await?;
 
     let mut sub = client.blocks().subscribe_finalized().await?;
 
@@ -28,9 +29,9 @@ pub async fn run(cfg: Config) -> Result<()> {
 }
 
 pub async fn fetch_block(cfg: Config, hash: &str) -> Result<Block> {
-    let client = api::Client::from_url(cfg.endpoint).await?;
+    let client = Client::from_url(cfg.endpoint).await?;
 
-    let hash = hash.parse::<H256>()?;
+    let hash = hash.parse::<BlockHash>()?;
     let block = client.blocks().at(hash).await?;
 
     decode_block(block, cfg.registrar_index).await
@@ -38,17 +39,10 @@ pub async fn fetch_block(cfg: Config, hash: &str) -> Result<Block> {
 
 //------------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-pub struct Config {
-    pub endpoint: String,
-    pub registrar_index: RegistrarIndex,
-    pub keystore_path: String,
-}
-
-async fn decode_block(block: api::Block, ri: RegistrarIndex) -> Result<Block> {
+async fn decode_block(block: node::Block, ri: RegistrarIndex) -> Result<Block> {
     let mut events = vec![];
     for event in block.events().await?.iter() {
-        if let Ok(event) = event?.as_root_event::<api::Event>() {
+        if let Ok(event) = event?.as_root_event::<node::Event>() {
             if let Some(event) = decode_api_event(event, ri) {
                 events.push(event);
             }
@@ -62,15 +56,15 @@ async fn decode_block(block: api::Block, ri: RegistrarIndex) -> Result<Block> {
     })
 }
 
-fn decode_api_event(event: api::Event, ri: RegistrarIndex) -> Option<Event> {
+fn decode_api_event(event: node::Event, ri: RegistrarIndex) -> Option<Event> {
     match event {
-        api::Event::Identity(e) => decode_api_identity_event(e, ri),
+        node::Event::Identity(e) => decode_api_identity_event(e, ri),
         _ => None,
     }
 }
 
-fn decode_api_identity_event(event: api::IdentityEvent, ri: RegistrarIndex) -> Option<Event> {
-    use api::IdentityEvent::*;
+fn decode_api_identity_event(event: node::IdentityEvent, ri: RegistrarIndex) -> Option<Event> {
+    use node::IdentityEvent::*;
     match event {
         IdentitySet { who } => {
             Some(Event::IdentitySet(who))
