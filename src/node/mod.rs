@@ -153,6 +153,21 @@ pub enum Event {
     JudgementGiven(AccountId),
 }
 
+impl Event {
+    pub fn target(&self) -> &AccountId {
+        match self {
+            | Event::IdentitySet(id)
+            | Event::IdentityCleared(id)
+            | Event::IdentityKilled(id)
+            | Event::JudgementRequested(id)
+            | Event::JudgementUnrequested(id)
+            | Event::JudgementGiven(id) => {
+                id
+            }
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Judgement {
     Good,
