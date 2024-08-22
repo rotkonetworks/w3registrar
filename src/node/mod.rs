@@ -12,18 +12,27 @@ use serde::Deserialize;
 pub type RegistrarIndex = u32;
 pub type MaxFee = f64;
 
-pub async fn run_watcher(config: ClientConfig) -> Result<()> {
-    let client = api::Client::from_url(config.endpoint).await?;
+pub async fn run_watcher(cfg: ClientConfig) -> Result<()> {
+    let client = api::Client::from_url(cfg.endpoint).await?;
 
     let mut sub = client.blocks().subscribe_finalized().await?;
 
     while let Some(block) = sub.next().await {
         let block = block?;
-        let block = decode_block(block, config.registrar_index).await?;
+        let block = decode_block(block, cfg.registrar_index).await?;
         println!("{:#?}\n", block);
     }
 
     Ok(())
+}
+
+pub async fn fetch_block(cfg: ClientConfig, hash: &str) -> Result<Block> {
+    let client = api::Client::from_url(cfg.endpoint).await?;
+
+    let hash = hash.parse::<H256>()?;
+    let block = client.blocks().at(hash).await?;
+
+    decode_block(block, cfg.registrar_index).await
 }
 
 //------------------------------------------------------------------------------
@@ -34,31 +43,6 @@ pub struct ClientConfig {
     pub registrar_index: RegistrarIndex,
     pub keystore_path: String,
 }
-
-#[derive(Debug, Clone)]
-pub struct Client {
-    inner: api::Client,
-    registrar_index: RegistrarIndex,
-}
-
-impl Client {
-    fn new(inner: api::Client, registrar_index: RegistrarIndex) -> Self {
-        Self { inner, registrar_index }
-    }
-
-    pub async fn from_config(config: ClientConfig) -> Result<Self> {
-        let inner = api::Client::from_url(config.endpoint).await?;
-        Ok(Self::new(inner, config.registrar_index))
-    }
-
-    pub async fn fetch_block(&self, hash: &str) -> Result<Block> {
-        let hash = hash.parse::<H256>()?;
-        let block = self.inner.blocks().at(hash).await?;
-        decode_block(block, self.registrar_index).await
-    }
-}
-
-//------------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct Block {
