@@ -6,7 +6,6 @@ use anyhow::Result;
 
 pub use tokio_rusqlite::Connection as Db;
 use tokio_rusqlite::params;
-use tracing::info;
 
 const DB_SCHEMA: &str = include_str!("db_schema.sql");
 
@@ -119,13 +118,10 @@ pub async fn get_last_block_hash(db: &Db) -> Result<Option<BlockHash>> {
     let opt_hash = db.call(|db| {
         let mut st = db.prepare("select hash from blocks order by number desc limit 1")?;
         let mut rows = st.query([])?;
-        info!("Got rows");
         match rows.next()? {
             None => Ok(None),
             Some(row) => {
-                info!("Got first row");
                 let hash: String = row.get(0)?;
-                info!("{}", hash);
                 Ok(Some(hash))
             }
         }
