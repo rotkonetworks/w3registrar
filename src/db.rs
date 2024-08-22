@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 
-use crate::node::AccountId;
+use crate::node::{AccountId, BlockHash, BlockNumber};
 
 use anyhow::Result;
 
 #[derive(Debug, Clone)]
 pub struct Block {
-    pub number: u64,
-    pub hash: String,
+    pub number: BlockNumber,
+    pub hash: BlockHash,
     pub events: Vec<Event>,
 }
 
@@ -23,15 +23,38 @@ pub enum Event {
     JudgementGiven(AccountId),
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum EventTag {
+    IdentitySet,
+    IdentityCleared,
+    IdentityKilled,
+    JudgementRequested,
+    JudgementUnrequested,
+    JudgementGiven,
+}
+
 impl Event {
-    pub fn target(&self) -> &AccountId {
+    pub fn tag(&self) -> EventTag {
+        use Event::*;
         match self {
-            | Event::IdentitySet(id)
-            | Event::IdentityCleared(id)
-            | Event::IdentityKilled(id)
-            | Event::JudgementRequested(id)
-            | Event::JudgementUnrequested(id)
-            | Event::JudgementGiven(id) => {
+            IdentitySet(_) => EventTag::IdentitySet,
+            IdentityCleared(_) => EventTag::IdentityCleared,
+            IdentityKilled(_) => EventTag::IdentityKilled,
+            JudgementRequested(_) => EventTag::JudgementRequested,
+            JudgementUnrequested(_) => EventTag::JudgementUnrequested,
+            JudgementGiven(_) => EventTag::JudgementGiven,
+        }
+    }
+
+    pub fn target(&self) -> &AccountId {
+        use Event::*;
+        match self {
+            | IdentitySet(id)
+            | IdentityCleared(id)
+            | IdentityKilled(id)
+            | JudgementRequested(id)
+            | JudgementUnrequested(id)
+            | JudgementGiven(id) => {
                 id
             }
         }
@@ -55,52 +78,69 @@ impl Account {
 //------------------------------------------------------------------------------
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum AccountState {
-    IdentitySet,
-    IdentityCleared,
-    IdentityKilled,
-    JudgementRequested,
-    JudgementUnrequested,
-    JudgementGiven,
+pub struct AccountState {
+    pub tag: EventTag,
+    pub source: BlockNumber,
 }
 
-impl From<&Event> for AccountState {
-    fn from(e: &Event) -> Self {
-        use AccountState::*;
-        match e {
-            Event::IdentitySet(_) => IdentitySet,
-            Event::IdentityCleared(_) => IdentityCleared,
-            Event::IdentityKilled(_) => IdentityKilled,
-            Event::JudgementRequested(_) => JudgementRequested,
-            Event::JudgementUnrequested(_) => JudgementUnrequested,
-            Event::JudgementGiven(_) => JudgementGiven
-        }
+impl AccountState {
+    pub fn new(tag: EventTag, source: BlockNumber) -> Self {
+        Self { tag, source }
     }
 }
 
 //------------------------------------------------------------------------------
-// WRITE
 
-pub fn begin_transaction() {}
+pub async fn process_block(block: Block) -> Result<()> {
+    for event in block.events.into_iter() {
+        handle_event(event, block.number).await?;
+    }
+    Ok(())
+}
 
-pub fn end_transaction() {}
+pub async fn get_last_block_hash() -> Result<Option<BlockHash>> {
+    let h = "0x34b869a8c2bbc55337a923e2e517851abe33ea06797292b05e2b79570f821c80".parse::<BlockHash>()?;
+    Ok(Some(h))
+}
 
-pub fn save_block(_block: &Block) -> Result<()> {
+async fn handle_event(event: Event, source: BlockNumber) -> Result<()> {
+    let new_state = AccountState::new(event.tag(), source);
+
+    match get_account_state(event.target()).await? {
+        None => {
+            save_account_state(event.target(), new_state).await?;
+        }
+        Some(state) => {
+            // If this state change comes from a more recent block, keep it,
+            // otherwise discard it.
+            if source > state.source {
+                let state = AccountState::new(event.tag(), source);
+                save_account_state(event.target(), state).await?;
+            }
+        }
+    };
+
+    Ok(())
+}
+
+//------------------------------------------------------------------------------
+// DB - WRITE
+
+async fn save_block(_block: &Block) -> Result<()> {
     todo!()
 }
 
-pub fn set_account_state(_id: &AccountId, _state: AccountState) -> Result<()> {
+async fn save_account_state(_id: &AccountId, _state: AccountState) -> Result<()> {
     todo!()
 }
 
 //------------------------------------------------------------------------------
-// READ
+// DB - READ
 
-pub fn get_last_block_hash() -> Result<Option<String>> {
+async fn get_account_state(_id: &AccountId) -> Result<Option<AccountState>> {
     todo!()
 }
 
-pub fn get_pending_events() -> Result<Vec<Event>> {
+async fn get_pending_events() -> Result<Vec<Event>> {
     todo!()
 }
-

@@ -13,6 +13,8 @@ pub use subxt::utils::AccountId32 as AccountId;
 
 // TYPES
 
+pub type BlockNumber = u64;
+
 pub type RegistrarIndex = u32;
 
 pub type Client = OnlineClient<SubstrateConfig>;

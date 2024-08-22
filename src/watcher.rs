@@ -1,11 +1,12 @@
 #![allow(dead_code)]
 
-use crate::node;
+use crate::{db, node};
 use crate::node::{BlockHash, Client, RegistrarIndex};
 use crate::db::{Block, Event};
 
 use anyhow::Result;
 use serde::Deserialize;
+use tracing::{info, warn};
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -19,10 +20,31 @@ pub async fn run(cfg: Config) -> Result<()> {
 
     let mut sub = client.blocks().subscribe_finalized().await?;
 
+    let mut last_hash = db::get_last_block_hash().await?;
+
     while let Some(block) = sub.next().await {
         let block = block?;
-        let block = decode_block(block, cfg.registrar_index).await?;
-        println!("{:#?}\n", block);
+
+        if let Some(end_hash) = last_hash {
+            info!("Fetching previous blocks");
+
+            let client = client.clone();
+            let start_hash = block.header().parent_hash;
+
+            tokio::spawn(async move {
+                process_blocks_in_range(
+                    &client,
+                    cfg.registrar_index,
+                    start_hash,
+                    end_hash
+                ).await
+            });
+
+            last_hash = None;
+        }
+
+        let block = decode_block(&block, cfg.registrar_index).await?;
+        warn!("Received {:#?}", block);
     }
 
     Ok(())
@@ -34,12 +56,39 @@ pub async fn fetch_block(cfg: Config, hash: &str) -> Result<Block> {
     let hash = hash.parse::<BlockHash>()?;
     let block = client.blocks().at(hash).await?;
 
-    decode_block(block, cfg.registrar_index).await
+    decode_block(&block, cfg.registrar_index).await
+}
+
+async fn process_blocks_in_range(
+    client: &Client,
+    ri: RegistrarIndex,
+    start_hash: BlockHash,
+    end_hash: BlockHash
+) -> Result<()> {
+    let client = client.blocks();
+
+    let mut current_hash = start_hash;
+
+    while current_hash != end_hash {
+        let block = client.at(current_hash).await?;
+        let parent_hash = block.header().parent_hash;
+
+        info!("Fetched {:#?}", decode_block(&block, ri).await?);
+
+        // if parent_hash == block.hash() {
+        //     info!("Reached the genesis block");
+        //     break;
+        // }
+
+        current_hash = parent_hash;
+    }
+
+    Ok(())
 }
 
 //------------------------------------------------------------------------------
 
-async fn decode_block(block: node::Block, ri: RegistrarIndex) -> Result<Block> {
+async fn decode_block(block: &node::Block, ri: RegistrarIndex) -> Result<Block> {
     let mut events = vec![];
     for event in block.events().await?.iter() {
         if let Ok(event) = event?.as_root_event::<node::Event>() {
@@ -51,7 +100,7 @@ async fn decode_block(block: node::Block, ri: RegistrarIndex) -> Result<Block> {
 
     Ok(Block {
         number: block.number().into(),
-        hash: block.hash().to_string(),
+        hash: block.hash(),
         events,
     })
 }
