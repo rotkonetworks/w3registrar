@@ -12,3 +12,7 @@ pub use crate::node::substrate::api::runtime_types::pallet_identity::pallet::Eve
 pub use crate::node::substrate::api::identity::calls::types::request_judgement::MaxFee;
 
 pub type Client = OnlineClient<SubstrateConfig>;
+
+pub type Block = subxt::blocks::Block<SubstrateConfig, Client>;
+
+pub use subxt::utils::AccountId32 as AccountId;

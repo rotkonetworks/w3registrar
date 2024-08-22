@@ -2,7 +2,7 @@ mod matrix;
 mod node;
 mod registry;
 
-use crate::node::{Command, FieldMap, Judgement};
+use crate::node::{Block, Client, Command, FieldMap, Judgement};
 
 use anyhow::Result;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -19,23 +19,24 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::load_from("config.toml")?;
-    let client = node::Client::from_config(config.watcher).await?;
+    let client = Client::from_config(config.watcher).await?;
 
-    process_events(&client).await?;
+    // Get block 96
+    let block = client.fetch_block("0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65").await?;
+    process_block(&client, block).await?;
     provide_judgements(&client).await?;
 
     Ok(())
 }
 
-async fn process_events(client: &node::Client) -> Result<()> {
-    let events = client.fetch_events().await?;
-    for event in events.into_iter() {
+async fn process_block(client: &Client, block: Block) -> Result<()> {
+    for event in block.events.into_iter() {
         process_event(event, &client).await?;
     }
     Ok(())
 }
 
-async fn process_event(event: node::Event, client: &node::Client) -> Result<()> {
+async fn process_event(event: node::Event, client: &Client) -> Result<()> {
     use node::Event::*;
 
     println!("process {:#?}\n", event);

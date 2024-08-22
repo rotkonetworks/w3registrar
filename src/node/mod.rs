@@ -3,18 +3,19 @@
 mod substrate;
 mod api;
 
+pub use api::AccountId;
+
 use subxt::utils::H256;
 use anyhow::Result;
 use serde::Deserialize;
 
 use std::collections::HashMap;
 
-pub use subxt::utils::AccountId32 as AccountId;
-
 pub type RegistrarIndex = u32;
 pub type MaxFee = f64;
 
 //------------------------------------------------------------------------------
+
 
 #[derive(Debug, Deserialize)]
 pub struct ClientConfig {
@@ -39,10 +40,8 @@ impl Client {
         todo!()
     }
 
-    // TODO: Return a stream.
-    pub async fn fetch_events(&self) -> Result<Vec<Event>> {
-        // Get block 96
-        let hash: H256 = "0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65".parse()?;
+    pub async fn fetch_block(&self, hash: &str) -> Result<Block> {
+        let hash = hash.parse::<H256>()?;
         let block = self.inner.blocks().at(hash).await?;
 
         let mut events = vec![];
@@ -54,9 +53,13 @@ impl Client {
             }
         }
 
-        Ok(events)
+        Ok(Block {
+            number: block.number().into(),
+            hash: hash.to_string(),
+            events,
+        })
     }
-
+    
     pub async fn fetch_contact_details(&self, id: &AccountId) -> Result<Option<FieldMap>> {
         let query = api::storage()
             .identity()
@@ -110,6 +113,13 @@ impl Client {
 }
 
 //------------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub number: u64,
+    pub hash: String,
+    pub events: Vec<Event>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
