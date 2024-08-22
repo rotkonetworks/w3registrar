@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::node::{AccountId, Block, Event};
+use crate::watcher::{AccountId, Block, Event};
 
 use anyhow::Result;
 

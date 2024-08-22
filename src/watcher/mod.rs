@@ -10,9 +10,8 @@ use anyhow::Result;
 use serde::Deserialize;
 
 pub type RegistrarIndex = u32;
-pub type MaxFee = f64;
 
-pub async fn run_watcher(cfg: ClientConfig) -> Result<()> {
+pub async fn run(cfg: Config) -> Result<()> {
     let client = api::Client::from_url(cfg.endpoint).await?;
 
     let mut sub = client.blocks().subscribe_finalized().await?;
@@ -26,7 +25,7 @@ pub async fn run_watcher(cfg: ClientConfig) -> Result<()> {
     Ok(())
 }
 
-pub async fn fetch_block(cfg: ClientConfig, hash: &str) -> Result<Block> {
+pub async fn fetch_block(cfg: Config, hash: &str) -> Result<Block> {
     let client = api::Client::from_url(cfg.endpoint).await?;
 
     let hash = hash.parse::<H256>()?;
@@ -38,7 +37,7 @@ pub async fn fetch_block(cfg: ClientConfig, hash: &str) -> Result<Block> {
 //------------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
-pub struct ClientConfig {
+pub struct Config {
     pub endpoint: String,
     pub registrar_index: RegistrarIndex,
     pub keystore_path: String,

@@ -1,5 +1,5 @@
 mod matrix;
-mod node;
+mod watcher;
 mod db;
 
 use anyhow::Result;
@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
 
     let config = Config::load_from("config.toml")?;
 
-    node::run_watcher(config.watcher).await?;
+    watcher::run(config.watcher).await?;
 
     Ok(())
 }
@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
 #[derive(Debug, Deserialize)]
 struct Config {
     pub matrix: matrix::Config,
-    pub watcher: node::ClientConfig,
+    pub watcher: watcher::Config,
 }
 
 impl Config {
