@@ -15,6 +15,7 @@ subxt = "0.37.0"
 serde_json = "1.0.125"
 hex = "0.4.3"
 uuid = { version = "1.10.0", features = ["v4", "macro-diagnostics"] }
+tokio-rusqlite = "0.5.1"
 # Conflicts with tokio-rusqlite
 # ("failed to select a version for `libsqlite3-sys` which could resolve this conflict")
 #matrix-sdk = "0.7.1"
