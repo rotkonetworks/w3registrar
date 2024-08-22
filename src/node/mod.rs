@@ -14,8 +14,27 @@ use std::collections::HashMap;
 pub type RegistrarIndex = u32;
 pub type MaxFee = f64;
 
-//------------------------------------------------------------------------------
+pub async fn run_watcher(config: ClientConfig) -> Result<()> {
+    // Create a client to use:
+    let api = api::Client::from_url(config.endpoint).await?;
 
+    // Subscribe to all finalized blocks:
+    let mut blocks_sub = api.blocks().subscribe_finalized().await?;
+
+    // For each block, print a bunch of information about it:
+    while let Some(block) = blocks_sub.next().await {
+        let block = block?;
+
+        let number = block.header().number;
+        let hash = block.hash();
+
+        println!("Block #{}, {}", number, hash);
+    }
+
+    Ok(())
+}
+
+//------------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 pub struct ClientConfig {

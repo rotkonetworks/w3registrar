@@ -2,8 +2,6 @@ mod matrix;
 mod node;
 mod db;
 
-use crate::node::{Block, Client};
-
 use anyhow::Result;
 use serde::Deserialize;
 use std::fs;
@@ -18,26 +16,9 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::load_from("config.toml")?;
-    let client = Client::from_config(config.watcher).await?;
 
-    // Get block 96
-    let block = client.fetch_block("0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65").await?;
+    node::run_watcher(config.watcher).await?;
 
-    process_block(block).await?;
-
-    Ok(())
-}
-
-async fn process_block(block: Block) -> Result<()> {
-    db::begin_transaction();
-    {
-        db::save_block(&block)?;
-        for event in block.events.into_iter() {
-            println!("{:#?}\n", event);
-            db::set_account_state(event.target(), db::AccountState::from(&event))?;
-        }
-    }
-    db::end_transaction();
     Ok(())
 }
 

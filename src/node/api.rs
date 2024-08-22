@@ -10,6 +10,7 @@ pub use crate::node::substrate::api::runtime_types::pallet_identity::types::Data
 pub use crate::node::substrate::api::runtime_types::people_rococo_runtime::people::IdentityInfo;
 pub use crate::node::substrate::api::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
 pub use crate::node::substrate::api::identity::calls::types::request_judgement::MaxFee;
+pub use crate::node::substrate::api::Call;
 
 pub type Client = OnlineClient<SubstrateConfig>;
 
