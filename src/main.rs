@@ -1,5 +1,6 @@
 mod matrix;
 mod node;
+mod db;
 
 use crate::node::{Block, Client};
 
@@ -21,20 +22,22 @@ async fn main() -> Result<()> {
 
     // Get block 96
     let block = client.fetch_block("0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65").await?;
-    process_block(&client, block).await?;
+
+    process_block(block).await?;
 
     Ok(())
 }
 
-async fn process_block(client: &Client, block: Block) -> Result<()> {
-    for event in block.events.into_iter() {
-        process_event(event, &client).await?;
+async fn process_block(block: Block) -> Result<()> {
+    db::begin_transaction();
+    {
+        db::save_block(&block)?;
+        for event in block.events.into_iter() {
+            println!("{:#?}\n", event);
+            db::set_account_state(event.target(), db::AccountState::from(&event))?;
+        }
     }
-    Ok(())
-}
-
-async fn process_event(event: node::Event, _client: &Client) -> Result<()> {
-    println!("{:#?}\n", event);
+    db::end_transaction();
     Ok(())
 }
 
