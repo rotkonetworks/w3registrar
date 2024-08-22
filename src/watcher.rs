@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
-use crate::{db, node};
+use crate::{repo, node};
 use crate::node::{BlockHash, Client, RegistrarIndex};
-use crate::db::{Block, Event};
+use crate::repo::{Block, Event};
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -20,7 +20,7 @@ pub async fn run(cfg: Config) -> Result<()> {
 
     let mut sub = client.blocks().subscribe_finalized().await?;
 
-    let mut last_hash = db::get_last_block_hash().await?;
+    let mut last_hash = repo::get_last_block_hash().await?;
 
     while let Some(block) = sub.next().await {
         let block = block?;

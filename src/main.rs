@@ -1,6 +1,6 @@
 mod matrix;
 mod watcher;
-mod db;
+mod repo;
 pub mod node;
 
 use anyhow::Result;
