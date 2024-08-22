@@ -1,4 +1,4 @@
-mod matrix;
+// mod matrix;
 mod watcher;
 mod repo;
 pub mod node;
@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Config {
-    pub matrix: matrix::Config,
+    // pub matrix: matrix::Config,
     pub watcher: watcher::Config,
 }
 
