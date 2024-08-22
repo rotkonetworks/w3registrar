@@ -48,6 +48,10 @@ pub struct Client {
 }
 
 impl Client {
+    fn new(inner: api::Client, registrar_index: RegistrarIndex) -> Self {
+        Self { inner, registrar_index }
+    }
+
     pub async fn from_config(config: ClientConfig) -> Result<Self> {
         let inner = api::Client::from_url(config.endpoint).await?;
         Ok(Self::new(inner, config.registrar_index))
@@ -60,7 +64,7 @@ impl Client {
         let mut events = vec![];
         for event in block.events().await?.iter() {
             if let Ok(event) = event?.as_root_event::<api::Event>() {
-                if let Some(event) = self.decode_api_event(event) {
+                if let Some(event) = decode_api_event(event, self.registrar_index) {
                     events.push(event);
                 }
             }
@@ -71,55 +75,6 @@ impl Client {
             hash: hash.to_string(),
             events,
         })
-    }
-}
-
-// PRIVATE
-
-impl Client {
-    fn new(inner: api::Client, registrar_index: RegistrarIndex) -> Self {
-        Self { inner, registrar_index }
-    }
-
-    fn decode_api_event(&self, event: api::Event) -> Option<Event> {
-        match event {
-            api::Event::Identity(e) => self.decode_api_identity_event(e),
-            _ => None,
-        }
-    }
-
-    fn decode_api_identity_event(&self, event: api::IdentityEvent) -> Option<Event> {
-        use api::IdentityEvent::*;
-        match event {
-            IdentitySet { who } => {
-                Some(Event::IdentitySet(who))
-            }
-
-            IdentityCleared { who, .. } => {
-                Some(Event::IdentityCleared(who))
-            }
-
-            IdentityKilled { who, .. } => {
-                Some(Event::IdentityKilled(who))
-            }
-
-            JudgementRequested { who, registrar_index }
-            if registrar_index == self.registrar_index => {
-                Some(Event::JudgementRequested(who))
-            }
-
-            JudgementUnrequested { who, registrar_index }
-            if registrar_index == self.registrar_index => {
-                Some(Event::JudgementUnrequested(who))
-            }
-
-            JudgementGiven { target, registrar_index }
-            if registrar_index == self.registrar_index => {
-                Some(Event::JudgementGiven(target))
-            }
-
-            _ => None
-        }
     }
 }
 
@@ -154,5 +109,46 @@ impl Event {
                 id
             }
         }
+    }
+}
+
+fn decode_api_event(event: api::Event, ri: RegistrarIndex) -> Option<Event> {
+    match event {
+        api::Event::Identity(e) => decode_api_identity_event(e, ri),
+        _ => None,
+    }
+}
+
+fn decode_api_identity_event(event: api::IdentityEvent, ri: RegistrarIndex) -> Option<Event> {
+    use api::IdentityEvent::*;
+    match event {
+        IdentitySet { who } => {
+            Some(Event::IdentitySet(who))
+        }
+
+        IdentityCleared { who, .. } => {
+            Some(Event::IdentityCleared(who))
+        }
+
+        IdentityKilled { who, .. } => {
+            Some(Event::IdentityKilled(who))
+        }
+
+        JudgementRequested { who, registrar_index }
+        if registrar_index == ri => {
+            Some(Event::JudgementRequested(who))
+        }
+
+        JudgementUnrequested { who, registrar_index }
+        if registrar_index == ri => {
+            Some(Event::JudgementUnrequested(who))
+        }
+
+        JudgementGiven { target, registrar_index }
+        if registrar_index == ri => {
+            Some(Event::JudgementGiven(target))
+        }
+
+        _ => None
     }
 }
