@@ -15,8 +15,8 @@ pub struct Config {
     pub keystore_path: String,
 }
 
-pub async fn run(cfg: Config, db: &Database) -> Result<()> {
-    let client = Client::from_url(cfg.endpoint).await?;
+pub async fn run(cfg: &Config, db: &Database) -> Result<()> {
+    let client = Client::from_url(&cfg.endpoint).await?;
 
     let mut sub = client.blocks().subscribe_finalized().await?;
 
@@ -32,12 +32,13 @@ pub async fn run(cfg: Config, db: &Database) -> Result<()> {
 
             let client = client.clone();
             let db = db.clone();
+            let ri = cfg.registrar_index;
 
             tokio::spawn(async move {
                 process_blocks_in_range(
                     &client,
                     &db,
-                    cfg.registrar_index,
+                    ri,
                     start_hash,
                     end_hash
                 ).await
@@ -55,8 +56,8 @@ pub async fn run(cfg: Config, db: &Database) -> Result<()> {
     Ok(())
 }
 
-pub async fn process_block(cfg: Config, hash: &str, db: &Database) -> Result<()> {
-    let client = Client::from_url(cfg.endpoint).await?;
+pub async fn process_block(cfg: &Config, hash: &str, db: &Database) -> Result<()> {
+    let client = Client::from_url(&cfg.endpoint).await?;
 
     let hash = hash.parse::<BlockHash>()?;
     let block = client.blocks().at(hash).await?;

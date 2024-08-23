@@ -88,12 +88,11 @@ impl Database {
             let block_number = block.number as usize;
             // BlockHash::to_string() truncates the hash with ellipses.
             let block_hash = format!("{:?}", block.hash);
-            let event_count = block.events.len();
 
             tx.execute(
-                "insert or replace into blocks (number, hash, event_count) \
-            values (?1, ?2, ?3)",
-                params![block_number, block_hash, event_count],
+                "insert or replace into state (id, last_block_hash) \
+            values (?1, ?2)",
+                params![1, block_hash],
             )?;
 
             for (i, event) in block.events.into_iter().enumerate() {
@@ -119,7 +118,7 @@ impl Database {
     pub async fn get_last_block_hash(&self) -> Result<Option<BlockHash>> {
         let opt_hash = self.con.call(|db| {
             let mut st = db.prepare(
-                "select hash from blocks order by number desc limit 1"
+                "select last_block_hash from state where id=1 limit 1"
             )?;
             let mut rows = st.query([])?;
             match rows.next()? {
