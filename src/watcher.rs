@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
-use crate::{repo, node};
+use crate::node;
 use crate::node::{BlockHash, Client, RegistrarIndex};
-use crate::repo::{Block, Db, Event};
+use crate::repo::{Block, Database, Event};
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -15,12 +15,12 @@ pub struct Config {
     pub keystore_path: String,
 }
 
-pub async fn run(cfg: Config, db: &Db) -> Result<()> {
+pub async fn run(cfg: Config, db: &Database) -> Result<()> {
     let client = Client::from_url(cfg.endpoint).await?;
 
     let mut sub = client.blocks().subscribe_finalized().await?;
 
-    let mut last_hash = repo::get_last_block_hash(&db).await?;
+    let mut last_hash = db.get_last_block_hash().await?;
 
     while let Some(block) = sub.next().await {
         let block = block?;
@@ -49,13 +49,13 @@ pub async fn run(cfg: Config, db: &Db) -> Result<()> {
         let block = decode_block(&block, cfg.registrar_index).await?;
         warn!("Received {:#?}", block);
 
-        repo::save_block(db, block).await?;
+        db.save_block(block).await?;
     }
 
     Ok(())
 }
 
-pub async fn process_block(cfg: Config, hash: &str, db: &Db) -> Result<()> {
+pub async fn process_block(cfg: Config, hash: &str, db: &Database) -> Result<()> {
     let client = Client::from_url(cfg.endpoint).await?;
 
     let hash = hash.parse::<BlockHash>()?;
@@ -64,12 +64,12 @@ pub async fn process_block(cfg: Config, hash: &str, db: &Db) -> Result<()> {
     let block = decode_block(&block, cfg.registrar_index).await?;
     info!("Fetched {:#?}", block);
 
-    repo::save_block(&db, block).await
+    db.save_block(block).await
 }
 
 async fn process_blocks_in_range(
     client: &Client,
-    db: &Db,
+    db: &Database,
     ri: RegistrarIndex,
     start_hash: BlockHash,
     end_hash: BlockHash
@@ -85,7 +85,7 @@ async fn process_blocks_in_range(
         let block = decode_block(&block, ri).await?;
         info!("Fetched {:#?}", block);
 
-        repo::save_block(db, block).await?;
+        db.save_block(block).await?;
 
         // if parent_hash == block.hash() {
         //     info!("Reached the genesis block");
