@@ -1,6 +1,7 @@
-create table if not exists state (
-    id integer not null primary key,
-    last_block_hash text not null
+create table if not exists blocks (
+    number integer not null primary key,
+    hash text not null unique,
+    event_count integer not null
 );
 --
 create table if not exists events (
