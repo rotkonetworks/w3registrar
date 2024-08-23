@@ -49,19 +49,22 @@ pub async fn run(cfg: Config, db: &Db) -> Result<()> {
         let block = decode_block(&block, cfg.registrar_index).await?;
         warn!("Received {:#?}", block);
 
-        repo::save_block(db, &block).await?;
+        repo::save_block(db, block).await?;
     }
 
     Ok(())
 }
 
-pub async fn fetch_block(cfg: Config, hash: &str) -> Result<Block> {
+pub async fn process_block(cfg: Config, hash: &str, db: &Db) -> Result<()> {
     let client = Client::from_url(cfg.endpoint).await?;
 
     let hash = hash.parse::<BlockHash>()?;
     let block = client.blocks().at(hash).await?;
 
-    decode_block(&block, cfg.registrar_index).await
+    let block = decode_block(&block, cfg.registrar_index).await?;
+    info!("Fetched {:#?}", block);
+
+    repo::save_block(&db, block).await
 }
 
 async fn process_blocks_in_range(
@@ -82,7 +85,7 @@ async fn process_blocks_in_range(
         let block = decode_block(&block, ri).await?;
         info!("Fetched {:#?}", block);
 
-        repo::save_block(db, &block).await?;
+        repo::save_block(db, block).await?;
 
         // if parent_hash == block.hash() {
         //     info!("Reached the genesis block");

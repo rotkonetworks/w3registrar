@@ -23,7 +23,29 @@ pub enum Event {
     JudgementGiven(AccountId),
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum EventKind {
+    IdentitySet,
+    IdentityCleared,
+    IdentityKilled,
+    JudgementRequested,
+    JudgementUnrequested,
+    JudgementGiven,
+}
+
 impl Event {
+    pub fn kind(&self) -> EventKind {
+        use Event::*;
+        match self {
+            IdentitySet(_) => EventKind::IdentitySet,
+            IdentityCleared(_) => EventKind::IdentityCleared,
+            IdentityKilled(_) => EventKind::IdentityKilled,
+            JudgementRequested(_) => EventKind::JudgementRequested,
+            JudgementUnrequested(_) => EventKind::JudgementUnrequested,
+            JudgementGiven(_) => EventKind::JudgementGiven,
+        }
+    }
+
     pub fn target(&self) -> &AccountId {
         use Event::*;
         match self {
@@ -47,13 +69,39 @@ pub async fn open_db(path: &str) -> Result<Db> {
     Ok(db)
 }
 
-pub async fn save_block(db: &Db, block: &Block) -> Result<()> {
-    insert_block(db, BlockRow {
-        number: block.number as usize,
+pub async fn save_block(db: &Db, block: Block) -> Result<()> {
+    db.call(move |db| {
+        let tx = db.transaction()?;
+
+        let block_number = block.number as usize;
         // BlockHash::to_string() truncates the hash with ellipses.
-        hash: format!("{:#?}", block.hash),
-        event_count: block.events.len(),
-    }).await
+        let block_hash = format!("{:?}", block.hash);
+        let event_count = block.events.len();
+
+        tx.execute(
+            "insert or replace into blocks (number, hash, event_count) \
+            values (?1, ?2, ?3)",
+            params![block_number, block_hash, event_count],
+        )?;
+
+        for (i, event) in block.events.into_iter().enumerate() {
+            let number = i + 1;
+            let kind = format!("{:?}", event.kind());
+            let account_id = event.target().to_string();
+
+            tx.execute(
+                "insert or replace into events (block_number, number, kind, account_id) \
+            values (?1, ?2, ?3, ?4)",
+                params![block_number, number, kind, account_id],
+            )?;
+        }
+
+        tx.commit()?;
+
+        Ok(())
+    }).await?;
+
+    Ok(())
 }
 
 pub async fn get_last_block_hash(db: &Db) -> Result<Option<BlockHash>> {
@@ -80,19 +128,6 @@ struct BlockRow {
 async fn apply_schema(db: &Db) -> Result<()> {
     db.call(|db| {
         db.execute(DB_SCHEMA, [])?;
-        Ok(())
-    }).await?;
-
-    Ok(())
-}
-
-async fn insert_block(db: &Db, row: BlockRow) -> Result<()> {
-    db.call(move |db| {
-        db.execute(
-            "insert or replace into blocks (number, hash, event_count) \
-            values (?1, ?2, ?3)",
-            params![row.number, row.hash, row.event_count],
-        )?;
         Ok(())
     }).await?;
 
