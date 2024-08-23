@@ -106,11 +106,25 @@ impl Database {
                 let kind = format!("{:?}", event.kind());
                 let account_id = event.target().to_string();
 
-                tx.execute(
-                    "insert or replace into events (block_number, number, kind, account_id) \
+                // Don't record the event if there are more recent ones for the
+                // same account.
+                // We only ever want to *append* to the event queue, not *prepend*.
+                // Or we'll end up handling events in the wrong order.
+
+                let count = tx.prepare(
+                    "select count(*) from events \
+                    where account_id = ?1 and block_number > ?2"
+                )?.execute(params![account_id, block_number])?;
+
+                let has_more_recent_events = count > 0;
+
+                if !has_more_recent_events {
+                    tx.execute(
+                        "insert or replace into events (block_number, number, kind, account_id) \
             values (?1, ?2, ?3, ?4)",
-                    params![block_number, number, kind, account_id],
-                )?;
+                        params![block_number, number, kind, account_id],
+                    )?;
+                }
             }
 
             tx.commit()?;
