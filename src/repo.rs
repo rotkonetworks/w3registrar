@@ -63,7 +63,8 @@ impl Event {
 //------------------------------------------------------------------------------
 
 const DB_SCHEMA: &str = include_str!("db_schema.sql");
-const DB_SCHEMA_STATEMENT_SEPARATOR: &str = "\n--\n";
+
+const BLANK_LINE: &str = "\n\n";
 
 #[derive(Debug, Clone)]
 pub struct Database {
@@ -76,7 +77,7 @@ impl Database {
 
         con.call(|db| {
             let tx = db.transaction()?;
-            for statement in DB_SCHEMA.split(DB_SCHEMA_STATEMENT_SEPARATOR) {
+            for statement in DB_SCHEMA.split(BLANK_LINE) {
                 tx.execute(statement, [])?;
             }
             tx.commit()?;

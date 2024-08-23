@@ -3,7 +3,7 @@ create table if not exists blocks (
     hash text not null unique,
     event_count integer not null
 );
---
+
 create table if not exists events (
     block_number integer,
     number integer,
