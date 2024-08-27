@@ -1,7 +1,6 @@
 create table if not exists blocks (
-    number integer not null primary key,
-    hash text not null unique,
-    event_count integer not null
+    number integer primary key not null,
+    hash text not null unique
 );
 
 create table if not exists events (

@@ -95,31 +95,13 @@ impl Database {
             // BlockHash::to_string() truncates the hash with ellipses.
             let block_hash = format!("{:?}", block.hash);
 
-            let mut events_to_keep = vec![];
-            for event in block.events.iter() {
-                let account_id = event.target().to_string();
+            tx.execute(
+                "insert or replace into blocks (number, hash) \
+                    values (?1, ?2, ?3)",
+                params![block_number, block_hash],
+            )?;
 
-                // Don't record the event if there are more recent ones for the
-                // same account.
-                // We only ever want to *append* to the event queue, not *prepend*.
-                // Or we'll end up handling events in the wrong order.
-
-                let mut st = tx.prepare(
-                    "select count(*) from events \
-                    where account_id = ?1 and block_number > ?2"
-                )?;
-                let mut rows = st.query([account_id, block_number.to_string()])?;
-                let has_more_recent_events = match rows.next()? {
-                    None => false,
-                    Some(_) => true,
-                };
-
-                if !has_more_recent_events {
-                    events_to_keep.push(event);
-                }
-            }
-
-            for (i, event) in events_to_keep.iter().enumerate() {
+            for (i, event) in block.events.iter().enumerate() {
                 let number = i + 1;
                 let kind = format!("{:?}", event.kind());
                 let account_id = event.target().to_string();
@@ -131,12 +113,6 @@ impl Database {
                     params![block_number, number, kind, account_id],
                 )?;
             }
-
-            tx.execute(
-                "insert or replace into blocks (number, hash, event_count) \
-                    values (?1, ?2, ?3)",
-                params![block_number, block_hash, events_to_keep.len()],
-            )?;
 
             tx.commit()?;
 
