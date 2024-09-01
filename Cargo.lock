@@ -3841,6 +3841,7 @@ name = "w3registrar"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "futures",
  "hex",
  "serde",
