@@ -4,19 +4,9 @@ use crate::node;
 use crate::node::{AccountId, BlockHash, BlockNumber, Client, RegistrarIndex};
 
 use anyhow::Result;
-use serde::Deserialize;
 use tracing::{info, warn};
 
-#[derive(Debug, Deserialize)]
-pub struct Config {
-    pub endpoint: String,
-    pub registrar_index: RegistrarIndex,
-    pub keystore_path: String,
-}
-
-pub async fn run(cfg: &Config) -> Result<()> {
-    let client = Client::from_url(&cfg.endpoint).await?;
-
+pub async fn run(client: &Client) -> Result<()> {
     let mut sub = client.blocks().subscribe_finalized().await?;
 
     while let Some(block) = sub.next().await {
@@ -29,9 +19,7 @@ pub async fn run(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-pub async fn process_block(cfg: &Config, hash: &str) -> Result<()> {
-    let client = Client::from_url(&cfg.endpoint).await?;
-
+pub async fn process_block(client: &Client, hash: &str) -> Result<()> {
     let hash = hash.parse::<BlockHash>()?;
     let block = client.blocks().at(hash).await?;
 
@@ -41,7 +29,7 @@ pub async fn process_block(cfg: &Config, hash: &str) -> Result<()> {
     Ok(())
 }
 
-async fn process_blocks_in_range(
+pub async fn process_blocks_in_range(
     client: &Client,
     start_hash: BlockHash,
     end_hash: BlockHash

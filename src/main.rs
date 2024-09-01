@@ -7,6 +7,7 @@ use serde::Deserialize;
 use std::fs;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
+use crate::node::RegistrarIndex;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -16,15 +17,18 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::load_from("config.toml")?;
+    run_watcher(config.watcher).await
+}
+
+async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
+    let client = node::Client::from_url(&cfg.endpoint).await?;
 
     watcher::process_block(
-        &config.watcher,
+        &client,
         "0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65"
     ).await?;
 
-    watcher::run(&config.watcher).await?;
-
-    Ok(())
+    watcher::run(&client).await
 }
 
 //------------------------------------------------------------------------------
@@ -33,7 +37,14 @@ async fn main() -> Result<()> {
 #[derive(Debug, Deserialize)]
 struct Config {
     // pub matrix: matrix::Config,
-    pub watcher: watcher::Config,
+    pub watcher: WatcherConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WatcherConfig {
+    pub endpoint: String,
+    pub registrar_index: RegistrarIndex,
+    pub keystore_path: String,
 }
 
 impl Config {
