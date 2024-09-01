@@ -88,29 +88,7 @@ pub enum Event {
     JudgementGiven(AccountId),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum EventKind {
-    IdentitySet,
-    IdentityCleared,
-    IdentityKilled,
-    JudgementRequested,
-    JudgementUnrequested,
-    JudgementGiven,
-}
-
 impl Event {
-    pub fn kind(&self) -> EventKind {
-        use Event::*;
-        match self {
-            IdentitySet(_) => EventKind::IdentitySet,
-            IdentityCleared(_) => EventKind::IdentityCleared,
-            IdentityKilled(_) => EventKind::IdentityKilled,
-            JudgementRequested(_) => EventKind::JudgementRequested,
-            JudgementUnrequested(_) => EventKind::JudgementUnrequested,
-            JudgementGiven(_) => EventKind::JudgementGiven,
-        }
-    }
-
     pub fn target(&self) -> &AccountId {
         use Event::*;
         match self {
