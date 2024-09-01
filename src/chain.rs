@@ -1,36 +1,38 @@
 #![allow(dead_code)]
 
 use crate::node;
-use crate::node::{AccountId, BlockHash, BlockNumber, Client, RegistrarIndex};
+pub use crate::node::{AccountId, BlockHash, BlockNumber, Client, RegistrarIndex};
 
 use anyhow::Result;
-use tracing::{info, warn};
+use tokio::sync::mpsc;
+use tracing::info;
 
-pub async fn run(client: &Client) -> Result<()> {
+pub async fn fetch_block(client: &Client, tx: &mpsc::Sender<Block>, hash: &str) -> Result<()> {
+    let hash = hash.parse::<BlockHash>()?;
+
+    let block = client.blocks().at(hash).await?;
+    let block = decode_block(&block).await?;
+    info!("Fetched {:#?}", block);
+    tx.send(block).await?;
+
+    Ok(())
+}
+
+pub async fn fetch_incoming_blocks(client: &Client, tx: &mpsc::Sender<Block>) -> Result<()> {
     let mut sub = client.blocks().subscribe_finalized().await?;
 
     while let Some(block) = sub.next().await {
-        let block = block?;
-
-        let block = decode_block(&block).await?;
-        warn!("Received {:#?}", block);
+        let block = decode_block(&block?).await?;
+        info!("Fetched {:#?}", block);
+        tx.send(block).await?;
     }
 
     Ok(())
 }
 
-pub async fn process_block(client: &Client, hash: &str) -> Result<()> {
-    let hash = hash.parse::<BlockHash>()?;
-    let block = client.blocks().at(hash).await?;
-
-    let block = decode_block(&block).await?;
-    info!("Fetched {:#?}", block);
-
-    Ok(())
-}
-
-pub async fn process_blocks_in_range(
+pub async fn fetch_blocks_in_range(
     client: &Client,
+    tx: &mpsc::Sender<Block>,
     start_hash: BlockHash,
     end_hash: BlockHash
 ) -> Result<()> {
@@ -44,6 +46,7 @@ pub async fn process_blocks_in_range(
 
         let block = decode_block(&block).await?;
         info!("Fetched {:#?}", block);
+        tx.send(block).await?;
 
         // if parent_hash == block.hash() {
         //     info!("Reached the genesis block");
@@ -57,6 +60,8 @@ pub async fn process_blocks_in_range(
 }
 
 //------------------------------------------------------------------------------
+
+
 
 #[derive(Debug, Clone)]
 pub struct Block {

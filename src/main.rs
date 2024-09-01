@@ -2,12 +2,16 @@
 mod chain;
 mod node;
 
+use crate::chain::RegistrarIndex;
+
 use anyhow::Result;
 use serde::Deserialize;
 use std::fs;
+use tokio::sync::mpsc;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
-use crate::node::RegistrarIndex;
+
+const TEST_BLOCK_HASH: &str = "0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,18 +21,16 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::load_from("config.toml")?;
-    run_watcher(config.watcher).await
+    run(config.watcher).await
 }
 
-async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
+async fn run(cfg: WatcherConfig) -> Result<()> {
     let client = node::Client::from_url(&cfg.endpoint).await?;
 
-    chain::process_block(
-        &client,
-        "0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65"
-    ).await?;
+    let (tx, _) = mpsc::channel(100);
 
-    chain::run(&client).await
+    chain::fetch_block(&client, &tx, TEST_BLOCK_HASH).await?;
+    chain::fetch_incoming_blocks(&client, &tx).await
 }
 
 //------------------------------------------------------------------------------
