@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 
 use crate::node;
-use crate::node::{BlockHash, Client, RegistrarIndex};
-use crate::repo::{Block, Database, Event};
+use crate::node::{AccountId, BlockHash, BlockNumber, Client, RegistrarIndex};
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -15,48 +14,22 @@ pub struct Config {
     pub keystore_path: String,
 }
 
-pub async fn run(cfg: &Config, db: &Database) -> Result<()> {
+pub async fn run(cfg: &Config) -> Result<()> {
     let client = Client::from_url(&cfg.endpoint).await?;
 
     let mut sub = client.blocks().subscribe_finalized().await?;
 
-    let mut last_hash = db.get_last_block_hash().await?;
-
     while let Some(block) = sub.next().await {
         let block = block?;
 
-        if let Some(end_hash) = last_hash {
-            info!("Fetching backwards to block {:?}", end_hash);
-
-            let start_hash = block.header().parent_hash;
-
-            let client = client.clone();
-            let db = db.clone();
-            let ri = cfg.registrar_index;
-
-            tokio::spawn(async move {
-                process_blocks_in_range(
-                    &client,
-                    &db,
-                    ri,
-                    start_hash,
-                    end_hash
-                ).await
-            });
-
-            last_hash = None;
-        }
-
         let block = decode_block(&block, cfg.registrar_index).await?;
         warn!("Received {:#?}", block);
-
-        db.save_block(block).await?;
     }
 
     Ok(())
 }
 
-pub async fn process_block(cfg: &Config, hash: &str, db: &Database) -> Result<()> {
+pub async fn process_block(cfg: &Config, hash: &str) -> Result<()> {
     let client = Client::from_url(&cfg.endpoint).await?;
 
     let hash = hash.parse::<BlockHash>()?;
@@ -65,12 +38,11 @@ pub async fn process_block(cfg: &Config, hash: &str, db: &Database) -> Result<()
     let block = decode_block(&block, cfg.registrar_index).await?;
     info!("Fetched {:#?}", block);
 
-    db.save_block(block).await
+    Ok(())
 }
 
 async fn process_blocks_in_range(
     client: &Client,
-    db: &Database,
     ri: RegistrarIndex,
     start_hash: BlockHash,
     end_hash: BlockHash
@@ -86,8 +58,6 @@ async fn process_blocks_in_range(
         let block = decode_block(&block, ri).await?;
         info!("Fetched {:#?}", block);
 
-        db.save_block(block).await?;
-
         // if parent_hash == block.hash() {
         //     info!("Reached the genesis block");
         //     break;
@@ -100,6 +70,61 @@ async fn process_blocks_in_range(
 }
 
 //------------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub number: BlockNumber,
+    pub hash: BlockHash,
+    pub events: Vec<Event>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    IdentitySet(AccountId),
+    IdentityCleared(AccountId),
+    IdentityKilled(AccountId),
+    JudgementRequested(AccountId),
+    JudgementUnrequested(AccountId),
+    JudgementGiven(AccountId),
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum EventKind {
+    IdentitySet,
+    IdentityCleared,
+    IdentityKilled,
+    JudgementRequested,
+    JudgementUnrequested,
+    JudgementGiven,
+}
+
+impl Event {
+    pub fn kind(&self) -> EventKind {
+        use Event::*;
+        match self {
+            IdentitySet(_) => EventKind::IdentitySet,
+            IdentityCleared(_) => EventKind::IdentityCleared,
+            IdentityKilled(_) => EventKind::IdentityKilled,
+            JudgementRequested(_) => EventKind::JudgementRequested,
+            JudgementUnrequested(_) => EventKind::JudgementUnrequested,
+            JudgementGiven(_) => EventKind::JudgementGiven,
+        }
+    }
+
+    pub fn target(&self) -> &AccountId {
+        use Event::*;
+        match self {
+            | IdentitySet(id)
+            | IdentityCleared(id)
+            | IdentityKilled(id)
+            | JudgementRequested(id)
+            | JudgementUnrequested(id)
+            | JudgementGiven(id) => {
+                id
+            }
+        }
+    }
+}
 
 async fn decode_block(block: &node::Block, ri: RegistrarIndex) -> Result<Block> {
     let mut events = vec![];

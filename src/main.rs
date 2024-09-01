@@ -1,9 +1,6 @@
 // mod matrix;
 mod watcher;
-mod repo;
 mod node;
-
-use crate::repo::Database;
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -20,14 +17,12 @@ async fn main() -> Result<()> {
 
     let config = Config::load_from("config.toml")?;
 
-    let db = Database::open("/tmp/w3reg.sqlite").await?;
-
     watcher::process_block(
         &config.watcher,
-        "0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65",
-        &db
+        "0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65"
     ).await?;
-    watcher::run(&config.watcher, &db).await?;
+
+    watcher::run(&config.watcher).await?;
 
     Ok(())
 }
