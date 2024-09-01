@@ -1,5 +1,5 @@
 // mod matrix;
-mod watcher;
+mod chain;
 mod node;
 
 use anyhow::Result;
@@ -23,12 +23,12 @@ async fn main() -> Result<()> {
 async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
     let client = node::Client::from_url(&cfg.endpoint).await?;
 
-    watcher::process_block(
+    chain::process_block(
         &client,
         "0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65"
     ).await?;
 
-    watcher::run(&client).await
+    chain::run(&client).await
 }
 
 //------------------------------------------------------------------------------
