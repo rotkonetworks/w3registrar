@@ -2,7 +2,7 @@
 mod chain;
 mod node;
 
-use crate::chain::RegistrarIndex;
+use crate::chain::{fetch_identity, Event, RegistrarIndex};
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -26,6 +26,7 @@ async fn main() -> Result<()> {
 
 async fn run(cfg: WatcherConfig) -> Result<()> {
     let client = node::Client::from_url(&cfg.endpoint).await?;
+    let client2= client.clone();
 
     let (tx, mut rx) = mpsc::channel(100);
 
@@ -35,8 +36,17 @@ async fn run(cfg: WatcherConfig) -> Result<()> {
         chain::fetch_incoming_events(&client, &tx).await.unwrap();
     });
 
-    while let Some(block) = rx.recv().await {
-        println!("{:#?}\n", block);
+    while let Some(event) = rx.recv().await {
+        println!("{:#?}\n", event);
+
+        match event {
+            Event::JudgementRequested(account_id, _) => {
+                if let Some(id) = fetch_identity(&client2, &account_id).await? {
+                    println!("{:#?}", id);
+                }
+            }
+            _ => {}
+        };
     }
 
     Ok(())
