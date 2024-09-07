@@ -2,7 +2,7 @@
 mod chain;
 mod node;
 
-use crate::chain::{Blocks, RegistrarIndex};
+use crate::chain::RegistrarIndex;
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -25,14 +25,14 @@ async fn main() -> Result<()> {
 }
 
 async fn run(cfg: WatcherConfig) -> Result<()> {
-    let blocks = Blocks::new(node::Client::from_url(&cfg.endpoint).await?);
+    let client = node::Client::from_url(&cfg.endpoint).await?;
 
     let (tx, mut rx) = mpsc::channel(100);
 
-    blocks.fetch(TEST_BLOCK_HASH, &tx).await?;
+    chain::fetch_block(&client, TEST_BLOCK_HASH, &tx).await?;
 
     tokio::spawn(async move {
-        blocks.fetch_incoming(&tx).await.unwrap();
+        chain::fetch_incoming_blocks(&client, &tx).await.unwrap();
     });
 
     while let Some(block) = rx.recv().await {

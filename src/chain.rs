@@ -6,38 +6,26 @@ pub use crate::node::{AccountId, BlockHash, BlockNumber, Client, RegistrarIndex}
 use anyhow::Result;
 use tokio::sync::mpsc;
 
-// TODO: Name?
-pub struct Blocks {
-    client: Client,
+pub async fn fetch_block(client: &Client, hash: &str, tx: &mpsc::Sender<Block>) -> Result<()> {
+    let hash = hash.parse::<BlockHash>()?;
+
+    let block = client.blocks().at(hash).await?;
+    let block = decode_block(&block).await?;
+    tx.send(block).await?;
+
+    Ok(())
 }
 
-impl Blocks {
-    pub fn new(client: Client) -> Self {
-        Self { client }
-    }
+pub async fn fetch_incoming_blocks(client: &Client, tx: &mpsc::Sender<Block>) -> Result<()> {
+    let mut sub = client.blocks().subscribe_finalized().await?;
 
-    pub async fn fetch(&self, hash: &str, tx: &mpsc::Sender<Block>) -> Result<()> {
-        let hash = hash.parse::<BlockHash>()?;
-
-        let block = self.client.blocks().at(hash).await?;
-        let block = decode_block(&block).await?;
+    while let Some(block) = sub.next().await {
+        let block = decode_block(&block?).await?;
         tx.send(block).await?;
-
-        Ok(())
     }
 
-    pub async fn fetch_incoming(&self, tx: &mpsc::Sender<Block>) -> Result<()> {
-        let mut sub = self.client.blocks().subscribe_finalized().await?;
-
-        while let Some(block) = sub.next().await {
-            let block = decode_block(&block?).await?;
-            tx.send(block).await?;
-        }
-
-        Ok(())
-    }
+    Ok(())
 }
-
 
 //------------------------------------------------------------------------------
 
