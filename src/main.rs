@@ -2,7 +2,7 @@
 mod chain;
 mod node;
 
-use crate::chain::{fetch_identity, Event, RegistrarIndex};
+use crate::chain::{fetch_identity, Event, EventSource, RegistrarIndex};
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -26,22 +26,19 @@ async fn main() -> Result<()> {
 
 async fn run(cfg: WatcherConfig) -> Result<()> {
     let client = node::Client::from_url(&cfg.endpoint).await?;
-    let client2= client.clone();
+    let events = EventSource::new(client.clone(), cfg.registrar_index);
 
     let (tx, mut rx) = mpsc::channel(100);
 
-    chain::fetch_events_in_block(&client, TEST_BLOCK_HASH, &tx).await?;
-
-    tokio::spawn(async move {
-        chain::fetch_incoming_events(&client, &tx).await.unwrap();
-    });
+    events.fetch_from_block(TEST_BLOCK_HASH, &tx).await?;
+    tokio::spawn(async move { events.fetch_incoming(&tx).await.unwrap(); });
 
     while let Some(event) = rx.recv().await {
         println!("{:#?}\n", event);
 
         match event {
             Event::JudgementRequested(account_id, _) => {
-                if let Some(id) = fetch_identity(&client2, &account_id).await? {
+                if let Some(id) = fetch_identity(&client, &account_id).await? {
                     println!("{:#?}", id);
                 }
             }

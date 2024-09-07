@@ -12,18 +12,80 @@ use anyhow::Result;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
-pub async fn fetch_events_in_block(client: &Client, hash: &str, tx: &mpsc::Sender<Event>) -> Result<()> {
-    let hash = hash.parse::<BlockHash>()?;
-    let block = client.blocks().at(hash).await?;
-    process_block(block, &tx).await
+pub struct EventSource {
+    client: Client,
+    registrar_index: RegistrarIndex,
 }
 
-pub async fn fetch_incoming_events(client: &Client, tx: &mpsc::Sender<Event>) -> Result<()> {
-    let mut sub = client.blocks().subscribe_finalized().await?;
-    while let Some(block) = sub.next().await {
-        process_block(block?, &tx).await?;
+impl EventSource {
+    pub fn new(client: Client, registrar_index: RegistrarIndex) -> Self {
+        Self { client, registrar_index }
     }
-    Ok(())
+
+    pub async fn fetch_from_block(&self, hash: &str, tx: &mpsc::Sender<Event>) -> Result<()> {
+        let hash = hash.parse::<BlockHash>()?;
+        let block = self.client.blocks().at(hash).await?;
+        self.process_block(block, &tx).await
+    }
+
+    pub async fn fetch_incoming(&self, tx: &mpsc::Sender<Event>) -> Result<()> {
+        let mut sub = self.client.blocks().subscribe_finalized().await?;
+        while let Some(block) = sub.next().await {
+            self.process_block(block?, &tx).await?;
+        }
+        Ok(())
+    }
+
+    // PRIVATE
+
+    async fn process_block(&self, block: node::Block, tx: &mpsc::Sender<Event>) -> Result<()> {
+        for event in block.events().await?.iter() {
+            if let Ok(event) = event?.as_root_event::<node::Event>() {
+                if let Some(event) = self.decode_api_event(event) {
+                    tx.send(event).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn decode_api_event(&self, event: node::Event) -> Option<Event> {
+        match event {
+            node::Event::Identity(e) => self.decode_api_identity_event(e),
+            _ => None,
+        }
+    }
+
+    fn decode_api_identity_event(&self, event: node::IdentityEvent) -> Option<Event> {
+        use node::IdentityEvent::*;
+        match event {
+            IdentitySet { who } => {
+                Some(Event::IdentitySet(who))
+            }
+
+            IdentityCleared { who, .. } => {
+                Some(Event::IdentityCleared(who))
+            }
+
+            IdentityKilled { who, .. } => {
+                Some(Event::IdentityKilled(who))
+            }
+
+            JudgementRequested { who, registrar_index } => {
+                Some(Event::JudgementRequested(who, registrar_index))
+            }
+
+            JudgementUnrequested { who, registrar_index } => {
+                Some(Event::JudgementUnrequested(who, registrar_index))
+            }
+
+            JudgementGiven { target, registrar_index } => {
+                Some(Event::JudgementGiven(target, registrar_index))
+            }
+
+            _ => None
+        }
+    }
 }
 
 pub async fn fetch_identity(client: &Client, id: &AccountId) -> Result<Option<Identity>> {
@@ -42,7 +104,6 @@ pub async fn fetch_identity(client: &Client, id: &AccountId) -> Result<Option<Id
         decode_identity_info(reg.info)
     }))
 }
-
 
 //------------------------------------------------------------------------------
 
@@ -69,55 +130,6 @@ impl Event {
                 id
             }
         }
-    }
-}
-
-async fn process_block(block: node::Block, tx: &mpsc::Sender<Event>) -> Result<()> {
-    for event in block.events().await?.iter() {
-        if let Ok(event) = event?.as_root_event::<node::Event>() {
-            if let Some(event) = decode_api_event(event) {
-                tx.send(event).await?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn decode_api_event(event: node::Event) -> Option<Event> {
-    match event {
-        node::Event::Identity(e) => decode_api_identity_event(e),
-        _ => None,
-    }
-}
-
-fn decode_api_identity_event(event: node::IdentityEvent) -> Option<Event> {
-    use node::IdentityEvent::*;
-    match event {
-        IdentitySet { who } => {
-            Some(Event::IdentitySet(who))
-        }
-
-        IdentityCleared { who, .. } => {
-            Some(Event::IdentityCleared(who))
-        }
-
-        IdentityKilled { who, .. } => {
-            Some(Event::IdentityKilled(who))
-        }
-
-        JudgementRequested { who, registrar_index } => {
-            Some(Event::JudgementRequested(who, registrar_index))
-        }
-
-        JudgementUnrequested { who, registrar_index } => {
-            Some(Event::JudgementUnrequested(who, registrar_index))
-        }
-
-        JudgementGiven { target, registrar_index } => {
-            Some(Event::JudgementGiven(target, registrar_index))
-        }
-
-        _ => None
     }
 }
 
