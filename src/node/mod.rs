@@ -1,6 +1,6 @@
 #![allow(unused_imports)]
 
-mod substrate;
+pub mod substrate;
 
 use subxt::{OnlineClient, SubstrateConfig};
 
