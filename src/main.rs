@@ -29,10 +29,10 @@ async fn run(cfg: WatcherConfig) -> Result<()> {
 
     let (tx, mut rx) = mpsc::channel(100);
 
-    chain::fetch_block(&client, TEST_BLOCK_HASH, &tx).await?;
+    chain::fetch_events_in_block(&client, TEST_BLOCK_HASH, &tx).await?;
 
     tokio::spawn(async move {
-        chain::fetch_incoming_blocks(&client, &tx).await.unwrap();
+        chain::fetch_incoming_events(&client, &tx).await.unwrap();
     });
 
     while let Some(block) = rx.recv().await {

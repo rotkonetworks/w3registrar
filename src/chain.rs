@@ -2,34 +2,27 @@
 
 use crate::node;
 
-pub use crate::node::{AccountId, BlockHash, BlockNumber, Client, RegistrarIndex};
+pub use crate::node::{AccountId, BlockHash, Client, RegistrarIndex};
 
 use crate::node::substrate::api::runtime_types::pallet_identity::types::Data;
 use crate::node::substrate::api::runtime_types::people_rococo_runtime::people::IdentityInfo;
 use crate::node::substrate::api::storage;
 
 use anyhow::Result;
-use tokio::sync::mpsc;
 use std::collections::HashMap;
+use tokio::sync::mpsc;
 
-pub async fn fetch_block(client: &Client, hash: &str, tx: &mpsc::Sender<Block>) -> Result<()> {
+pub async fn fetch_events_in_block(client: &Client, hash: &str, tx: &mpsc::Sender<Event>) -> Result<()> {
     let hash = hash.parse::<BlockHash>()?;
-
     let block = client.blocks().at(hash).await?;
-    let block = decode_block(&block).await?;
-    tx.send(block).await?;
-
-    Ok(())
+    process_block(block, &tx).await
 }
 
-pub async fn fetch_incoming_blocks(client: &Client, tx: &mpsc::Sender<Block>) -> Result<()> {
+pub async fn fetch_incoming_events(client: &Client, tx: &mpsc::Sender<Event>) -> Result<()> {
     let mut sub = client.blocks().subscribe_finalized().await?;
-
     while let Some(block) = sub.next().await {
-        let block = decode_block(&block?).await?;
-        tx.send(block).await?;
+        process_block(block?, &tx).await?;
     }
-
     Ok(())
 }
 
@@ -50,15 +43,8 @@ pub async fn fetch_identity(client: &Client, id: &AccountId) -> Result<Option<Id
     }))
 }
 
+
 //------------------------------------------------------------------------------
-
-
-#[derive(Debug, Clone)]
-pub struct Block {
-    pub number: BlockNumber,
-    pub hash: BlockHash,
-    pub events: Vec<Event>,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
@@ -86,21 +72,15 @@ impl Event {
     }
 }
 
-async fn decode_block(block: &node::Block) -> Result<Block> {
-    let mut events = vec![];
+async fn process_block(block: node::Block, tx: &mpsc::Sender<Event>) -> Result<()> {
     for event in block.events().await?.iter() {
         if let Ok(event) = event?.as_root_event::<node::Event>() {
             if let Some(event) = decode_api_event(event) {
-                events.push(event);
+                tx.send(event).await?;
             }
         }
     }
-
-    Ok(Block {
-        number: block.number().into(),
-        hash: block.hash(),
-        events,
-    })
+    Ok(())
 }
 
 fn decode_api_event(event: node::Event) -> Option<Event> {
