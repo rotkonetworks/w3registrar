@@ -37,7 +37,7 @@ async fn run(cfg: WatcherConfig) -> Result<()> {
         println!("{:#?}\n", event);
 
         match event {
-            Event::JudgementRequested(account_id, _) => {
+            Event::JudgementRequested(account_id) => {
                 if let Some(id) = fetch_identity(&client, &account_id).await? {
                     println!("{:#?}", id);
                 }

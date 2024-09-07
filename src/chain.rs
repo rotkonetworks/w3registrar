@@ -71,16 +71,19 @@ impl EventSource {
                 Some(Event::IdentityKilled(who))
             }
 
-            JudgementRequested { who, registrar_index } => {
-                Some(Event::JudgementRequested(who, registrar_index))
+            JudgementRequested { who, registrar_index }
+            if registrar_index == self.registrar_index => {
+                Some(Event::JudgementRequested(who))
             }
 
-            JudgementUnrequested { who, registrar_index } => {
-                Some(Event::JudgementUnrequested(who, registrar_index))
+            JudgementUnrequested { who, registrar_index }
+            if registrar_index == self.registrar_index => {
+                Some(Event::JudgementUnrequested(who))
             }
 
-            JudgementGiven { target, registrar_index } => {
-                Some(Event::JudgementGiven(target, registrar_index))
+            JudgementGiven { target, registrar_index }
+            if registrar_index == self.registrar_index => {
+                Some(Event::JudgementGiven(target))
             }
 
             _ => None
@@ -112,9 +115,9 @@ pub enum Event {
     IdentitySet(AccountId),
     IdentityCleared(AccountId),
     IdentityKilled(AccountId),
-    JudgementRequested(AccountId, RegistrarIndex),
-    JudgementUnrequested(AccountId, RegistrarIndex),
-    JudgementGiven(AccountId, RegistrarIndex),
+    JudgementRequested(AccountId),
+    JudgementUnrequested(AccountId),
+    JudgementGiven(AccountId),
 }
 
 impl Event {
@@ -124,9 +127,9 @@ impl Event {
             | IdentitySet(id)
             | IdentityCleared(id)
             | IdentityKilled(id)
-            | JudgementRequested(id, _)
-            | JudgementUnrequested(id, _)
-            | JudgementGiven(id, _) => {
+            | JudgementRequested(id)
+            | JudgementUnrequested(id)
+            | JudgementGiven(id) => {
                 id
             }
         }
