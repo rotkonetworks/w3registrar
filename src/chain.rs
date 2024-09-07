@@ -36,34 +36,6 @@ impl Blocks {
 
         Ok(())
     }
-
-    pub async fn fetch_range(
-        &self,
-        start_hash: BlockHash,
-        end_hash: BlockHash,
-        tx: &mpsc::Sender<Block>
-    ) -> Result<()> {
-        let blocks = self.client.blocks();
-
-        let mut current_hash = start_hash;
-
-        while current_hash != end_hash {
-            let block = blocks.at(current_hash).await?;
-            let parent_hash = block.header().parent_hash;
-
-            let block = decode_block(&block).await?;
-            tx.send(block).await?;
-
-            // if parent_hash == block.hash() {
-            //     info!("Reached the genesis block");
-            //     break;
-            // }
-
-            current_hash = parent_hash;
-        }
-
-        Ok(())
-    }
 }
 
 
