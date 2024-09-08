@@ -2,8 +2,7 @@
 
 use crate::chain;
 use crate::chain::{Account, AccountId, AccountSet};
-
-use uuid::Uuid;
+use rand::{distributions::Alphanumeric, Rng};
 
 #[derive(Debug, Clone)]
 pub struct Person {
@@ -28,7 +27,7 @@ pub type Secret = String;
 
 pub async fn handle_chain_event(event: chain::Event) -> anyhow::Result<()> {
     match event {
-        chain::Event::JudgementRequested(who,  id) => {
+        chain::Event::JudgementRequested(who, id) => {
             let person = Person {
                 id: who,
                 display_name: id.display_name,
@@ -49,5 +48,12 @@ fn generate_challenges(accounts: AccountSet) -> Vec<Challenge> {
 }
 
 fn generate_secret(_account: &Account) -> Secret {
-    Uuid::new_v4().to_string()
+    // Generate a random alphanumeric string of 8 characters
+    let secret: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(8)
+        .map(char::from)
+        .collect();
+
+    secret
 }
