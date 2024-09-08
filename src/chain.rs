@@ -6,6 +6,7 @@ pub use crate::node::{AccountId, BlockHash, Client, RegistrarIndex};
 
 use crate::node::substrate::api::runtime_types::pallet_identity::types::Data;
 use crate::node::substrate::api::runtime_types::people_rococo_runtime::people::IdentityInfo;
+use crate::node::substrate::api::runtime_types::pallet_identity::types::Judgement;
 use crate::node::substrate::api::storage;
 
 use anyhow::Result;
@@ -73,8 +74,12 @@ impl EventSource {
 
             JudgementRequested { who, registrar_index }
             if registrar_index == self.registrar_index => {
-                if let Some(id) = self.fetch_identity(&who).await? {
-                    Some(Event::JudgementRequested(who, id))
+                if let Some((id, is_fee_paid)) = self.fetch_identity(&who).await? {
+                    if is_fee_paid {
+                        Some(Event::JudgementRequested(who, id))
+                    } else {
+                        None // Ignore if fee is not paid
+                    }
                 } else {
                     None
                 }
@@ -94,7 +99,7 @@ impl EventSource {
         })
     }
 
-    async fn fetch_identity(&self, id: &AccountId) -> Result<Option<Identity>> {
+    async fn fetch_identity(&self, id: &AccountId) -> Result<Option<(Identity, bool)>> {
         let query = storage()
             .identity()
             .identity_of(id);
@@ -107,7 +112,12 @@ impl EventSource {
             .await?;
 
         Ok(identity.map(|(reg, _)| {
-            decode_identity_info(&reg.info)
+            let decoded_identity = decode_identity_info(&reg.info);
+            // verify that the account has FeePaid judgement from the registrar in identityOf
+            let is_fee_paid = reg.judgements.0.iter().any(|(idx, judgement)| {
+                *idx == self.registrar_index && matches!(judgement, Judgement::FeePaid(_))
+            });
+            (decoded_identity, is_fee_paid)
         }))
     }
 }
@@ -167,7 +177,7 @@ pub type Name = String;
 fn decode_identity_info(info: &IdentityInfo) -> Identity {
     Identity {
         display_name: decode_string_data(&info.display),
-        accounts: Default::default(),
+        accounts: decode_identity_fields(info),
     }
 }
 
