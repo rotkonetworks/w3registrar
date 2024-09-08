@@ -17,6 +17,7 @@ hex = "0.4.3"
 uuid = { version = "1.10.0", features = ["v4", "macro-diagnostics"] }
 sqlx = { version = "0.8.0", features = [ "runtime-tokio", "sqlite" ] }
 async-trait = "0.1.81"
+rand = "0.8.5"
 # Conflicts with tokio-rusqlite
 # ("failed to select a version for `libsqlite3-sys` which could resolve this conflict")
 #matrix-sdk = "0.7.1"
