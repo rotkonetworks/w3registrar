@@ -3844,6 +3844,7 @@ dependencies = [
  "async-trait",
  "futures",
  "hex",
+ "rand",
  "serde",
  "serde_json",
  "sqlx",
