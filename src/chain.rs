@@ -9,7 +9,7 @@ use crate::node::substrate::api::runtime_types::people_rococo_runtime::people::I
 use crate::node::substrate::api::storage;
 
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use tokio::sync::mpsc;
 
 pub struct EventSource {
@@ -104,7 +104,7 @@ pub async fn fetch_identity(client: &Client, id: &AccountId) -> Result<Option<Id
         .await?;
 
     Ok(identity.map(|(reg, _)| {
-        decode_identity_info(reg.info)
+        decode_identity_info(&reg.info)
     }))
 }
 
@@ -138,79 +138,88 @@ impl Event {
 
 //------------------------------------------------------------------------------
 
-pub type Identity = HashMap<IdentityKey, String>;
+#[derive(Debug, Clone)]
+pub struct Identity {
+    pub display_name: Option<String>,
+    pub accounts: AccountSet,
+}
 
-// TODO: Add PgpFingerprint
+pub type AccountSet = HashSet<Account>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Account(pub AccountKind, pub Name);
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum IdentityKey {
-    Display,
-    Legal,
-    Web,
+pub enum AccountKind {
     Matrix,
     Email,
-    Image,
     Twitter,
     Github,
     Discord,
 }
 
-fn decode_identity_info(info: IdentityInfo) -> Identity {
-    use IdentityKey::*;
-    let mut fields = HashMap::new();
-    decode_identity_field_into(Display, info.display, &mut fields);
-    decode_identity_field_into(Legal, info.legal, &mut fields);
-    decode_identity_field_into(Web, info.web, &mut fields);
-    decode_identity_field_into(Matrix, info.matrix, &mut fields);
-    decode_identity_field_into(Email, info.email, &mut fields);
-    decode_identity_field_into(Image, info.image, &mut fields);
-    decode_identity_field_into(Twitter, info.twitter, &mut fields);
-    decode_identity_field_into(Github, info.github, &mut fields);
-    decode_identity_field_into(Discord, info.discord, &mut fields);
-    fields
-}
+pub type Name = String;
 
-fn decode_identity_field_into(key: IdentityKey, value: Data, fields: &mut Identity) {
-    if let Some(s) = decode_string_data(value) {
-        fields.insert(key, s);
+fn decode_identity_info(info: &IdentityInfo) -> Identity {
+    Identity {
+        display_name: decode_string_data(&info.display),
+        accounts: Default::default(),
     }
 }
 
-fn decode_string_data(data: Data) -> Option<String> {
+fn decode_identity_fields(info: &IdentityInfo) -> AccountSet {
+    use AccountKind::*;
+    let mut accounts = HashSet::new();
+    decode_identity_field_into(Matrix, &info.matrix, &mut accounts);
+    decode_identity_field_into(Email, &info.email, &mut accounts);
+    decode_identity_field_into(Twitter, &info.twitter, &mut accounts);
+    decode_identity_field_into(Github, &info.github, &mut accounts);
+    decode_identity_field_into(Discord, &info.discord, &mut accounts);
+    accounts
+}
+
+fn decode_identity_field_into(kind: AccountKind, value: &Data, accounts: &mut AccountSet) {
+    if let Some(name) = decode_string_data(value) {
+        accounts.insert(Account(kind, name));
+    }
+}
+
+fn decode_string_data(data: &Data) -> Option<String> {
     use Data::*;
     match data {
-        Raw0(b) => Some(string_from_bytes(&b)),
-        Raw1(b) => Some(string_from_bytes(&b)),
-        Raw2(b) => Some(string_from_bytes(&b)),
-        Raw3(b) => Some(string_from_bytes(&b)),
-        Raw4(b) => Some(string_from_bytes(&b)),
-        Raw5(b) => Some(string_from_bytes(&b)),
-        Raw6(b) => Some(string_from_bytes(&b)),
-        Raw7(b) => Some(string_from_bytes(&b)),
-        Raw8(b) => Some(string_from_bytes(&b)),
-        Raw9(b) => Some(string_from_bytes(&b)),
-        Raw10(b) => Some(string_from_bytes(&b)),
-        Raw11(b) => Some(string_from_bytes(&b)),
-        Raw12(b) => Some(string_from_bytes(&b)),
-        Raw13(b) => Some(string_from_bytes(&b)),
-        Raw14(b) => Some(string_from_bytes(&b)),
-        Raw15(b) => Some(string_from_bytes(&b)),
-        Raw16(b) => Some(string_from_bytes(&b)),
-        Raw17(b) => Some(string_from_bytes(&b)),
-        Raw18(b) => Some(string_from_bytes(&b)),
-        Raw19(b) => Some(string_from_bytes(&b)),
-        Raw20(b) => Some(string_from_bytes(&b)),
-        Raw21(b) => Some(string_from_bytes(&b)),
-        Raw22(b) => Some(string_from_bytes(&b)),
-        Raw23(b) => Some(string_from_bytes(&b)),
-        Raw24(b) => Some(string_from_bytes(&b)),
-        Raw25(b) => Some(string_from_bytes(&b)),
-        Raw26(b) => Some(string_from_bytes(&b)),
-        Raw27(b) => Some(string_from_bytes(&b)),
-        Raw28(b) => Some(string_from_bytes(&b)),
-        Raw29(b) => Some(string_from_bytes(&b)),
-        Raw30(b) => Some(string_from_bytes(&b)),
-        Raw31(b) => Some(string_from_bytes(&b)),
-        Raw32(b) => Some(string_from_bytes(&b)),
+        Raw0(b) => Some(string_from_bytes(b)),
+        Raw1(b) => Some(string_from_bytes(b)),
+        Raw2(b) => Some(string_from_bytes(b)),
+        Raw3(b) => Some(string_from_bytes(b)),
+        Raw4(b) => Some(string_from_bytes(b)),
+        Raw5(b) => Some(string_from_bytes(b)),
+        Raw6(b) => Some(string_from_bytes(b)),
+        Raw7(b) => Some(string_from_bytes(b)),
+        Raw8(b) => Some(string_from_bytes(b)),
+        Raw9(b) => Some(string_from_bytes(b)),
+        Raw10(b) => Some(string_from_bytes(b)),
+        Raw11(b) => Some(string_from_bytes(b)),
+        Raw12(b) => Some(string_from_bytes(b)),
+        Raw13(b) => Some(string_from_bytes(b)),
+        Raw14(b) => Some(string_from_bytes(b)),
+        Raw15(b) => Some(string_from_bytes(b)),
+        Raw16(b) => Some(string_from_bytes(b)),
+        Raw17(b) => Some(string_from_bytes(b)),
+        Raw18(b) => Some(string_from_bytes(b)),
+        Raw19(b) => Some(string_from_bytes(b)),
+        Raw20(b) => Some(string_from_bytes(b)),
+        Raw21(b) => Some(string_from_bytes(b)),
+        Raw22(b) => Some(string_from_bytes(b)),
+        Raw23(b) => Some(string_from_bytes(b)),
+        Raw24(b) => Some(string_from_bytes(b)),
+        Raw25(b) => Some(string_from_bytes(b)),
+        Raw26(b) => Some(string_from_bytes(b)),
+        Raw27(b) => Some(string_from_bytes(b)),
+        Raw28(b) => Some(string_from_bytes(b)),
+        Raw29(b) => Some(string_from_bytes(b)),
+        Raw30(b) => Some(string_from_bytes(b)),
+        Raw31(b) => Some(string_from_bytes(b)),
+        Raw32(b) => Some(string_from_bytes(b)),
         _ => Option::None,
     }
 }
