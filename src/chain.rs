@@ -41,7 +41,7 @@ impl EventSource {
     async fn process_block(&self, block: node::Block, tx: &mpsc::Sender<Event>) -> Result<()> {
         for event in block.events().await?.iter() {
             if let Ok(event) = event?.as_root_event::<node::Event>() {
-                if let Some(event) = self.decode_api_event(event) {
+                if let Some(event) = self.decode_api_event(event).await? {
                     tx.send(event).await?;
                 }
             }
@@ -49,16 +49,16 @@ impl EventSource {
         Ok(())
     }
 
-    fn decode_api_event(&self, event: node::Event) -> Option<Event> {
-        match event {
-            node::Event::Identity(e) => self.decode_api_identity_event(e),
+    async fn decode_api_event(&self, event: node::Event) -> Result<Option<Event>> {
+        Ok(match event {
+            node::Event::Identity(e) => self.decode_api_identity_event(e).await?,
             _ => None,
-        }
+        })
     }
 
-    fn decode_api_identity_event(&self, event: node::IdentityEvent) -> Option<Event> {
+    async fn decode_api_identity_event(&self, event: node::IdentityEvent) -> Result<Option<Event>> {
         use node::IdentityEvent::*;
-        match event {
+        Ok(match event {
             IdentitySet { who } => {
                 Some(Event::IdentitySet(who))
             }
@@ -73,7 +73,11 @@ impl EventSource {
 
             JudgementRequested { who, registrar_index }
             if registrar_index == self.registrar_index => {
-                Some(Event::JudgementRequested(who))
+                if let Some(id) = self.fetch_identity(&who).await? {
+                    Some(Event::JudgementRequested(who, id))
+                } else {
+                    None
+                }
             }
 
             JudgementUnrequested { who, registrar_index }
@@ -87,25 +91,25 @@ impl EventSource {
             }
 
             _ => None
-        }
+        })
     }
-}
 
-pub async fn fetch_identity(client: &Client, id: &AccountId) -> Result<Option<Identity>> {
-    let query = storage()
-        .identity()
-        .identity_of(id);
+    async fn fetch_identity(&self, id: &AccountId) -> Result<Option<Identity>> {
+        let query = storage()
+            .identity()
+            .identity_of(id);
 
-    let identity = client
-        .storage()
-        .at_latest()
-        .await?
-        .fetch(&query)
-        .await?;
+        let identity = self.client
+            .storage()
+            .at_latest()
+            .await?
+            .fetch(&query)
+            .await?;
 
-    Ok(identity.map(|(reg, _)| {
-        decode_identity_info(&reg.info)
-    }))
+        Ok(identity.map(|(reg, _)| {
+            decode_identity_info(&reg.info)
+        }))
+    }
 }
 
 //------------------------------------------------------------------------------
@@ -115,7 +119,7 @@ pub enum Event {
     IdentitySet(AccountId),
     IdentityCleared(AccountId),
     IdentityKilled(AccountId),
-    JudgementRequested(AccountId),
+    JudgementRequested(AccountId, Identity),
     JudgementUnrequested(AccountId),
     JudgementGiven(AccountId),
 }
@@ -127,7 +131,7 @@ impl Event {
             | IdentitySet(id)
             | IdentityCleared(id)
             | IdentityKilled(id)
-            | JudgementRequested(id)
+            | JudgementRequested(id, _)
             | JudgementUnrequested(id)
             | JudgementGiven(id) => {
                 id
@@ -138,7 +142,7 @@ impl Event {
 
 //------------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Identity {
     pub display_name: Option<String>,
     pub accounts: AccountSet,

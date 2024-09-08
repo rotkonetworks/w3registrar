@@ -2,7 +2,7 @@
 mod chain;
 mod node;
 
-use crate::chain::{fetch_identity, Event, EventSource, RegistrarIndex};
+use crate::chain::{EventSource, RegistrarIndex};
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -35,15 +35,6 @@ async fn run(cfg: WatcherConfig) -> Result<()> {
 
     while let Some(event) = rx.recv().await {
         println!("{:#?}\n", event);
-
-        match event {
-            Event::JudgementRequested(account_id) => {
-                if let Some(id) = fetch_identity(&client, &account_id).await? {
-                    println!("{:#?}", id);
-                }
-            }
-            _ => {}
-        };
     }
 
     Ok(())
