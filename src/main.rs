@@ -1,6 +1,7 @@
 // mod matrix;
 mod chain;
 mod node;
+mod registry;
 
 use crate::chain::{EventSource, RegistrarIndex};
 
