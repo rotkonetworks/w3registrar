@@ -3,8 +3,6 @@ mod chain;
 mod node;
 mod registry;
 
-use crate::chain::{EventSource, RegistrarIndex};
-
 use anyhow::Result;
 use serde::Deserialize;
 use std::fs;
@@ -25,14 +23,13 @@ async fn main() -> Result<()> {
     run(config.watcher).await
 }
 
-async fn run(cfg: WatcherConfig) -> Result<()> {
-    let client = node::Client::from_url(&cfg.endpoint).await?;
-    let events = EventSource::new(client.clone(), cfg.registrar_index);
+async fn run(cfg: chain::ClientConfig) -> Result<()> {
+    let client = chain::Client::from_config(cfg).await?;
 
     let (tx, mut rx) = mpsc::channel(100);
 
-    events.fetch_from_block(TEST_BLOCK_HASH, &tx).await?;
-    tokio::spawn(async move { events.fetch_incoming(&tx).await.unwrap(); });
+    client.fetch_events_in_block(TEST_BLOCK_HASH, &tx).await?;
+    tokio::spawn(async move { client.fetch_incoming_events(&tx).await.unwrap(); });
 
     while let Some(event) = rx.recv().await {
         println!("{:#?}\n", event);
@@ -47,14 +44,7 @@ async fn run(cfg: WatcherConfig) -> Result<()> {
 #[derive(Debug, Deserialize)]
 struct Config {
     // pub matrix: matrix::Config,
-    pub watcher: WatcherConfig,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WatcherConfig {
-    pub endpoint: String,
-    pub registrar_index: RegistrarIndex,
-    pub keystore_path: String,
+    pub watcher: chain::ClientConfig,
 }
 
 impl Config {

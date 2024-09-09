@@ -2,7 +2,7 @@
 
 use crate::node;
 
-pub use crate::node::{AccountId, BlockHash, Client, RegistrarIndex};
+pub use crate::node::{AccountId, BlockHash, RegistrarIndex};
 
 use crate::node::substrate::api::runtime_types::pallet_identity::types::Data;
 use crate::node::substrate::api::runtime_types::people_rococo_runtime::people::IdentityInfo;
@@ -11,33 +11,44 @@ use crate::node::substrate::api::storage;
 
 use anyhow::Result;
 use std::collections::HashMap;
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::warn;
 
-pub struct EventSource {
-    client: Client,
+#[derive(Debug, Deserialize)]
+pub struct ClientConfig {
+    pub endpoint: String,
+    pub registrar_index: RegistrarIndex,
+    pub keystore_path: String,
+}
+
+pub struct Client {
+    inner: node::Client,
     registrar_index: RegistrarIndex,
 }
 
-impl EventSource {
-    pub fn new(client: Client, registrar_index: RegistrarIndex) -> Self {
-        Self { client, registrar_index }
+impl Client {
+    pub async fn from_config(cfg: ClientConfig) -> Result<Self> {
+        Ok(Self {
+            inner: node::Client::from_url(cfg.endpoint).await?,
+            registrar_index: cfg.registrar_index,
+        })
     }
 
-    pub async fn fetch_from_block(&self, hash: &str, tx: &mpsc::Sender<Event>) -> Result<()> {
+    pub async fn fetch_events_in_block(&self, hash: &str, tx: &mpsc::Sender<Event>) -> Result<()> {
         let hash = hash.parse::<BlockHash>()?;
-        let block = self.client.blocks().at(hash).await?;
+        let block = self.inner.blocks().at(hash).await?;
         self.process_block(block, &tx).await
     }
 
-    pub async fn fetch_incoming(&self, tx: &mpsc::Sender<Event>) -> Result<()> {
-        let mut sub = self.client.blocks().subscribe_finalized().await?;
+    pub async fn fetch_incoming_events(&self, tx: &mpsc::Sender<Event>) -> Result<()> {
+        let mut sub = self.inner.blocks().subscribe_finalized().await?;
         while let Some(block) = sub.next().await {
             self.process_block(block?, &tx).await?;
         }
         Ok(())
     }
-
+    
     // PRIVATE
 
     async fn process_block(&self, block: node::Block, tx: &mpsc::Sender<Event>) -> Result<()> {
@@ -105,7 +116,7 @@ impl EventSource {
             .identity()
             .identity_of(id);
 
-        let identity = self.client
+        let identity = self.inner
             .storage()
             .at_latest()
             .await?
@@ -174,8 +185,6 @@ pub enum IdentityKey {
 fn decode_identity_info(info: &IdentityInfo) -> Identity {
     use IdentityKey::*;
     let mut id = Identity::new();
-
-    info.pgp_fingerprint.as_ref().map(|fp| hex::encode(fp));
 
     decode_identity_string_field_into(DisplayName, &info.display, &mut id);
     decode_identity_string_field_into(LegalName, &info.legal, &mut id);
