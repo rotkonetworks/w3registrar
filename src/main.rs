@@ -1,4 +1,4 @@
-// mod matrix;
+mod matrix;
 mod chain;
 mod node;
 mod registry;
@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 
-const TEST_BLOCK_HASH: &str = "0x4b38b6dd8e225ff3bb0b906badeedaba574d176aa34023cf64c3649767db7e65";
+const TEST_BLOCK_HASH: &str = "0x512753ba6330e5d9e4932b88e2c39ba5f1a9a0c043be153e0a2070d6c4332c4c";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -46,7 +46,7 @@ async fn run(cfg: WatcherConfig) -> Result<()> {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Config {
-    // pub matrix: matrix::Config,
+    pub matrix: matrix::Config,
     pub watcher: WatcherConfig,
 }
 
