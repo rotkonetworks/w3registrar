@@ -175,11 +175,18 @@ fn decode_identity_info(info: &IdentityInfo) -> Identity {
     use IdentityKey::*;
     let mut id = Identity::new();
 
-    decode_identity_field_into(Matrix, &info.matrix, &mut id);
-    decode_identity_field_into(Email, &info.email, &mut id);
-    decode_identity_field_into(Twitter, &info.twitter, &mut id);
-    decode_identity_field_into(Github, &info.github, &mut id);
-    decode_identity_field_into(Discord, &info.discord, &mut id);
+    info.pgp_fingerprint.as_ref().map(|fp| hex::encode(fp));
+
+    decode_identity_string_field_into(DisplayName, &info.display, &mut id);
+    decode_identity_string_field_into(LegalName, &info.legal, &mut id);
+    decode_identity_hex_field_into(PgpFingerprint, &info.pgp_fingerprint, &mut id);
+
+    decode_identity_string_field_into(Matrix, &info.matrix, &mut id);
+    decode_identity_string_field_into(Email, &info.email, &mut id);
+    decode_identity_string_field_into(Twitter, &info.twitter, &mut id);
+    decode_identity_string_field_into(Github, &info.github, &mut id);
+    decode_identity_string_field_into(Discord, &info.discord, &mut id);
+
 
     if id.contains_key(&LegalName) {
         warn!("Legal name is provided but not allowed without proper verification.");
@@ -192,9 +199,15 @@ fn decode_identity_info(info: &IdentityInfo) -> Identity {
     id
 }
 
-fn decode_identity_field_into(key: IdentityKey, data: &Data, accounts: &mut Identity) {
-    if let Some(value) = decode_string_data(data) {
+fn decode_identity_string_field_into(key: IdentityKey, data: &Data, accounts: &mut Identity) {
+    if let Some(value) = decode_string_data(&data) {
         accounts.insert(key, value);
+    }
+}
+
+fn decode_identity_hex_field_into(key: IdentityKey, data: &Option<[u8; 20usize]>, accounts: &mut Identity) {
+    if let Some(bytes) = data {
+        accounts.insert(key, hex::encode(bytes));
     }
 }
 
