@@ -20,6 +20,6 @@ async-trait = "0.1.81"
 rand = "0.8.5"
 chrono = { version = "0.4", features = ["serde"] }
 sqlx = { version = "0.8.0", features = [ "runtime-tokio", "sqlite" ] }
-
-# Disabled, because it conflicts with sqlx. Something to do with SQlite.
-#matrix-sdk = "0.7.1"
+# Pulling matrix-sdk in from GitHub, as the latest stable crate causes a
+# conflict with sqlx. Something to do with SQlite.
+matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk.git", rev = "19e89bbd6a0df1c4a5636252b02b9e16cc7ab44d" }

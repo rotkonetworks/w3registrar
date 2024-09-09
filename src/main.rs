@@ -1,7 +1,7 @@
-// mod matrix;
 mod chain;
 mod node;
 mod registry;
+mod matrix;
 
 use anyhow::Result;
 use serde::Deserialize;
