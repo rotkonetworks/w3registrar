@@ -18,5 +18,5 @@ hex = "0.4.3"
 uuid = { version = "1.10.0", features = ["v4", "macro-diagnostics"] }
 async-trait = "0.1.81"
 rand = "0.8.5"
-matrix-sdk = "0.7.1"
 chrono = { version = "0.4", features = ["serde"] }
+sqlx = { version = "0.8.0", features = [ "runtime-tokio", "sqlite" ] }
