@@ -2,18 +2,16 @@
 
 use crate::node;
 
-pub use crate::node::{AccountId, BlockHash, RegistrarIndex};
+pub use crate::node::{AccountId, BlockHash, RegistrarIndex, Judgement};
 
 use crate::node::substrate::api::runtime_types::pallet_identity::types::Data;
 use crate::node::substrate::api::runtime_types::people_rococo_runtime::people::IdentityInfo;
-use crate::node::substrate::api::runtime_types::pallet_identity::types::Judgement;
 use crate::node::substrate::api::storage;
 
 use anyhow::Result;
 use std::collections::HashMap;
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tracing::warn;
 
 #[derive(Debug, Deserialize)]
 pub struct ClientConfig {
@@ -35,6 +33,15 @@ impl Client {
         })
     }
 
+    // WRITE
+
+    // TODO: Add identity hash parameter.
+    pub async fn provide_judgement(&self, _account_id: &AccountId, _judgement: Judgement) -> Result<()> {
+        Ok(())
+    }
+
+    // READ
+
     pub async fn fetch_events_in_block(&self, hash: &str, tx: &mpsc::Sender<Event>) -> Result<()> {
         let hash = hash.parse::<BlockHash>()?;
         let block = self.inner.blocks().at(hash).await?;
@@ -49,7 +56,7 @@ impl Client {
         Ok(())
     }
     
-    // PRIVATE
+    // READ - PRIVATE
 
     async fn process_block(&self, block: node::Block, tx: &mpsc::Sender<Event>) -> Result<()> {
         for event in block.events().await?.iter() {
@@ -184,6 +191,7 @@ pub enum IdentityKey {
 
 fn decode_identity_info(info: &IdentityInfo) -> Identity {
     use IdentityKey::*;
+
     let mut id = Identity::new();
 
     decode_identity_string_field_into(DisplayName, &info.display, &mut id);
@@ -195,15 +203,6 @@ fn decode_identity_info(info: &IdentityInfo) -> Identity {
     decode_identity_string_field_into(Twitter, &info.twitter, &mut id);
     decode_identity_string_field_into(Github, &info.github, &mut id);
     decode_identity_string_field_into(Discord, &info.discord, &mut id);
-
-
-    if id.contains_key(&LegalName) {
-        warn!("Legal name is provided but not allowed without proper verification.");
-    }
-
-    if id.contains_key(&PgpFingerprint) {
-        warn!("PGP Fingerprint is provided but not supported at the moment.");
-    }
 
     id
 }

@@ -9,10 +9,13 @@ use subxt::{OnlineClient, SubstrateConfig};
 
 pub use substrate::api::Event;
 pub use substrate::api::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
+
 pub use subxt::utils::H256 as BlockHash;
 pub use subxt::utils::AccountId32 as AccountId;
 
 // TYPES
+
+pub type Judgement = substrate::api::runtime_types::pallet_identity::types::Judgement<u128>;
 
 pub type BlockNumber = u64;
 
