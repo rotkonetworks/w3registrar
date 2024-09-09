@@ -6,6 +6,7 @@ pub use crate::node::{AccountId, BlockHash, Client, RegistrarIndex};
 
 use crate::node::substrate::api::runtime_types::pallet_identity::types::Data;
 use crate::node::substrate::api::runtime_types::people_rococo_runtime::people::IdentityInfo;
+use crate::node::substrate::api::runtime_types::pallet_identity::types::Judgement;
 use crate::node::substrate::api::storage;
 
 use anyhow::{Result, Error};
@@ -73,8 +74,12 @@ impl EventSource {
 
             JudgementRequested { who, registrar_index }
             if registrar_index == self.registrar_index => {
-                if let Some(id) = self.fetch_identity(&who).await? {
-                    Some(Event::JudgementRequested(who, id))
+                if let Some((id, is_fee_paid)) = self.fetch_identity(&who).await? {
+                    if is_fee_paid {
+                        Some(Event::JudgementRequested(who, id))
+                    } else {
+                        None // Ignore if fee is not paid
+                    }
                 } else {
                     None
                 }
@@ -94,7 +99,7 @@ impl EventSource {
         })
     }
 
-    async fn fetch_identity(&self, id: &AccountId) -> Result<Option<Identity>> {
+    async fn fetch_identity(&self, id: &AccountId) -> Result<Option<(Identity, bool)>> {
         let query = storage()
             .identity()
             .identity_of(id);
@@ -106,11 +111,20 @@ impl EventSource {
             .fetch(&query)
             .await?;
 
-        if let Some((reg, _)) = identity {
-            let identity_info = decode_identity_info(&reg.info)?;
-            return Ok(Some(identity_info));
-        }
-        Ok(None)
+        Ok(identity.and_then(|(reg, _)| {
+            let decoded_identity = match decode_identity_info(&reg.info) {
+                Ok(identity) => identity,
+                Err(e) => {
+                    eprintln!("Error decoding identity info: {:?}", e);
+                    return None;
+                }
+            };
+            // verify that the account has FeePaid judgement from the registrar in identityOf
+            let is_fee_paid = reg.judgements.0.iter().any(|(idx, judgement)| {
+                *idx == self.registrar_index && matches!(judgement, Judgement::FeePaid(_))
+            });
+            Some((decoded_identity, is_fee_paid))
+        }))
     }
 }
 
