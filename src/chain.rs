@@ -80,16 +80,10 @@ impl Client {
     async fn decode_api_identity_event(&self, event: node::IdentityEvent) -> Result<Option<Event>> {
         use node::IdentityEvent::*;
         Ok(match event {
-            IdentitySet { who } => {
-                Some(Event::IdentitySet(who))
-            }
-
-            IdentityCleared { who, .. } => {
-                Some(Event::IdentityCleared(who))
-            }
-
-            IdentityKilled { who, .. } => {
-                Some(Event::IdentityKilled(who))
+            | IdentitySet { who }
+            | IdentityCleared { who, .. }
+            | IdentityKilled { who, .. } => {
+                Some(Event::IdentityChanged(who))
             }
 
             JudgementRequested { who, registrar_index }
@@ -148,9 +142,7 @@ impl Client {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    IdentitySet(AccountId),
-    IdentityCleared(AccountId),
-    IdentityKilled(AccountId),
+    IdentityChanged(AccountId),
     JudgementRequested(AccountId, Identity),
     JudgementUnrequested(AccountId),
     JudgementGiven(AccountId),
@@ -160,9 +152,7 @@ impl Event {
     pub fn target(&self) -> &AccountId {
         use Event::*;
         match self {
-            | IdentitySet(id)
-            | IdentityCleared(id)
-            | IdentityKilled(id)
+            | IdentityChanged(id)
             | JudgementRequested(id, _)
             | JudgementUnrequested(id)
             | JudgementGiven(id) => {
