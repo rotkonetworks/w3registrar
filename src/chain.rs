@@ -9,9 +9,10 @@ use crate::node::substrate::api::runtime_types::people_rococo_runtime::people::I
 use crate::node::substrate::api::runtime_types::pallet_identity::types::Judgement;
 use crate::node::substrate::api::storage;
 
-use anyhow::{Result, Error};
-use std::collections::HashSet;
+use anyhow::Result;
+use std::collections::HashMap;
 use tokio::sync::mpsc;
+use tracing::warn;
 
 pub struct EventSource {
     client: Client,
@@ -112,18 +113,14 @@ impl EventSource {
             .await?;
 
         Ok(identity.and_then(|(reg, _)| {
-            let decoded_identity = match decode_identity_info(&reg.info) {
-                Ok(identity) => identity,
-                Err(e) => {
-                    eprintln!("Error decoding identity info: {:?}", e);
-                    return None;
-                }
-            };
+            let id = decode_identity_info(&reg.info);
             // verify that the account has FeePaid judgement from the registrar in identityOf
-            let is_fee_paid = reg.judgements.0.iter().any(|(idx, judgement)| {
-                *idx == self.registrar_index && matches!(judgement, Judgement::FeePaid(_))
-            });
-            Some((decoded_identity, is_fee_paid))
+            let is_fee_paid = reg.judgements.0
+                .iter()
+                .any(|(idx, judgement)| {
+                    *idx == self.registrar_index && matches!(judgement, Judgement::FeePaid(_))
+                });
+            Some((id, is_fee_paid))
         }))
     }
 }
@@ -158,23 +155,15 @@ impl Event {
 
 //------------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Identity {
-    pub display_name: Option<String>,
-    pub legal: Option<String>,  // Legal name should always be `None`
-    pub matrix: Option<String>,
-    pub email: Option<String>,
-    pub pgp_fingerprint: Option<String>,  // Should be `None` for now
-    pub accounts: AccountSet,
-}
+pub type Identity = HashMap<IdentityKey, String>;
 
-pub type AccountSet = HashSet<Account>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Account(pub AccountKind, pub Name);
+pub type IdentityField = (IdentityKey, String);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum AccountKind {
+pub enum IdentityKey {
+    DisplayName,
+    LegalName,
+    PgpFingerprint,
     Matrix,
     Email,
     Twitter,
@@ -182,47 +171,30 @@ pub enum AccountKind {
     Discord,
 }
 
-pub type Name = String;
+fn decode_identity_info(info: &IdentityInfo) -> Identity {
+    use IdentityKey::*;
+    let mut id = Identity::new();
 
-fn decode_identity_info(info: &IdentityInfo) -> Result<Identity, Error> {
-    let legal = decode_string_data(&info.legal);
-    if legal.is_some() {
-        eprintln!("Warning: Legal name is provided but not allowed without proper verification.");
+    decode_identity_field_into(Matrix, &info.matrix, &mut id);
+    decode_identity_field_into(Email, &info.email, &mut id);
+    decode_identity_field_into(Twitter, &info.twitter, &mut id);
+    decode_identity_field_into(Github, &info.github, &mut id);
+    decode_identity_field_into(Discord, &info.discord, &mut id);
+
+    if id.contains_key(&LegalName) {
+        warn!("Legal name is provided but not allowed without proper verification.");
     }
 
-    let pgp_fingerprint = info.pgp_fingerprint.as_ref().map(|fp| hex::encode(fp));
-    if pgp_fingerprint.is_some() {
-        eprintln!("Warning: PGP Fingerprint is provided but not supported at the moment.");
+    if id.contains_key(&PgpFingerprint) {
+        warn!("PGP Fingerprint is provided but not supported at the moment.");
     }
 
-    let identity = Identity {
-        display_name: decode_string_data(&info.display),
-        legal: None,  // Always set to None as it's not allowed
-        matrix: decode_string_data(&info.matrix),
-        email: decode_string_data(&info.email),
-        pgp_fingerprint: None,  // Always set to None as it's not supported
-        accounts: decode_identity_fields(info),
-    };
-
-    Ok(identity)
+    id
 }
 
-fn decode_identity_fields(info: &IdentityInfo) -> AccountSet {
-    use AccountKind::*;
-    let mut accounts = HashSet::new();
-
-    decode_identity_field_into(Matrix, &info.matrix, &mut accounts);
-    decode_identity_field_into(Email, &info.email, &mut accounts);
-    decode_identity_field_into(Twitter, &info.twitter, &mut accounts);
-    decode_identity_field_into(Github, &info.github, &mut accounts);
-    decode_identity_field_into(Discord, &info.discord, &mut accounts);
-
-    accounts
-}
-
-fn decode_identity_field_into(kind: AccountKind, value: &Data, accounts: &mut AccountSet) {
-    if let Some(name) = decode_string_data(value) {
-        accounts.insert(Account(kind, name));
+fn decode_identity_field_into(key: IdentityKey, data: &Data, accounts: &mut Identity) {
+    if let Some(value) = decode_string_data(data) {
+        accounts.insert(key, value);
     }
 }
 
