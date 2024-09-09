@@ -27,11 +27,12 @@ async fn main() -> Result<()> {
 
 async fn run(cfg: chain::ClientConfig) -> Result<()> {
     let client = chain::Client::from_config(cfg).await?;
+    let client2 = client.clone();
 
     let (tx, mut rx) = mpsc::channel(100);
 
     client.fetch_events_in_block(TEST_BLOCK_HASH, &tx).await?;
-    tokio::spawn(async move { client.fetch_incoming_events(&tx).await.unwrap(); });
+    tokio::spawn(async move { client2.fetch_incoming_events(&tx).await.unwrap(); });
 
     while let Some(event) = rx.recv().await {
         println!("{:#?}\n", event);

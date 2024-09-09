@@ -20,6 +20,7 @@ pub struct ClientConfig {
     pub keystore_path: String,
 }
 
+#[derive(Debug, Clone)]
 pub struct Client {
     inner: node::Client,
     registrar_index: RegistrarIndex,
