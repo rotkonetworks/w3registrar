@@ -1,3 +1,4 @@
+mod substrate;
 mod chain;
 mod node;
 mod repo;
