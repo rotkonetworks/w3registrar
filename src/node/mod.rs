@@ -1,6 +1,3 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
-
 pub mod substrate;
 
 use subxt::{OnlineClient, SubstrateConfig};
@@ -22,8 +19,6 @@ pub use subxt::utils::H256 as BlockHash;
 pub type Registration = substrate::api::runtime_types::pallet_identity::types::Registration<u128, IdentityInfo>;
 
 pub type Judgement = substrate::api::runtime_types::pallet_identity::types::Judgement<u128>;
-
-pub type BlockNumber = u64;
 
 pub type RegistrarIndex = u32;
 
