@@ -3,13 +3,11 @@ mod node;
 mod registry;
 mod matrix;
 
-use crate::chain::{Event, Judgement};
-
 use anyhow::Result;
 use serde::Deserialize;
 use std::fs;
 use tokio::sync::mpsc;
-use tracing::{warn, Level};
+use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 const TEST_BLOCK_HASH: &str = "0x512753ba6330e5d9e4932b88e2c39ba5f1a9a0c043be153e0a2070d6c4332c4c";
@@ -36,25 +34,6 @@ async fn run(cfg: chain::ClientConfig) -> Result<()> {
 
     while let Some(event) = rx.recv().await {
         println!("{:#?}\n", event);
-
-        match event {
-            Event::JudgementRequested(who, id) => {
-                use chain::IdentityKey::*;
-
-                if id.contains_key(&LegalName) {
-                    warn!("Legal name is provided but not allowed without proper verification.");
-                }
-                if id.contains_key(&PgpFingerprint) {
-                    warn!("PGP Fingerprint is provided but not supported at the moment.");
-                }
-
-                if id.contains_key(&LegalName) || id.contains_key(&PgpFingerprint) {
-                    client.provide_judgement(&who, Judgement::Unknown).await?;
-                }
-            }
-            _ => {}
-        }
-
     }
 
     Ok(())
