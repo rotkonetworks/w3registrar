@@ -1,6 +1,6 @@
 mod chain;
 mod node;
-mod registry;
+mod repo;
 mod matrix;
 
 use anyhow::Result;
