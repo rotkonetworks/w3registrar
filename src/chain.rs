@@ -2,13 +2,12 @@
 
 use crate::node;
 
-pub use crate::node::{AccountId, BlockHash, RegistrarIndex, Judgement};
+pub use crate::node::{AccountId, RegistrarIndex, Judgement};
 
 use anyhow::Result;
 use std::collections::HashMap;
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use crate::node::{Data, IdentityInfo};
 
 #[derive(Debug, Deserialize)]
 pub struct ClientConfig {
@@ -41,7 +40,7 @@ impl Client {
     // READ
 
     pub async fn fetch_events_in_block(&self, hash: &str, tx: &mpsc::Sender<Event>) -> Result<()> {
-        let hash = hash.parse::<BlockHash>()?;
+        let hash = hash.parse::<node::BlockHash>()?;
         let block = self.inner.blocks().at(hash).await?;
         self.process_block(block, &tx).await
     }
@@ -185,7 +184,7 @@ pub enum IdentityKey {
     Discord,
 }
 
-fn decode_identity_info(info: &IdentityInfo) -> Identity {
+fn decode_identity_info(info: &node::IdentityInfo) -> Identity {
     use IdentityKey::*;
 
     let mut id = Identity::new();
@@ -203,7 +202,7 @@ fn decode_identity_info(info: &IdentityInfo) -> Identity {
     id
 }
 
-fn decode_identity_string_field_into(key: IdentityKey, data: &Data, accounts: &mut Identity) {
+fn decode_identity_string_field_into(key: IdentityKey, data: &node::Data, accounts: &mut Identity) {
     if let Some(value) = decode_string_data(&data) {
         accounts.insert(key, value);
     }
@@ -215,8 +214,8 @@ fn decode_identity_hex_field_into(key: IdentityKey, data: &Option<[u8; 20usize]>
     }
 }
 
-fn decode_string_data(data: &Data) -> Option<String> {
-    use Data::*;
+fn decode_string_data(data: &node::Data) -> Option<String> {
+    use node::Data::*;
     match data {
         Raw0(b) => Some(string_from_bytes(b)),
         Raw1(b) => Some(string_from_bytes(b)),
