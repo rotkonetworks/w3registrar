@@ -1,4 +1,4 @@
-use crate::substrate::api;
+use crate::chain::substrate::api;
 
 use subxt::{OnlineClient, SubstrateConfig};
 

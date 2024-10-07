@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
+mod substrate;
 mod api;
+
 pub use api::{AccountId, Judgement};
 
 use anyhow::Result;

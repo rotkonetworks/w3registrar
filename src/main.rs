@@ -1,4 +1,3 @@
-mod substrate;
 mod chain;
 mod repo;
 mod matrix;
