@@ -29,7 +29,7 @@ async fn run(cfg: chain::ClientConfig) -> Result<()> {
     tokio::spawn(async move { client.fetch_incoming_events(&tx).await.unwrap(); });
 
     while let Some(event) = rx.recv().await {
-        println!("{:#?}\n", event);
+        repo::handle_chain_event(event).await?;
     }
 
     Ok(())

@@ -42,6 +42,8 @@ pub type Name = String;
 //------------------------------------------------------------------------------
 
 pub async fn handle_chain_event(event: chain::Event) -> anyhow::Result<()> {
+    println!("{:#?}\n", event);
+
     match event {
         chain::Event::JudgementRequested(who, id) => {
             let person = Person {
