@@ -10,8 +10,6 @@ use tokio::sync::mpsc;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 
-const TEST_BLOCK_HASH: &str = "0x512753ba6330e5d9e4932b88e2c39ba5f1a9a0c043be153e0a2070d6c4332c4c";
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -25,12 +23,10 @@ async fn main() -> Result<()> {
 
 async fn run(cfg: chain::ClientConfig) -> Result<()> {
     let client = chain::Client::from_config(cfg).await?;
-    let client2 = client.clone();
 
     let (tx, mut rx) = mpsc::channel(100);
 
-    client.fetch_events_in_block(TEST_BLOCK_HASH, &tx).await?;
-    tokio::spawn(async move { client2.fetch_incoming_events(&tx).await.unwrap(); });
+    tokio::spawn(async move { client.fetch_incoming_events(&tx).await.unwrap(); });
 
     while let Some(event) = rx.recv().await {
         println!("{:#?}\n", event);
