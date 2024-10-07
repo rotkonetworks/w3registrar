@@ -20,8 +20,6 @@ pub type Registration = substrate::api::runtime_types::pallet_identity::types::R
 
 pub type Judgement = substrate::api::runtime_types::pallet_identity::types::Judgement<u128>;
 
-pub type RegistrarIndex = u32;
-
 pub type Client = OnlineClient<SubstrateConfig>;
 
 pub type Block = subxt::blocks::Block<SubstrateConfig, Client>;

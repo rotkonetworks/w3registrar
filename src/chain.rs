@@ -2,12 +2,14 @@
 
 use crate::node;
 
-pub use crate::node::{AccountId, RegistrarIndex, Judgement};
+pub use crate::node::{AccountId, Judgement};
 
 use anyhow::Result;
 use std::collections::HashMap;
 use serde::Deserialize;
 use tokio::sync::mpsc;
+
+pub type RegistrarIndex = u32;
 
 #[derive(Debug, Deserialize)]
 pub struct ClientConfig {
