@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 
-use crate::node;
-
-pub use crate::node::{AccountId, Judgement};
+mod api;
+pub use api::{AccountId, Judgement};
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -20,14 +19,14 @@ pub struct ClientConfig {
 
 #[derive(Debug, Clone)]
 pub struct Client {
-    inner: node::Client,
+    inner: api::Client,
     registrar_index: RegistrarIndex,
 }
 
 impl Client {
     pub async fn from_config(cfg: ClientConfig) -> Result<Self> {
         Ok(Self {
-            inner: node::Client::from_url(cfg.endpoint).await?,
+            inner: api::Client::from_url(cfg.endpoint).await?,
             registrar_index: cfg.registrar_index,
         })
     }
@@ -42,7 +41,7 @@ impl Client {
     // READ
 
     pub async fn fetch_events_in_block(&self, hash: &str, tx: &mpsc::Sender<Event>) -> Result<()> {
-        let hash = hash.parse::<node::BlockHash>()?;
+        let hash = hash.parse::<api::BlockHash>()?;
         let block = self.inner.blocks().at(hash).await?;
         self.process_block(block, &tx).await
     }
@@ -57,9 +56,9 @@ impl Client {
     
     // READ - PRIVATE
 
-    async fn process_block(&self, block: node::Block, tx: &mpsc::Sender<Event>) -> Result<()> {
+    async fn process_block(&self, block: api::Block, tx: &mpsc::Sender<Event>) -> Result<()> {
         for event in block.events().await?.iter() {
-            if let Ok(event) = event?.as_root_event::<node::Event>() {
+            if let Ok(event) = event?.as_root_event::<api::Event>() {
                 if let Some(event) = self.decode_api_event(event).await? {
                     tx.send(event).await?;
                 }
@@ -68,15 +67,15 @@ impl Client {
         Ok(())
     }
 
-    async fn decode_api_event(&self, event: node::Event) -> Result<Option<Event>> {
+    async fn decode_api_event(&self, event: api::Event) -> Result<Option<Event>> {
         Ok(match event {
-            node::Event::Identity(e) => self.decode_api_identity_event(e).await?,
+            api::Event::Identity(e) => self.decode_api_identity_event(e).await?,
             _ => None,
         })
     }
 
-    async fn decode_api_identity_event(&self, event: node::IdentityEvent) -> Result<Option<Event>> {
-        use node::IdentityEvent::*;
+    async fn decode_api_identity_event(&self, event: api::IdentityEvent) -> Result<Option<Event>> {
+        use api::IdentityEvent::*;
         Ok(match event {
             | IdentitySet { who }
             | IdentityCleared { who, .. }
@@ -112,7 +111,7 @@ impl Client {
     }
 
     async fn fetch_registration(&self, id: &AccountId) -> Result<Option<Registration>> {
-        let query = node::storage()
+        let query = api::storage()
             .identity()
             .identity_of(id);
 
@@ -128,7 +127,7 @@ impl Client {
         }))
     }
 
-    fn decode_registration(&self, reg: node::Registration) -> Registration {
+    fn decode_registration(&self, reg: api::Registration) -> Registration {
         let identity = decode_identity_info(&reg.info);
         let has_paid_fee = reg.judgements.0
             .iter()
@@ -186,7 +185,7 @@ pub enum IdentityKey {
     Discord,
 }
 
-fn decode_identity_info(info: &node::IdentityInfo) -> Identity {
+fn decode_identity_info(info: &api::IdentityInfo) -> Identity {
     use IdentityKey::*;
 
     let mut id = Identity::new();
@@ -204,7 +203,7 @@ fn decode_identity_info(info: &node::IdentityInfo) -> Identity {
     id
 }
 
-fn decode_identity_string_field_into(key: IdentityKey, data: &node::Data, accounts: &mut Identity) {
+fn decode_identity_string_field_into(key: IdentityKey, data: &api::Data, accounts: &mut Identity) {
     if let Some(value) = decode_string_data(&data) {
         accounts.insert(key, value);
     }
@@ -216,8 +215,8 @@ fn decode_identity_hex_field_into(key: IdentityKey, data: &Option<[u8; 20usize]>
     }
 }
 
-fn decode_string_data(data: &node::Data) -> Option<String> {
-    use node::Data::*;
+fn decode_string_data(data: &api::Data) -> Option<String> {
+    use api::Data::*;
     match data {
         Raw0(b) => Some(string_from_bytes(b)),
         Raw1(b) => Some(string_from_bytes(b)),
