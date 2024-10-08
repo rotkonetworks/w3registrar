@@ -8,6 +8,7 @@ use std::fs;
 use tokio::sync::mpsc;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
+use crate::chain::{Event, RegistrarIndex};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,18 +18,45 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::load_from("config.toml")?;
-    run(config.watcher).await
+    run_watcher(config.watcher).await
 }
 
-async fn run(cfg: chain::ClientConfig) -> Result<()> {
-    let client = chain::Client::from_config(cfg).await?;
+async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
+    let client = chain::Client::from_url(cfg.endpoint.as_str()).await?;
+    let client_clone = client.clone();
 
     let (tx, mut rx) = mpsc::channel(100);
 
     tokio::spawn(async move { client.fetch_incoming_events(&tx).await.unwrap(); });
 
     while let Some(event) = rx.recv().await {
-        repo::handle_chain_event(event).await?;
+        match event {
+            Event::Unknown => {}
+            Event::IdentityChanged(who) => {
+                println!("Identity changed for {}", who);
+            }
+            Event::JudgementRequested(who, ri) => {
+                if ri == cfg.registrar_index {
+                    let reg = client_clone.get_registration(&who).await?;
+                    if reg.has_paid_fee() {
+                        println!("Judgement requested by {}: {:#?}", who, reg.identity);
+                    }
+                }
+            }
+            Event::JudgementUnrequested(who, ri) => {
+                if ri == cfg.registrar_index {
+                    println!("Judgement unrequested by {}", who);
+                }
+            }
+            Event::JudgementGiven(who, ri) => {
+                if ri == cfg.registrar_index {
+                    let reg = client_clone.get_registration(&who).await?;
+                    if let Some(judgement) = reg.last_judgement() {
+                        println!("Judgement given to {}: {:?}", who, judgement);
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
@@ -40,7 +68,14 @@ async fn run(cfg: chain::ClientConfig) -> Result<()> {
 #[derive(Debug, Deserialize)]
 struct Config {
     // pub matrix: matrix::Config,
-    pub watcher: chain::ClientConfig,
+    pub watcher: WatcherConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WatcherConfig {
+    pub endpoint: String,
+    pub registrar_index: RegistrarIndex,
+    pub keystore_path: String,
 }
 
 impl Config {

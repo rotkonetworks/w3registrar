@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use crate::chain;
 use crate::chain::{AccountId, Identity, IdentityField, IdentityKey};
 
 use rand::{distributions::Alphanumeric, Rng};
@@ -40,23 +39,6 @@ pub enum AccountKind {
 pub type Name = String;
 
 //------------------------------------------------------------------------------
-
-pub async fn handle_chain_event(event: chain::Event) -> anyhow::Result<()> {
-    println!("{:#?}\n", event);
-
-    match event {
-        chain::Event::JudgementRequested(who, id) => {
-            let person = Person {
-                id: who,
-                challenges: generate_challenges(id),
-            };
-            dbg!(&person);
-        }
-        _ => {}
-    };
-
-    Ok(())
-}
 
 fn generate_challenges(id: Identity) -> Vec<Challenge> {
     id.into_iter()

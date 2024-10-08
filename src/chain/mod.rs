@@ -3,108 +3,38 @@
 mod substrate;
 mod api;
 
-pub use api::{AccountId};
+pub use api::AccountId;
 
 use anyhow::Result;
 use std::collections::HashMap;
-use serde::Deserialize;
 use tokio::sync::mpsc;
 
 pub type RegistrarIndex = u32;
 
-#[derive(Debug, Deserialize)]
-pub struct ClientConfig {
-    pub endpoint: String,
-    pub registrar_index: RegistrarIndex,
-    pub keystore_path: String,
-}
-
 #[derive(Debug, Clone)]
 pub struct Client {
     inner: api::Client,
-    registrar_index: RegistrarIndex,
 }
 
 impl Client {
-    pub async fn from_config(cfg: ClientConfig) -> Result<Self> {
-        Ok(Self {
-            inner: api::Client::from_url(cfg.endpoint).await?,
-            registrar_index: cfg.registrar_index,
-        })
+    pub async fn from_url(url: &str) -> Result<Self> {
+        Ok(Self { inner: api::Client::from_url(url).await? })
     }
 
+    // TODO: Return a stream instead of fetching into a channel.
     pub async fn fetch_incoming_events(&self, tx: &mpsc::Sender<Event>) -> Result<()> {
         let mut sub = self.inner.blocks().subscribe_finalized().await?;
         while let Some(block) = sub.next().await {
-            self.process_block(block?, &tx).await?;
-        }
-        Ok(())
-    }
-
-    // PRIVATE
-
-    async fn process_block(&self, block: api::Block, tx: &mpsc::Sender<Event>) -> Result<()> {
-        for event in block.events().await?.iter() {
-            if let Ok(event) = event?.as_root_event::<api::Event>() {
-                if let Some(event) = self.decode_api_event(event).await? {
-                    tx.send(event).await?;
+            for event in block?.events().await?.iter() {
+                if let Ok(event) = event?.as_root_event::<api::Event>() {
+                    tx.send(decode_api_event(event)).await?;
                 }
             }
         }
         Ok(())
     }
 
-    async fn decode_api_event(&self, event: api::Event) -> Result<Option<Event>> {
-        Ok(match event {
-            api::Event::Identity(e) => self.decode_api_identity_event(e).await?,
-            _ => None,
-        })
-    }
-
-    async fn decode_api_identity_event(&self, event: api::IdentityEvent) -> Result<Option<Event>> {
-        use api::IdentityEvent::*;
-        Ok(match event {
-            | IdentitySet { who }
-            | IdentityCleared { who, .. }
-            | IdentityKilled { who, .. } => {
-                Some(Event::IdentityChanged(who))
-            }
-
-            JudgementRequested { who, registrar_index }
-            if registrar_index == self.registrar_index => {
-                if let Some(reg) = self.fetch_registration(&who).await? {
-                    if reg.has_paid_fee() {
-                        Some(Event::JudgementRequested(who, reg.identity))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            }
-
-            JudgementUnrequested { who, registrar_index }
-            if registrar_index == self.registrar_index => {
-                Some(Event::JudgementUnrequested(who))
-            }
-
-            JudgementGiven { target, registrar_index }
-            if registrar_index == self.registrar_index => {
-               self.fetch_last_judgement_for(&target)
-                   .await?
-                   .map(|j| Event::JudgementGiven(target, j))
-            }
-
-            _ => None
-        })
-    }
-
-    async fn fetch_last_judgement_for(&self, who: &AccountId) -> Result<Option<Judgement>> {
-        let reg = self.fetch_registration(who).await?;
-        Ok(reg.and_then(|reg| reg.last_judgement()))
-    }
-
-    async fn fetch_registration(&self, who: &AccountId) -> Result<Option<Registration>> {
+    pub async fn get_registration(&self, who: &AccountId) -> Result<Registration> {
         let query = api::storage()
             .identity()
             .identity_of(who);
@@ -116,42 +46,45 @@ impl Client {
             .fetch(&query)
             .await?;
 
-        Ok(identity.and_then(|(reg, _)| {
-           Some(self.decode_registration(reg))
-        }))
-    }
-
-    fn decode_registration(&self, reg: api::Registration) -> Registration {
-        let judgements = reg.judgements.0
-            .iter()
-            .map(|(_, j)| decode_judgement(j))
-            .collect();
-
-        let identity = decode_identity_info(&reg.info);
-
-        Registration { judgements, identity }
+        match identity {
+            None => Err(anyhow::anyhow!("No registration found for {}", who)),
+            Some((reg, _)) => Ok(decode_registration(reg)),
+        }
     }
 }
 
 //------------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-struct Registration {
-    judgements: Vec<Judgement>,
-    identity: Identity,
+pub struct Registration {
+    pub judgements: Vec<Judgement>,
+    pub identity: Identity,
 }
 
 impl Registration {
-    fn has_paid_fee(&self) -> bool {
+    pub fn has_paid_fee(&self) -> bool {
         self.judgements
             .iter()
             .any(|j| matches!(j, Judgement::FeePaid(_)))
     }
 
-    fn last_judgement(&self) -> Option<Judgement> {
+    pub fn last_judgement(&self) -> Option<Judgement> {
         self.judgements.last().cloned()
     }
 }
+
+fn decode_registration(reg: api::Registration) -> Registration {
+    let judgements = reg.judgements.0
+        .iter()
+        .map(|(_, j)| decode_judgement(j))
+        .collect();
+
+    let identity = decode_identity_info(&reg.info);
+
+    Registration { judgements, identity }
+}
+
+//------------------------------------------------------------------------------
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Judgement {
@@ -180,23 +113,42 @@ fn decode_judgement(j: &api::Judgement) -> Judgement {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
+    Unknown,
     IdentityChanged(AccountId),
-    JudgementRequested(AccountId, Identity),
-    JudgementUnrequested(AccountId),
-    JudgementGiven(AccountId, Judgement),
+    JudgementRequested(AccountId, RegistrarIndex),
+    JudgementUnrequested(AccountId, RegistrarIndex),
+    JudgementGiven(AccountId, RegistrarIndex),
 }
 
-impl Event {
-    pub fn target(&self) -> &AccountId {
-        use Event::*;
-        match self {
-            | IdentityChanged(id)
-            | JudgementRequested(id, _)
-            | JudgementUnrequested(id)
-            | JudgementGiven(id, _) => {
-                id
-            }
+fn decode_api_event(event: api::Event) -> Event {
+    match event {
+        api::Event::Identity(e) => decode_api_identity_event(e),
+        _ => Event::Unknown,
+    }
+}
+
+fn decode_api_identity_event(event: api::IdentityEvent) -> Event {
+    use api::IdentityEvent::*;
+    match event {
+        | IdentitySet { who }
+        | IdentityCleared { who, .. }
+        | IdentityKilled { who, .. } => {
+            Event::IdentityChanged(who)
         }
+
+        JudgementRequested { who, registrar_index } => {
+            Event::JudgementRequested(who, registrar_index)
+        }
+
+        JudgementUnrequested { who, registrar_index } => {
+            Event::JudgementUnrequested(who, registrar_index)
+        }
+
+        JudgementGiven { target, registrar_index } => {
+           Event::JudgementUnrequested(target, registrar_index)
+        }
+
+        _ => Event::Unknown
     }
 }
 
