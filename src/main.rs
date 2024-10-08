@@ -2,7 +2,7 @@ mod chain;
 mod repo;
 mod matrix;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::fs;
 use tokio::sync::mpsc;
@@ -81,9 +81,9 @@ pub struct WatcherConfig {
 impl Config {
     fn load_from(path: &str) -> Result<Self> {
         let content = fs::read_to_string(path)
-            .map_err(|_| anyhow::anyhow!("Failed to open config `{}`.", path))?;
+            .map_err(|_| anyhow!("Failed to open config `{}`.", path))?;
 
         toml::from_str::<Self>(&content)
-            .map_err(|err| anyhow::anyhow!("Failed to parse config: {:?}", err))
+            .map_err(|err| anyhow!("Failed to parse config: {:?}", err))
     }
 }

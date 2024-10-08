@@ -5,7 +5,7 @@ mod api;
 
 pub use api::AccountId;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
@@ -47,7 +47,7 @@ impl Client {
             .await?;
 
         match identity {
-            None => Err(anyhow::anyhow!("No registration found for {}", who)),
+            None => Err(anyhow!("No registration found for {}", who)),
             Some((reg, _)) => Ok(decode_registration(reg)),
         }
     }
