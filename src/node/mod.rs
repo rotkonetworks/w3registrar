@@ -3,45 +3,32 @@
 mod substrate;
 mod api;
 
-pub use api::AccountId;
+pub use api::{Client, AccountId};
 
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
-pub type RegistrarIndex = u32;
-
-#[derive(Debug, Clone)]
-pub struct Client {
-    inner: api::Client,
-}
-
-impl Client {
-    pub async fn from_url(url: &str) -> Result<Self> {
-        Ok(Self { inner: api::Client::from_url(url).await? })
-    }
-
-    pub async fn fetch_incoming_events(&self, tx: &mpsc::Sender<Event>) -> Result<()> {
-        let mut block_stream = self.inner.blocks().subscribe_finalized().await?;
-        while let Some(block_res) = block_stream.next().await {
-            let block = block_res?;
-            for event_res in block.events().await?.iter() {
-                let event_details = event_res?;
-                if let Ok(event) = event_details.as_root_event::<api::Event>() {
-                    tx.send(decode_api_event(event)).await?;
-                }
+pub async fn fetch_events(client: &Client, tx: &mpsc::Sender<Event>) -> Result<()> {
+    let mut block_stream = client.blocks().subscribe_finalized().await?;
+    while let Some(block_res) = block_stream.next().await {
+        let block = block_res?;
+        for event_res in block.events().await?.iter() {
+            let event_details = event_res?;
+            if let Ok(event) = event_details.as_root_event::<api::Event>() {
+                tx.send(decode_api_event(event)).await?;
             }
         }
-        Ok(())
     }
+    Ok(())
+}
 
-    pub async fn get_registration(&self, who: &AccountId) -> Result<Registration> {
-        let storage = self.inner.storage().at_latest().await?;
-        let address = api::storage().identity().identity_of(who);
-        match storage.fetch(&address).await? {
-            None => Err(anyhow!("No registration found for {}", who)),
-            Some((reg, _)) => Ok(decode_registration(reg)),
-        }
+pub async fn get_registration(client: &Client, who: &AccountId) -> Result<Registration> {
+    let storage = client.storage().at_latest().await?;
+    let address = api::storage().identity().identity_of(who);
+    match storage.fetch(&address).await? {
+        None => Err(anyhow!("No registration found for {}", who)),
+        Some((reg, _)) => Ok(decode_registration(reg)),
     }
 }
 
@@ -102,6 +89,8 @@ fn decode_judgement(j: &api::Judgement) -> Judgement {
 }
 
 //------------------------------------------------------------------------------
+
+pub type RegistrarIndex = u32;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {

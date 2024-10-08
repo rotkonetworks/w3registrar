@@ -26,7 +26,7 @@ async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
 
     let (tx, mut rx) = mpsc::channel(100);
 
-    tokio::spawn(async move { client.fetch_incoming_events(&tx).await.unwrap(); });
+    tokio::spawn(async move { node::fetch_events(&client, &tx).await.unwrap(); });
 
     while let Some(event) = rx.recv().await {
         use node::Event::*;
@@ -37,7 +37,7 @@ async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
             }
             JudgementRequested(who, ri) => {
                 if ri == cfg.registrar_index {
-                    let reg = client_clone.get_registration(&who).await?;
+                    let reg = node::get_registration(&client_clone, &who).await?;
                     if reg.has_paid_fee() {
                         println!("Judgement requested by {}: {:#?}", who, reg.identity);
                     }
@@ -50,7 +50,7 @@ async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
             }
             JudgementGiven(who, ri) => {
                 if ri == cfg.registrar_index {
-                    let reg = client_clone.get_registration(&who).await?;
+                    let reg = node::get_registration(&client_clone, &who).await?;
                     if let Some(judgement) = reg.last_judgement() {
                         println!("Judgement given to {}: {:?}", who, judgement);
                     }
