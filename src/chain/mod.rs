@@ -113,7 +113,7 @@ fn decode_judgement(j: &api::Judgement) -> Judgement {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    Unknown,
+    Other,
     IdentityChanged(AccountId),
     JudgementRequested(AccountId, RegistrarIndex),
     JudgementUnrequested(AccountId, RegistrarIndex),
@@ -139,10 +139,10 @@ fn decode_api_event(event: api::Event) -> Event {
                 JudgementGiven { target, registrar_index } => {
                    Event::JudgementUnrequested(target, registrar_index)
                 }
-                _ => Event::Unknown
+                _ => Event::Other
             }
         }
-        _ => Event::Unknown,
+        _ => Event::Other,
     }
 }
 

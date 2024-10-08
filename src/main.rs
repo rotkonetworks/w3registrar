@@ -31,7 +31,7 @@ async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
 
     while let Some(event) = rx.recv().await {
         match event {
-            Event::Unknown => {}
+            Event::Other => {}
             Event::IdentityChanged(who) => {
                 println!("Identity changed for {}", who);
             }
