@@ -21,12 +21,13 @@ impl Client {
         Ok(Self { inner: api::Client::from_url(url).await? })
     }
 
-    // TODO: Return a stream instead of fetching into a channel.
     pub async fn fetch_incoming_events(&self, tx: &mpsc::Sender<Event>) -> Result<()> {
-        let mut sub = self.inner.blocks().subscribe_finalized().await?;
-        while let Some(block) = sub.next().await {
-            for event in block?.events().await?.iter() {
-                if let Ok(event) = event?.as_root_event::<api::Event>() {
+        let mut block_stream = self.inner.blocks().subscribe_finalized().await?;
+        while let Some(block_res) = block_stream.next().await {
+            let block = block_res?;
+            for event_res in block.events().await?.iter() {
+                let event_details = event_res?;
+                if let Ok(event) = event_details.as_root_event::<api::Event>() {
                     tx.send(decode_api_event(event)).await?;
                 }
             }
@@ -35,18 +36,9 @@ impl Client {
     }
 
     pub async fn get_registration(&self, who: &AccountId) -> Result<Registration> {
-        let query = api::storage()
-            .identity()
-            .identity_of(who);
-
-        let identity = self.inner
-            .storage()
-            .at_latest()
-            .await?
-            .fetch(&query)
-            .await?;
-
-        match identity {
+        let storage = self.inner.storage().at_latest().await?;
+        let address = api::storage().identity().identity_of(who);
+        match storage.fetch(&address).await? {
             None => Err(anyhow!("No registration found for {}", who)),
             Some((reg, _)) => Ok(decode_registration(reg)),
         }
