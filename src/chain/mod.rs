@@ -122,33 +122,27 @@ pub enum Event {
 
 fn decode_api_event(event: api::Event) -> Event {
     match event {
-        api::Event::Identity(e) => decode_api_identity_event(e),
+        api::Event::Identity(e) => {
+            use api::IdentityEvent::*;
+            match e {
+                | IdentitySet { who }
+                | IdentityCleared { who, .. }
+                | IdentityKilled { who, .. } => {
+                    Event::IdentityChanged(who)
+                }
+                JudgementRequested { who, registrar_index } => {
+                    Event::JudgementRequested(who, registrar_index)
+                }
+                JudgementUnrequested { who, registrar_index } => {
+                    Event::JudgementUnrequested(who, registrar_index)
+                }
+                JudgementGiven { target, registrar_index } => {
+                   Event::JudgementUnrequested(target, registrar_index)
+                }
+                _ => Event::Unknown
+            }
+        }
         _ => Event::Unknown,
-    }
-}
-
-fn decode_api_identity_event(event: api::IdentityEvent) -> Event {
-    use api::IdentityEvent::*;
-    match event {
-        | IdentitySet { who }
-        | IdentityCleared { who, .. }
-        | IdentityKilled { who, .. } => {
-            Event::IdentityChanged(who)
-        }
-
-        JudgementRequested { who, registrar_index } => {
-            Event::JudgementRequested(who, registrar_index)
-        }
-
-        JudgementUnrequested { who, registrar_index } => {
-            Event::JudgementUnrequested(who, registrar_index)
-        }
-
-        JudgementGiven { target, registrar_index } => {
-           Event::JudgementUnrequested(target, registrar_index)
-        }
-
-        _ => Event::Unknown
     }
 }
 
