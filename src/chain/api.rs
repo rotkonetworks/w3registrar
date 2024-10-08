@@ -12,7 +12,6 @@ pub use api::runtime_types::pallet_identity::types::Data;
 pub use api::storage;
 
 pub use subxt::utils::AccountId32 as AccountId;
-pub use subxt::utils::H256 as BlockHash;
 
 // TYPES
 

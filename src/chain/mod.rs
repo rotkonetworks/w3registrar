@@ -33,21 +33,6 @@ impl Client {
         })
     }
 
-    // WRITE
-
-    // TODO: Add identity hash parameter.
-    pub async fn provide_judgement(&self, _account_id: &AccountId, _judgement: Judgement) -> Result<()> {
-        Ok(())
-    }
-
-    // READ
-
-    pub async fn fetch_events_in_block(&self, hash: &str, tx: &mpsc::Sender<Event>) -> Result<()> {
-        let hash = hash.parse::<api::BlockHash>()?;
-        let block = self.inner.blocks().at(hash).await?;
-        self.process_block(block, &tx).await
-    }
-
     pub async fn fetch_incoming_events(&self, tx: &mpsc::Sender<Event>) -> Result<()> {
         let mut sub = self.inner.blocks().subscribe_finalized().await?;
         while let Some(block) = sub.next().await {
@@ -55,8 +40,8 @@ impl Client {
         }
         Ok(())
     }
-    
-    // READ - PRIVATE
+
+    // PRIVATE
 
     async fn process_block(&self, block: api::Block, tx: &mpsc::Sender<Event>) -> Result<()> {
         for event in block.events().await?.iter() {
