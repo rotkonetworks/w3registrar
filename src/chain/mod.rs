@@ -90,17 +90,24 @@ impl Client {
 
             JudgementGiven { target, registrar_index }
             if registrar_index == self.registrar_index => {
-                Some(Event::JudgementGiven(target))
+               self.fetch_last_judgement_for(&target)
+                   .await?
+                   .map(|j| Event::JudgementGiven(target, j))
             }
 
             _ => None
         })
     }
 
-    async fn fetch_registration(&self, id: &AccountId) -> Result<Option<Registration>> {
+    async fn fetch_last_judgement_for(&self, who: &AccountId) -> Result<Option<Judgement>> {
+        let reg = self.fetch_registration(who).await?;
+        Ok(reg.and_then(|reg| reg.last_judgement()))
+    }
+
+    async fn fetch_registration(&self, who: &AccountId) -> Result<Option<Registration>> {
         let query = api::storage()
             .identity()
-            .identity_of(id);
+            .identity_of(who);
 
         let identity = self.inner
             .storage()
@@ -140,6 +147,10 @@ impl Registration {
             .iter()
             .any(|j| matches!(j, Judgement::FeePaid(_)))
     }
+
+    fn last_judgement(&self) -> Option<Judgement> {
+        self.judgements.last().cloned()
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -172,7 +183,7 @@ pub enum Event {
     IdentityChanged(AccountId),
     JudgementRequested(AccountId, Identity),
     JudgementUnrequested(AccountId),
-    JudgementGiven(AccountId),
+    JudgementGiven(AccountId, Judgement),
 }
 
 impl Event {
@@ -182,7 +193,7 @@ impl Event {
             | IdentityChanged(id)
             | JudgementRequested(id, _)
             | JudgementUnrequested(id)
-            | JudgementGiven(id) => {
+            | JudgementGiven(id, _) => {
                 id
             }
         }
