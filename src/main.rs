@@ -1,4 +1,4 @@
-mod chain;
+mod node;
 mod repo;
 mod matrix;
 
@@ -8,7 +8,6 @@ use std::fs;
 use tokio::sync::mpsc;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
-use crate::chain::{Event, RegistrarIndex};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,7 +21,7 @@ async fn main() -> Result<()> {
 }
 
 async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
-    let client = chain::Client::from_url(cfg.endpoint.as_str()).await?;
+    let client = node::Client::from_url(cfg.endpoint.as_str()).await?;
     let client_clone = client.clone();
 
     let (tx, mut rx) = mpsc::channel(100);
@@ -30,12 +29,13 @@ async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
     tokio::spawn(async move { client.fetch_incoming_events(&tx).await.unwrap(); });
 
     while let Some(event) = rx.recv().await {
+        use node::Event::*;
         match event {
-            Event::Other => {}
-            Event::IdentityChanged(who) => {
+            Other => {}
+            IdentityChanged(who) => {
                 println!("Identity changed for {}", who);
             }
-            Event::JudgementRequested(who, ri) => {
+            JudgementRequested(who, ri) => {
                 if ri == cfg.registrar_index {
                     let reg = client_clone.get_registration(&who).await?;
                     if reg.has_paid_fee() {
@@ -43,12 +43,12 @@ async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
                     }
                 }
             }
-            Event::JudgementUnrequested(who, ri) => {
+            JudgementUnrequested(who, ri) => {
                 if ri == cfg.registrar_index {
                     println!("Judgement unrequested by {}", who);
                 }
             }
-            Event::JudgementGiven(who, ri) => {
+            JudgementGiven(who, ri) => {
                 if ri == cfg.registrar_index {
                     let reg = client_clone.get_registration(&who).await?;
                     if let Some(judgement) = reg.last_judgement() {
@@ -74,7 +74,7 @@ struct Config {
 #[derive(Debug, Deserialize)]
 pub struct WatcherConfig {
     pub endpoint: String,
-    pub registrar_index: RegistrarIndex,
+    pub registrar_index: node::RegistrarIndex,
     pub keystore_path: String,
 }
 

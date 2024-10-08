@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::chain::{AccountId, Identity, IdentityField, IdentityKey};
+use crate::node::{AccountId, Identity, IdentityField, IdentityKey};
 
 use rand::{distributions::Alphanumeric, Rng};
 
