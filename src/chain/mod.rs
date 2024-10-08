@@ -3,7 +3,7 @@
 mod substrate;
 mod api;
 
-pub use api::{AccountId, Judgement};
+pub use api::{AccountId};
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -73,7 +73,7 @@ impl Client {
             JudgementRequested { who, registrar_index }
             if registrar_index == self.registrar_index => {
                 if let Some(reg) = self.fetch_registration(&who).await? {
-                    if reg.has_paid_fee {
+                    if reg.has_paid_fee() {
                         Some(Event::JudgementRequested(who, reg.identity))
                     } else {
                         None
@@ -115,19 +115,54 @@ impl Client {
     }
 
     fn decode_registration(&self, reg: api::Registration) -> Registration {
-        let identity = decode_identity_info(&reg.info);
-        let has_paid_fee = reg.judgements.0
+        let judgements = reg.judgements.0
             .iter()
-            .any(|(idx, judgement)| {
-                *idx == self.registrar_index && matches!(judgement, Judgement::FeePaid(_))
-            });
-        Registration { identity, has_paid_fee }
+            .map(|(_, j)| decode_judgement(j))
+            .collect();
+
+        let identity = decode_identity_info(&reg.info);
+
+        Registration { judgements, identity }
     }
 }
 
+//------------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
 struct Registration {
+    judgements: Vec<Judgement>,
     identity: Identity,
-    has_paid_fee: bool,
+}
+
+impl Registration {
+    fn has_paid_fee(&self) -> bool {
+        self.judgements
+            .iter()
+            .any(|j| matches!(j, Judgement::FeePaid(_)))
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum Judgement {
+    Unknown,
+    FeePaid(u128),
+    Reasonable,
+    KnownGood,
+    OutOfDate,
+    LowQuality,
+    Erroneous,
+}
+
+fn decode_judgement(j: &api::Judgement) -> Judgement {
+    match j {
+        api::Judgement::Unknown => Judgement::Unknown,
+        api::Judgement::FeePaid(x) => Judgement::FeePaid(*x),
+        api::Judgement::Reasonable => Judgement::Reasonable,
+        api::Judgement::KnownGood => Judgement::KnownGood,
+        api::Judgement::OutOfDate => Judgement::OutOfDate,
+        api::Judgement::LowQuality => Judgement::LowQuality,
+        api::Judgement::Erroneous => Judgement::Erroneous,
+    }
 }
 
 //------------------------------------------------------------------------------
