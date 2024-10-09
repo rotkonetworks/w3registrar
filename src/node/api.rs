@@ -20,5 +20,3 @@ pub type Registration = api::runtime_types::pallet_identity::types::Registration
 pub type Judgement = api::runtime_types::pallet_identity::types::Judgement<u128>;
 
 pub type Client = OnlineClient<SubstrateConfig>;
-
-pub type Block = subxt::blocks::Block<SubstrateConfig, Client>;
