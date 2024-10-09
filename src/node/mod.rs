@@ -2,21 +2,19 @@ mod api;
 
 pub use api::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
 pub use api::runtime_types::people_rococo_runtime::people::IdentityInfo;
-
 pub use subxt::utils::AccountId32 as AccountId;
 
-use subxt::{OnlineClient, SubstrateConfig};
 use anyhow::{anyhow, Result};
 use async_stream::try_stream;
 use tokio_stream::Stream;
 
-pub type RegistrarIndex = u32;
+pub type Client = subxt::OnlineClient<subxt::SubstrateConfig>;
 
 pub type Registration = api::runtime_types::pallet_identity::types::Registration<u128, IdentityInfo>;
 
 pub type Judgement = api::runtime_types::pallet_identity::types::Judgement<u128>;
 
-pub type Client = OnlineClient<SubstrateConfig>;
+pub type RegistrarIndex = u32;
 
 pub async fn subscribe_to_identity_events(
     client: &Client
