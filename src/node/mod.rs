@@ -1,26 +1,29 @@
-#![allow(dead_code)]
-
 mod substrate;
 mod api;
 
-pub use api::{Client, AccountId};
+pub use api::{AccountId, Client};
 
 use anyhow::{anyhow, Result};
+use async_stream::try_stream;
 use std::collections::HashMap;
-use tokio::sync::mpsc;
+use tokio_stream::Stream;
 
-pub async fn fetch_events(client: &Client, tx: &mpsc::Sender<Event>) -> Result<()> {
+pub async fn subscribe_to_events(client: &Client)
+    -> Result<impl Stream<Item = Result<Event>>>
+{
     let mut block_stream = client.blocks().subscribe_finalized().await?;
-    while let Some(block_res) = block_stream.next().await {
-        let block = block_res?;
-        for event_res in block.events().await?.iter() {
-            let event_details = event_res?;
-            if let Ok(event) = event_details.as_root_event::<api::Event>() {
-                tx.send(decode_api_event(event)).await?;
+
+    Ok(try_stream! {
+        while let Some(block_res) = block_stream.next().await {
+            let block = block_res?;
+            for event_res in block.events().await?.iter() {
+                let event_details = event_res?;
+                if let Ok(event) = event_details.as_root_event::<api::Event>() {
+                    yield decode_api_event(event);
+                }
             }
         }
-    }
-    Ok(())
+    })
 }
 
 pub async fn get_registration(client: &Client, who: &AccountId) -> Result<Registration> {

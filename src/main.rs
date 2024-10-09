@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod node;
 mod repo;
 mod matrix;
@@ -5,9 +7,10 @@ mod matrix;
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::fs;
-use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
+use crate::node::subscribe_to_events;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,27 +20,29 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::load_from("config.toml")?;
-    run_watcher(config.watcher).await
+    run_watcher(config.watcher).await?;
+
+    Ok(())
 }
 
 async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
     let client = node::Client::from_url(cfg.endpoint.as_str()).await?;
-    let client_clone = client.clone();
 
-    let (tx, mut rx) = mpsc::channel(100);
+    let event_stream = subscribe_to_events(&client).await?;
+    tokio::pin!(event_stream);
 
-    tokio::spawn(async move { node::fetch_events(&client, &tx).await.unwrap(); });
-
-    while let Some(event) = rx.recv().await {
+    while let Some(event_res) = event_stream.next().await {
         use node::Event::*;
-        match event {
-            Other => {}
+        match event_res? {
+            Other => {
+                println!("Other");
+            }
             IdentityChanged(who) => {
                 println!("Identity changed for {}", who);
             }
             JudgementRequested(who, ri) => {
                 if ri == cfg.registrar_index {
-                    let reg = node::get_registration(&client_clone, &who).await?;
+                    let reg = node::get_registration(&client, &who).await?;
                     if reg.has_paid_fee() {
                         println!("Judgement requested by {}: {:#?}", who, reg.identity);
                     }
@@ -50,7 +55,7 @@ async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
             }
             JudgementGiven(who, ri) => {
                 if ri == cfg.registrar_index {
-                    let reg = node::get_registration(&client_clone, &who).await?;
+                    let reg = node::get_registration(&client, &who).await?;
                     if let Some(judgement) = reg.last_judgement() {
                         println!("Judgement given to {}: {:?}", who, judgement);
                     }
