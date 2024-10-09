@@ -1,13 +1,13 @@
+mod matrix;
 mod node;
 mod repo;
-mod matrix;
+mod config;
 
-use anyhow::{anyhow, Result};
-use serde::Deserialize;
-use std::fs;
 use tokio::sync::mpsc;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
+
+use config::{Config, WatcherConfig};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -58,32 +58,10 @@ async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
             }
         }
     }
-
     Ok(())
 }
 
-//------------------------------------------------------------------------------
 
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct Config {
-    // pub matrix: matrix::Config,
-    pub watcher: WatcherConfig,
-}
 
-#[derive(Debug, Deserialize)]
-pub struct WatcherConfig {
-    pub endpoint: String,
-    pub registrar_index: node::RegistrarIndex,
-    pub keystore_path: String,
-}
 
-impl Config {
-    fn load_from(path: &str) -> Result<Self> {
-        let content = fs::read_to_string(path)
-            .map_err(|_| anyhow!("Failed to open config `{}`.", path))?;
-
-        toml::from_str::<Self>(&content)
-            .map_err(|err| anyhow!("Failed to parse config: {:?}", err))
-    }
 }

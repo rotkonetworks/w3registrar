@@ -1,0 +1,9 @@
+~ create a reproducible dev environment with `nix flakes`
+~ create a automated and reproducible build using a `build.nix` file
+~ write docs for important functions!
+~ add unit tests!
+~ implement a proper `Client` structure instead of the defined type in `src/node/api.rs:22`
+~ implement API communication with the fronted using `websockets`
+~ create a GUI/app and maybe TUI :)
+~ remove unused dependencies and 
+~ decrease the number of dependencies
