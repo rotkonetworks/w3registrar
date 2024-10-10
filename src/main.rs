@@ -20,35 +20,40 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::load_from("config.toml")?;
-    run_watcher(config.watcher).await
+    run_watcher(config.watcher).await?;
+
+    Ok(())
 }
 
-async fn event_listener(tx: Sender<Event>, client: OnlineClient<SubstrateConfig>) -> Result<()> {
-    node::fetch_events(&client, &tx).await
-}
+async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
+    let client = node::Client::from_url(cfg.endpoint.as_str()).await?;
 
-async fn manage_events(
-    rx: &mut Receiver<Event>,
-    cfg: WatcherConfig,
-    client: OnlineClient<SubstrateConfig>,
-) -> Result<()> {
-    while let Some(event) = rx.recv().await {
-        use node::Event::*;
+    let event_stream = node::subscribe_to_identity_events(&client).await?;
+    tokio::pin!(event_stream);
+
+    while let Some(event_res) = event_stream.next().await {
+        use node::IdentityEvent::*;
+
+        let event = event_res?;
         match event {
-            Other => {}
-            IdentityChanged(who) => {
+            | IdentitySet { who }
+            | IdentityCleared { who, .. }
+            | IdentityKilled { who, .. } => {
                 println!("Identity changed for {}", who);
             }
-            JudgementRequested(who, ri) => {
-                if ri == cfg.registrar_index {
+            JudgementRequested { who, registrar_index } => {
+                if registrar_index == cfg.registrar_index {
                     let reg = node::get_registration(&client, &who).await?;
-                    if reg.has_paid_fee() {
-                        println!("Judgement requested by {}: {:#?}", who, reg.identity);
+                    // TODO: Clean this up.
+                    let has_paid_fee = reg.judgements.0.iter()
+                        .any(|(_, j)| matches!(j, node::Judgement::FeePaid(_)));
+                    if has_paid_fee {
+                        println!("Judgement requested by {}: {:#?}", who, reg.info);
                     }
                 }
             }
-            JudgementUnrequested(who, ri) => {
-                if ri == cfg.registrar_index {
+            JudgementUnrequested { who, registrar_index } => {
+                if registrar_index == cfg.registrar_index {
                     println!("Judgement unrequested by {}", who);
                 }
             }
@@ -59,6 +64,9 @@ async fn manage_events(
                         println!("Judgement given to {}: {:?}", who, judgement);
                     }
                 }
+            }
+            _ => {
+                println!("{:?}", event);
             }
         }
     }
