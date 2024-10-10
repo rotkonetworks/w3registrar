@@ -1,24 +1,31 @@
 mod api;
 
+use std::pin::Pin;
+
 pub use api::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
 pub use api::runtime_types::people_rococo_runtime::people::IdentityInfo;
+use futures::StreamExt;
 pub use subxt::utils::AccountId32 as AccountId;
 
 use anyhow::{anyhow, Result};
 use async_stream::try_stream;
+use subxt::{OnlineClient, SubstrateConfig};
 use tokio_stream::Stream;
+
+use crate::config::WatcherConfig;
 
 pub type Client = subxt::OnlineClient<subxt::SubstrateConfig>;
 
-pub type Registration = api::runtime_types::pallet_identity::types::Registration<u128, IdentityInfo>;
+pub type Registration =
+    api::runtime_types::pallet_identity::types::Registration<u128, IdentityInfo>;
 
 pub type Judgement = api::runtime_types::pallet_identity::types::Judgement<u128>;
 
 pub type RegistrarIndex = u32;
 
 pub async fn subscribe_to_identity_events(
-    client: &Client
-) -> Result<impl Stream<Item=Result<IdentityEvent>>> {
+    client: &Client,
+) -> Result<impl Stream<Item = Result<IdentityEvent>>> {
     let mut block_stream = client.blocks().subscribe_finalized().await?;
 
     Ok(try_stream! {

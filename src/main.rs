@@ -1,9 +1,9 @@
-mod node;
+mod config;
 mod matrix;
+mod node;
 
-use anyhow::{anyhow, Result};
-use serde::Deserialize;
-use std::fs;
+use anyhow::Result;
+use config::{Config, WatcherConfig};
 use tokio_stream::StreamExt;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -32,28 +32,38 @@ async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
 
         let event = event_res?;
         match event {
-            | IdentitySet { who }
-            | IdentityCleared { who, .. }
-            | IdentityKilled { who, .. } => {
+            IdentitySet { who } | IdentityCleared { who, .. } | IdentityKilled { who, .. } => {
                 println!("Identity changed for {}", who);
             }
-            JudgementRequested { who, registrar_index } => {
+            JudgementRequested {
+                who,
+                registrar_index,
+            } => {
                 if registrar_index == cfg.registrar_index {
                     let reg = node::get_registration(&client, &who).await?;
                     // TODO: Clean this up.
-                    let has_paid_fee = reg.judgements.0.iter()
+                    let has_paid_fee = reg
+                        .judgements
+                        .0
+                        .iter()
                         .any(|(_, j)| matches!(j, node::Judgement::FeePaid(_)));
                     if has_paid_fee {
                         println!("Judgement requested by {}: {:#?}", who, reg.info);
                     }
                 }
             }
-            JudgementUnrequested { who, registrar_index } => {
+            JudgementUnrequested {
+                who,
+                registrar_index,
+            } => {
                 if registrar_index == cfg.registrar_index {
                     println!("Judgement unrequested by {}", who);
                 }
             }
-            JudgementGiven { target, registrar_index } => {
+            JudgementGiven {
+                target,
+                registrar_index,
+            } => {
                 if registrar_index == cfg.registrar_index {
                     let reg = node::get_registration(&client, &target).await?;
                     // TODO: Clean this up.
@@ -69,30 +79,4 @@ async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
     }
 
     Ok(())
-}
-
-//------------------------------------------------------------------------------
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct Config {
-    // pub matrix: matrix::Config,
-    pub watcher: WatcherConfig,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WatcherConfig {
-    pub endpoint: String,
-    pub registrar_index: node::RegistrarIndex,
-    pub keystore_path: String,
-}
-
-impl Config {
-    fn load_from(path: &str) -> Result<Self> {
-        let content = fs::read_to_string(path)
-            .map_err(|_| anyhow!("Failed to open config `{}`.", path))?;
-
-        toml::from_str::<Self>(&content)
-            .map_err(|err| anyhow!("Failed to parse config: {:?}", err))
-    }
 }

@@ -19,7 +19,7 @@ use std::path::Path;
 const STATE_DIR: &str = "/tmp/matrix";
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct Config {
+pub struct MatrixConfig {
     pub homeserver: String,
     pub username: String,
     pub password: String,
@@ -30,7 +30,7 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Nickname(String);
 
-pub async fn start_bot(cfg: Config) -> anyhow::Result<()> {
+pub async fn start_bot(cfg: MatrixConfig) -> anyhow::Result<()> {
     let state_dir = Path::new(STATE_DIR);
     let session_path = state_dir.join("session.json");
 
