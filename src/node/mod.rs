@@ -12,8 +12,6 @@ use async_stream::try_stream;
 use subxt::{OnlineClient, SubstrateConfig};
 use tokio_stream::Stream;
 
-use crate::config::WatcherConfig;
-
 pub type Client = subxt::OnlineClient<subxt::SubstrateConfig>;
 
 pub type Registration =
