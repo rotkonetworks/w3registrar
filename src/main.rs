@@ -2,7 +2,7 @@ mod matrix;
 mod node;
 
 use std::fs;
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 use serde::Deserialize;
 use tokio_stream::StreamExt;
 use tracing::Level;
@@ -24,7 +24,7 @@ struct WatcherConfig {
 }
 
 impl Config {
-    pub fn load_from(path: &str) -> Result<Self> {
+    pub fn load_from(path: &str) -> anyhow::Result<Self> {
         let content = fs::read_to_string(path)
             .map_err(|_| anyhow!("Failed to open config `{}`.", path))?;
         toml::from_str(&content)
@@ -33,7 +33,7 @@ impl Config {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
         .with_span_events(FmtSpan::CLOSE)
@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_watcher(cfg: WatcherConfig) -> Result<()> {
+async fn run_watcher(cfg: WatcherConfig) -> anyhow::Result<()> {
     let client = node::Client::from_url(cfg.endpoint.as_str()).await?;
 
     let event_stream = node::subscribe_to_identity_events(&client).await?;
