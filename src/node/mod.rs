@@ -1,15 +1,11 @@
 mod api;
 
-use std::pin::Pin;
-
 pub use api::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
 pub use api::runtime_types::people_rococo_runtime::people::IdentityInfo;
-use futures::StreamExt;
 pub use subxt::utils::AccountId32 as AccountId;
 
 use anyhow::{anyhow, Result};
 use async_stream::try_stream;
-use subxt::{OnlineClient, SubstrateConfig};
 use tokio_stream::Stream;
 
 pub type Client = subxt::OnlineClient<subxt::SubstrateConfig>;
