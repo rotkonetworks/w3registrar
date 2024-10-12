@@ -11,8 +11,8 @@ use serde::Deserialize;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tokio::signal;
-use substrate_api_client::{Api, CompositeClient};
-use sp_core::crypto::AccountId32 as AccountId;
+
+use subxt::utils::AccountId32 as AccountId;
 
 #[derive(Debug, Deserialize)]
 struct Config {
@@ -63,18 +63,19 @@ async fn main() -> anyhow::Result<()> {
 
     let client = Arc::new(node::Client::from_url(&config.watcher.endpoint).await?);
 
-    let substrate_api = Api::<CompositeClient>::new(Some(&config.watcher.endpoint))
-        .await
-        .map_err(|e| anyhow!("Failed to create substrate API client: {:?}", e))?;
-
     let signer = Arc::new(signer::Signer::new(
         client.clone(),
-        substrate_api,
+        &config.watcher.keystore_path,
         config.signer.proxy_account.parse()?,
-        config.signer.registrar_account.parse()?
+        config.signer.registrar_account.parse()?,
+    ).await?);
+
+    let ws_server = Arc::new(api::WebSocketServer::new(
+        client.clone(),
+        config.watcher.registrar_index,
+        signer.clone(),
     ));
 
-    let ws_server = Arc::new(api::WebSocketServer::new(client.clone(), config.watcher.registrar_index, signer.clone()));
     let ws_handle = {
         let ws_server = ws_server.clone();
         tokio::spawn(async move {

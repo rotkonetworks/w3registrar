@@ -14,7 +14,7 @@ admins = [
 ]
 
 [api]
-http_port = 8080
+# http_port = 8080
 ws_port = 8081
 
 [signer]

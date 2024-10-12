@@ -1,9 +1,13 @@
-use crate::node;
+// watcher.rs
+
 use crate::api::ws::WebSocketServer;
+use crate::signer::Signer;
+use crate::node::{self, get_filled_fields};
 use std::sync::Arc;
 use serde::Deserialize;
 use tokio_stream::StreamExt;
 use tracing::{info, warn};
+use subxt::utils::AccountId32 as AccountId;
 
 pub type RegistrarIndex = u32;
 
@@ -14,10 +18,13 @@ pub struct WatcherConfig {
     pub keystore_path: String,
 }
 
-pub async fn run(cfg: WatcherConfig, client: Arc<node::Client>, ws_server: Arc<WebSocketServer>) -> anyhow::Result<()> {
-    let event_stream = node::subscribe_to_identity_events(&client).await?;
-    tokio::pin!(event_stream);
-
+pub async fn run(
+    cfg: WatcherConfig,
+    client: Arc<node::Client>,
+    ws_server: Arc<WebSocketServer>,
+    signer: Arc<Signer>,
+) -> anyhow::Result<()> {
+    let mut event_stream = node::subscribe_to_identity_events(&client).await?;
     while let Some(event_res) = event_stream.next().await {
         use node::IdentityEvent::*;
 
@@ -25,12 +32,12 @@ pub async fn run(cfg: WatcherConfig, client: Arc<node::Client>, ws_server: Arc<W
         match event {
             JudgementRequested { who, registrar_index } => {
                 if registrar_index == cfg.registrar_index {
-                    handle_judgement_request(&client, &ws_server, &who).await?;
+                    handle_judgement_request(&client, &ws_server, &signer, &who).await?;
                 }
             }
             JudgementUnrequested { who, registrar_index } => {
                 if registrar_index == cfg.registrar_index {
-                    info!("Judgement unrequested by {}", who);
+                    info!("Judgement unrequested by {:?}", who);
                     ws_server.cancel_challenges(&who).await?;
                 }
             }
@@ -38,7 +45,7 @@ pub async fn run(cfg: WatcherConfig, client: Arc<node::Client>, ws_server: Arc<W
                 if registrar_index == cfg.registrar_index {
                     let reg = node::get_registration(&client, &target).await?;
                     if let Some(judgement) = reg.judgements.0.last().map(|(_, j)| j) {
-                        info!("Judgement given to {}: {:?}", target, judgement);
+                        info!("Judgement given to {:?}: {:?}", target, judgement);
                         ws_server.finalize_verification(&target, judgement).await?;
                     }
                 }
@@ -52,17 +59,25 @@ pub async fn run(cfg: WatcherConfig, client: Arc<node::Client>, ws_server: Arc<W
     Ok(())
 }
 
-async fn handle_judgement_request(client: &Arc<node::Client>, ws_server: &Arc<WebSocketServer>, who: &str) -> anyhow::Result<()> {
+async fn handle_judgement_request(
+    client: &Arc<node::Client>,
+    ws_server: &Arc<WebSocketServer>,
+    signer: &Arc<Signer>,
+    who: &AccountId,
+) -> anyhow::Result<()> {
     let reg = node::get_registration(client, who).await?;
-    
+
     let has_paid_fee = reg.judgements.0.iter().any(|(_, j)| matches!(j, node::Judgement::FeePaid(_)));
-    
+
     if has_paid_fee {
-        info!("Judgement requested by {} with fee paid. Initiating challenges for filled fields.", who);
-        let filled_fields = get_filled_fields(&reg.info);
-        
+        info!(
+            "Judgement requested by {:?} with fee paid. Initiating challenges for filled fields.",
+            who
+        );
+        let filled_fields = node::get_filled_fields(&reg.info);
+
         if filled_fields.is_empty() {
-            warn!("No verifiable fields found for {}. Considering as 'Unknown'.", who);
+            warn!("No verifiable fields found for {:?}. Considering as 'Unknown'.", who);
             ws_server.finalize_verification(who, &node::Judgement::Unknown).await?;
         } else {
             for field in filled_fields {
@@ -70,28 +85,8 @@ async fn handle_judgement_request(client: &Arc<node::Client>, ws_server: &Arc<We
             }
         }
     } else {
-        info!("Judgement requested by {} but fee not paid.", who);
+        info!("Judgement requested by {:?} but fee not paid.", who);
     }
 
     Ok(())
-}
-
-fn get_filled_fields(info: &node::IdentityInfo) -> Vec<String> {
-    let mut filled_fields = Vec::new();
-
-    // double check these field namings to be correct
-    if !info.display.is_empty() { filled_fields.push("display".to_string()); }
-    if !info.email.is_empty() { filled_fields.push("email".to_string()); }
-    if !info.matrix.is_empty() { filled_fields.push("matrix".to_string()); }
-    if !info.discord.is_empty() { filled_fields.push("discord".to_string()); }
-    if !info.twitter.is_empty() { filled_fields.push("twitter".to_string()); }
-
-    // Check for additional fields
-    for (key, value) in &info.additional {
-        if !value.is_empty() {
-            filled_fields.push(key.clone());
-        }
-    }
-
-    filled_fields
 }

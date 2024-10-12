@@ -1,3 +1,3 @@
-mod ws;
+pub mod ws;
 
 pub use ws::WebSocketServer;

@@ -13,7 +13,7 @@ use tokio::sync::broadcast;
 use tokio::time::{timeout, Duration};
 use thiserror::Error;
 use rand::Rng;
-use sp_core::crypto::AccountId32 as AccountId;
+use subxt::utils::AccountId32 as AccountId;
 
 const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1 MB
 const TIMEOUT_DURATION: Duration = Duration::from_secs(300); // 5 minutes
@@ -186,7 +186,7 @@ impl WebSocketServer {
     async fn subscribe_account_state(&self, account: String, sender: broadcast::Sender<WebSocketMessage>) -> Result<(), WebSocketError> {
         let registration = node::get_registration(&self.client, &account).await.map_err(|e| {
             tracing::error!("Error fetching registration: {:?}", e);
-            WebSocketError::SerializationError(serde_json::Error::custom("Failed to fetch registration"))
+            WebSocketError::SerializationError(serde_json::Error::custom(format!("Failed to fetch registration: {}", e)))
         })?;
 
         let verification_state = self.get_verification_state(&account).await;
@@ -222,8 +222,7 @@ impl WebSocketServer {
         let result = if let Some(stored_challenge) = stored_challenge {
             if *stored_challenge == verify.challenge {
                 self.challenges.remove(&verify.account);
-                // Here you would typically verify the identity info hash
-                // For now, we'll just mark it as verified
+                // TODO: verify the identity info hash
                 self.update_verification_state(&verify.account, true);
                 JsonResult::Ok(true)
             } else {
@@ -243,8 +242,9 @@ impl WebSocketServer {
     }
 
     pub async fn finalize_verification(&self, account: &str, judgement: &node::Judgement) -> Result<(), WebSocketError> {
+        let idinfo_hash = "0x00000000000000000000000000"; // TODO: hash blake2b-256(identityOf.info)
         // Provide the judgement using the Signer
-        self.signer.provide_judgement(account.parse()?, judgement.clone(), self.registrar_index).await
+        self.signer.provide_judgement(account.parse()?, judgement.clone(), self.registrar_index, idinfo_hash).await
             .map_err(|e| WebSocketError::JudgementSigningError(e.to_string()))?;
 
         // Update the verification state
