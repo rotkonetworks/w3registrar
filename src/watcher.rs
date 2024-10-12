@@ -9,9 +9,9 @@ pub type RegistrarIndex = u32;
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    endpoint: String,
-    registrar_index: RegistrarIndex,
-    keystore_path: String,
+    pub endpoint: String,
+    pub registrar_index: RegistrarIndex,
+    pub keystore_path: String,
 }
 
 pub async fn run(cfg: Config) -> anyhow::Result<()> {
