@@ -7,6 +7,7 @@ pub use subxt::utils::AccountId32 as AccountId;
 use anyhow::anyhow;
 use async_stream::try_stream;
 use tokio_stream::Stream;
+use tracing::info;
 
 pub type Client = subxt::OnlineClient<subxt::SubstrateConfig>;
 
@@ -26,6 +27,7 @@ pub async fn subscribe_to_identity_events(
             for event_res in block.events().await?.iter() {
                 let event_details = event_res?;
                 if let Ok(event) = event_details.as_root_event::<api::Event>() {
+                    info!("Received {:?}", event);
                     match event {
                         api::Event::Identity(e) => {
                             yield e;
