@@ -15,8 +15,6 @@ pub type Registration =
 
 pub type Judgement = api::runtime_types::pallet_identity::types::Judgement<u128>;
 
-pub type RegistrarIndex = u32;
-
 pub async fn subscribe_to_identity_events(
     client: &Client,
 ) -> Result<impl Stream<Item = Result<IdentityEvent>>> {
