@@ -1,21 +1,46 @@
 mod matrix;
 mod node;
 mod watcher;
+mod api;
+mod signer;
 
 use std::fs;
+use std::sync::Arc;
 use anyhow::anyhow;
 use serde::Deserialize;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
+use tokio::signal;
+use substrate_api_client::{Api, CompositeClient};
+use sp_core::crypto::AccountId32 as AccountId;
 
-use matrix::Config as MatrixConfig;
-use watcher::Config as WatcherConfig;
-
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Config {
+    watcher: watcher::WatcherConfig,
     matrix: MatrixConfig,
-    watcher: WatcherConfig,
+    api: ApiConfig,
+    signer: SignerConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct MatrixConfig {
+    homeserver: String,
+    username: String,
+    password: String,
+    security_key: String,
+    admins: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiConfig {
+    http_port: u16,
+    ws_port: u16,
+}
+
+#[derive(Debug, Deserialize)]
+struct SignerConfig {
+    proxy_account: String,
+    registrar_account: String,
 }
 
 impl Config {
@@ -36,5 +61,40 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::load_from("config.toml")?;
 
-    watcher::run(config.watcher).await
+    let client = Arc::new(node::Client::from_url(&config.watcher.endpoint).await?);
+
+    let substrate_api = Api::<CompositeClient>::new(Some(&config.watcher.endpoint))
+        .await
+        .map_err(|e| anyhow!("Failed to create substrate API client: {:?}", e))?;
+
+    let signer = Arc::new(signer::Signer::new(
+        client.clone(),
+        substrate_api,
+        config.signer.proxy_account.parse()?,
+        config.signer.registrar_account.parse()?
+    ));
+
+    let ws_server = Arc::new(api::WebSocketServer::new(client.clone(), config.watcher.registrar_index, signer.clone()));
+    let ws_handle = {
+        let ws_server = ws_server.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ws_server.start(config.api.ws_port).await {
+                tracing::error!("WebSocket server error: {:?}", e);
+            }
+        })
+    };
+
+    let watcher_handle = tokio::spawn(async move {
+        if let Err(e) = watcher::run(config.watcher, client, ws_server, signer).await {
+            tracing::error!("Watcher error: {:?}", e);
+        }
+    });
+
+    signal::ctrl_c().await?;
+
+    tracing::info!("Shutting down...");
+
+    tokio::try_join!(ws_handle, watcher_handle)?;
+
+    Ok(())
 }

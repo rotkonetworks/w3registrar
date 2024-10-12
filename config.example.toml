@@ -12,3 +12,11 @@ admins = [
     "@sara:matrix.org",
     "@bill:matrix.org",
 ]
+
+[api]
+http_port = 8080
+ws_port = 8081
+
+[signer]
+proxy_account = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"  # proxy to registrar
+registrar_account = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"  # registrar
