@@ -4,20 +4,20 @@ pub use api::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
 pub use api::runtime_types::people_rococo_runtime::people::IdentityInfo;
 pub use subxt::utils::AccountId32 as AccountId;
 
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 use async_stream::try_stream;
 use tokio_stream::Stream;
 
 pub type Client = subxt::OnlineClient<subxt::SubstrateConfig>;
 
 pub type Registration =
-    api::runtime_types::pallet_identity::types::Registration<u128, IdentityInfo>;
+api::runtime_types::pallet_identity::types::Registration<u128, IdentityInfo>;
 
 pub type Judgement = api::runtime_types::pallet_identity::types::Judgement<u128>;
 
 pub async fn subscribe_to_identity_events(
     client: &Client,
-) -> Result<impl Stream<Item = Result<IdentityEvent>>> {
+) -> anyhow::Result<impl Stream<Item = anyhow::Result<IdentityEvent>>> {
     let mut block_stream = client.blocks().subscribe_finalized().await?;
 
     Ok(try_stream! {
@@ -38,7 +38,9 @@ pub async fn subscribe_to_identity_events(
     })
 }
 
-pub async fn get_registration(client: &Client, who: &AccountId) -> Result<Registration> {
+pub async fn get_registration(
+    client: &Client, who: &AccountId
+) -> anyhow::Result<Registration> {
     let storage = client.storage().at_latest().await?;
     let address = api::storage().identity().identity_of(who);
     match storage.fetch(&address).await? {
