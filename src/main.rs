@@ -1,6 +1,8 @@
 mod matrix;
 mod node;
 
+use matrix::Config as MatrixConfig;
+
 use std::fs;
 use anyhow::anyhow;
 use serde::Deserialize;
@@ -11,7 +13,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Config {
-    // pub matrix: matrix::Config,
+    matrix: MatrixConfig,
     watcher: WatcherConfig,
 }
 
