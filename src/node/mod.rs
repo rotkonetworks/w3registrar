@@ -74,20 +74,19 @@ pub async fn get_registration_info(client: &Client, who: &AccountId) -> Result<R
 }
 
 pub fn get_filled_fields(info: &IdentityInfo) -> Vec<String> {
-    let mut filled_fields = Vec::new();
+    let mut fields = vec![];
+    let check = |v: &Data, n: &str| if !v.0.is_empty() { fields.push(n.to_string()) };
+    
+    check(&info.display, "display");
+    check(&info.legal, "legal");
+    check(&info.web, "web");
+    check(&info.email, "email");
+    check(&info.twitter, "twitter");
+    check(&info.discord, "discord");
+    check(&info.matrix, "matrix");
 
-    if !info.display.0.is_empty() { filled_fields.push("display".to_string()); }
-    if !info.legal.0.is_empty() { filled_fields.push("legal".to_string()); }
-    if !info.web.0.is_empty() { filled_fields.push("web".to_string()); }
-    if !info.email.0.is_empty() { filled_fields.push("email".to_string()); }
-    if !info.twitter.0.is_empty() { filled_fields.push("twitter".to_string()); }
-    if !info.discord.0.is_empty() { filled_fields.push("discord".to_string()); }
-    if !info.matrix.0.is_empty() { filled_fields.push("matrix".to_string()); }
-    if info.image.is_some() { filled_fields.push("image".to_string()); }
-    if info.additional.iter().any(|(_, v)| !v.0.is_empty()) {
-        filled_fields.push("additional".to_string());
-    }
+    if info.image.is_some() { fields.push("image".into()); }
+    if info.additional.iter().any(|(_, v)| !v.0.is_empty()) { fields.push("additional".into()); }
 
-    filled_fields
+    fields
 }
-
