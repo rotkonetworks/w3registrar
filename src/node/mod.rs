@@ -12,7 +12,7 @@ pub type Client = subxt::OnlineClient<subxt::SubstrateConfig>;
 
 pub type Registration = pallet_identity::types::Registration<u128, IdentityInfo>;
 
-pub type Judgement = use pallet_identity::types::Judgement<u128>;
+pub type Judgement = pallet_identity::types::Judgement<u128>;
 
 pub type ProxyType = people_rococo_runtime::ProxyType;
 

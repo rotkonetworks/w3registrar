@@ -15,7 +15,7 @@ hex = "0.4.3"
 # Pulling matrix-sdk in from GitHub, as the latest stable crate causes a conflict with sqlx.
 matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk.git", rev = "19e89bbd6a0df1c4a5636252b02b9e16cc7ab44d" }
 pallet-identity = "38.0.0"
-people-rococo-runtime = "0.12.0"
+people-rococo-runtime = { version = "0.12.0", features = ["serde"] }
 rand = "0.8.5"
 serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.128"
