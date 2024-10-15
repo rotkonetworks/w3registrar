@@ -4,7 +4,6 @@ use crate::node;
 
 use serde::Deserialize;
 use tokio_stream::StreamExt;
-use tracing::info;
 
 use node::{Client, Event, BlockHash};
 
@@ -58,6 +57,9 @@ async fn handle_event(client: &Client, ri: RegistrarIndex, event: Event) -> anyh
     match event {
         Event::Identity(JudgementRequested { who, registrar_index })
         if registrar_index == ri => {
+            use sp_core::Encode;
+            use sp_core::blake2_256;
+
             let reg = node::get_registration(&client, &who).await?;
 
             // TODO: Clean this up.
@@ -68,11 +70,16 @@ async fn handle_event(client: &Client, ri: RegistrarIndex, event: Event) -> anyh
                 .any(|(_, j)| matches!(j, node::Judgement::FeePaid(_)));
 
             if has_paid_fee {
-                info!("Judgement requested by {}: {:#?}", who, reg.info);
+                let encoded_info = reg.info.encode();
+                let hash = blake2_256(&encoded_info);
+                let hash_str = hex::encode(&hash);
+
+                println!("Judgement requested by {}", who);
+                println!("Identity hash 0x{}", hash_str);
             }
         }
         _ => {
-            info!("Ignoring {:?}", event);
+            // info!("Ignoring {:?}", event);
         }
     }
 
