@@ -38,7 +38,7 @@ pub struct JudgementEnvelope {
 pub async fn provide_judgement(
     client: &Client,
     phrase: String,
-    registrar_account: AccountId,
+    _registrar_account: AccountId,
     env: JudgementEnvelope
 ) -> Result<()> {
 
@@ -52,14 +52,14 @@ pub async fn provide_judgement(
         env.identity_hash,
     );
 
-    let proxy_call = tx().proxy().proxy(
-        MultiAddress::Id(registrar_account.clone()),
-        None, // TODO: ProxyType::IdentityJudgement
-        inner_call,
-    );
+    //let proxy_call = tx().proxy().proxy(
+    //    MultiAddress::Id(registrar_account.clone()),
+    //    None, // TODO: ProxyType::IdentityJudgement
+    //    inner_call,
+    //);
 
     let tx_progress = client.tx()
-        .sign_and_submit_then_watch_default(&proxy_call, &signer)
+        .sign_and_submit_then_watch_default(&inner_call, &signer)
         .await?;
 
     tx_progress.wait_for_finalized_success().await?;
