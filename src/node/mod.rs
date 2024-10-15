@@ -1,7 +1,7 @@
 mod api;
 
 pub use api::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
-pub use api::runtime_types::people_rococo_runtime::people::IdentityInfo;
+pub use api::runtime_types::people_kusama_runtime::people::IdentityInfo;
 pub use subxt::utils::AccountId32 as AccountId;
 
 use anyhow::anyhow;
