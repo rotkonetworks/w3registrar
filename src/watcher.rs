@@ -6,9 +6,9 @@ use serde::Deserialize;
 use tokio_stream::StreamExt;
 use std::collections::HashMap;
 
-use node::{Client, Event, BlockHash, Data, IdentityInfo};
+pub use node::RegistrarIndex;
 
-pub type RegistrarIndex = u32;
+use node::{Client, Event, BlockHash, Data, IdentityInfo};
 
 const JUDGEMENT_REQUESTED_BLOCK: &str =
     "0xece2b31d1df2d9ff118bb1ced539e395fbabf0987120ff2eed6610d0b7bd6b39";
