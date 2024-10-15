@@ -3,6 +3,7 @@ use crate::node;
 use serde::Deserialize;
 use tokio_stream::StreamExt;
 use tracing::info;
+use crate::node::Event;
 
 pub type RegistrarIndex = u32;
 
@@ -18,7 +19,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     let client = node::Client::from_url(cfg.endpoint.as_str()).await?;
     let ri = cfg.registrar_index;
 
-    let event_stream = node::subscribe_to_identity_events(&client).await?;
+    let event_stream = node::subscribe_to_events(&client).await?;
     tokio::pin!(event_stream);
 
     while let Some(item) = event_stream.next().await {
@@ -27,7 +28,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         let event = item?;
 
         match event {
-            JudgementRequested { who, registrar_index }
+            Event::Identity(JudgementRequested { who, registrar_index })
             if registrar_index == ri => {
                 let reg = node::get_registration(&client, &who).await?;
 

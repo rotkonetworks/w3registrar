@@ -1,13 +1,13 @@
 mod api;
 
+pub use api::Event;
 pub use api::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
 pub use api::runtime_types::people_kusama_runtime::people::IdentityInfo;
 pub use subxt::utils::AccountId32 as AccountId;
 
-use anyhow::anyhow;
+use anyhow::{Result, anyhow};
 use async_stream::try_stream;
 use tokio_stream::Stream;
-use tracing::info;
 
 pub type Client = subxt::OnlineClient<subxt::SubstrateConfig>;
 
@@ -16,9 +16,9 @@ api::runtime_types::pallet_identity::types::Registration<u128, IdentityInfo>;
 
 pub type Judgement = api::runtime_types::pallet_identity::types::Judgement<u128>;
 
-pub async fn subscribe_to_identity_events(
-    client: &Client,
-) -> anyhow::Result<impl Stream<Item = anyhow::Result<IdentityEvent>>> {
+pub async fn subscribe_to_events(
+    client: &Client
+) -> Result<impl Stream<Item = Result<Event>>> {
     let mut block_stream = client.blocks().subscribe_finalized().await?;
 
     Ok(try_stream! {
@@ -26,14 +26,8 @@ pub async fn subscribe_to_identity_events(
             let block = block_res?;
             for event_res in block.events().await?.iter() {
                 let event_details = event_res?;
-                if let Ok(event) = event_details.as_root_event::<api::Event>() {
-                    info!("Received {:?}", event);
-                    match event {
-                        api::Event::Identity(e) => {
-                            yield e;
-                        }
-                        _ => {}
-                    };
+                if let Ok(event) = event_details.as_root_event::<Event>() {
+                    yield event;
                 }
             }
         }
@@ -42,7 +36,7 @@ pub async fn subscribe_to_identity_events(
 
 pub async fn get_registration(
     client: &Client, who: &AccountId
-) -> anyhow::Result<Registration> {
+) -> Result<Registration> {
     let storage = client.storage().at_latest().await?;
     let address = api::storage().identity().identity_of(who);
     match storage.fetch(&address).await? {
