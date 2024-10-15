@@ -3,9 +3,12 @@
 mod substrate;
 mod api;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use async_stream::try_stream;
-use subxt::{PolkadotConfig, SubstrateConfig};
+use subxt::ext::sp_core::sr25519::Pair as Sr25519Pair;
+use subxt::ext::sp_core::Pair;
+use subxt::utils::MultiAddress;
+use subxt::SubstrateConfig;
 use tokio_stream::Stream;
 
 pub use api::*;
@@ -17,17 +20,12 @@ pub type Block = subxt::blocks::Block<SubstrateConfig, Client>;
 pub type BlockHash = <SubstrateConfig as subxt::Config>::Hash;
 
 pub use subxt::utils::AccountId32 as AccountId;
-use subxt::utils::MultiAddress;
 
 pub type RegistrarIndex = u32;
 
 pub type IdentityHash = subxt::ext::subxt_core::utils::H256;
 
-use subxt::tx::signer::PairSigner;
-use subxt_signer::sr25519::Keypair;
-
-use sp_core::Pair;
-use sp_core::sr25519::Pair as Sr25519Pair;
+type PairSigner = subxt::tx::PairSigner<SubstrateConfig, Sr25519Pair>;
 
 #[derive(Debug)]
 pub struct JudgementEnvelope {
@@ -39,14 +37,13 @@ pub struct JudgementEnvelope {
 
 pub async fn provide_judgement(
     client: &Client,
-    seed_phrase: String,
+    phrase: String,
     registrar_account: AccountId,
     env: JudgementEnvelope
 ) -> Result<()> {
-    let keypair = Sr25519Pair::from_phrase(&seed_phrase, None)
-        .map_err(|e| anyhow!("Failed to create key pair: {:?}", e))?;
 
-    let pair_signer: PairSigner<SubstrateConfig, Keypair> = PairSigner::new(keypair);
+    let pair = Sr25519Pair::from_phrase(&phrase, None)?;
+    let signer = PairSigner::new(pair.0);
 
     let inner_call = tx().identity().provide_judgement(
         env.registrar_index,
@@ -62,7 +59,7 @@ pub async fn provide_judgement(
     );
 
     let tx_progress = client.tx()
-        .sign_and_submit_then_watch_default(&proxy_call, &pair_signer)
+        .sign_and_submit_then_watch_default(&proxy_call, &signer)
         .await?;
 
     tx_progress.wait_for_finalized_success().await?;
