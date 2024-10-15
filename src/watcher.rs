@@ -6,9 +6,12 @@ use serde::Deserialize;
 use tokio_stream::StreamExt;
 use tracing::info;
 
-use node::{Client, Event};
+use node::{Client, Event, BlockHash};
 
 pub type RegistrarIndex = u32;
+
+const JUDGEMENT_REQUESTED_BLOCK: &str =
+    "0xece2b31d1df2d9ff118bb1ced539e395fbabf0987120ff2eed6610d0b7bd6b39";
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -20,7 +23,21 @@ pub struct Config {
 
 pub async fn run(cfg: Config) -> anyhow::Result<()> {
     let client = Client::from_url(cfg.endpoint.as_str()).await?;
-    watch_node(&client, cfg.registrar_index).await
+    let ri = cfg.registrar_index;
+
+    process_block(&client, ri, JUDGEMENT_REQUESTED_BLOCK).await?;
+    // watch_node(&client, ri).await?;
+
+    Ok(())
+}
+
+pub async fn process_block(client: &Client, ri: RegistrarIndex, hash: &str) -> anyhow::Result<()> {
+    let hash = hash.parse::<BlockHash>()?;
+    let block = client.blocks().at(hash).await?;
+    for event in node::events_from_block(block).await?.into_iter() {
+        handle_event(&client, ri, event).await?;
+    }
+    Ok(())
 }
 
 async fn watch_node(client: &Client, ri: RegistrarIndex) -> anyhow::Result<()> {
