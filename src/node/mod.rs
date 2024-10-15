@@ -1,6 +1,8 @@
 mod api;
 
-pub use api::*;
+pub use api::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
+pub use api::runtime_types::people_rococo_runtime::people::IdentityInfo;
+pub use subxt::utils::AccountId32 as AccountId;
 
 use anyhow::anyhow;
 use async_stream::try_stream;
@@ -8,6 +10,11 @@ use tokio_stream::Stream;
 use tracing::info;
 
 pub type Client = subxt::OnlineClient<subxt::SubstrateConfig>;
+
+pub type Registration =
+api::runtime_types::pallet_identity::types::Registration<u128, IdentityInfo>;
+
+pub type Judgement = api::runtime_types::pallet_identity::types::Judgement<u128>;
 
 pub async fn subscribe_to_identity_events(
     client: &Client,
@@ -19,10 +26,13 @@ pub async fn subscribe_to_identity_events(
             let block = block_res?;
             for event_res in block.events().await?.iter() {
                 let event_details = event_res?;
-                if let Ok(event) = event_details.as_root_event::<Event>() {
+                if let Ok(event) = event_details.as_root_event::<api::Event>() {
                     info!("Received {:?}", event);
                     match event {
-                        Event::Identity(e) => yield e,
+                        api::Event::Identity(e) => {
+                            yield e;
+                        }
+                        _ => {}
                     };
                 }
             }
@@ -31,10 +41,10 @@ pub async fn subscribe_to_identity_events(
 }
 
 pub async fn get_registration(
-    client: &Client, who: &AccountId32
+    client: &Client, who: &AccountId
 ) -> anyhow::Result<Registration> {
     let storage = client.storage().at_latest().await?;
-    let address = identity_of(who);
+    let address = api::storage().identity().identity_of(who);
     match storage.fetch(&address).await? {
         None => Err(anyhow!("No registration found for {}", who)),
         Some((reg, _)) => Ok(reg),

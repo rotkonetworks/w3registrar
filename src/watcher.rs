@@ -56,6 +56,9 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                     }
                 }
             }
+            _ => {
+                info!("{:?}", event);
+            }
         }
     }
 
