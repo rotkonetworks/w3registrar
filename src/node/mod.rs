@@ -10,6 +10,7 @@ use tokio_stream::Stream;
 pub use api::Event;
 pub use api::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
 pub use api::runtime_types::people_kusama_runtime::people::IdentityInfo;
+pub use api::runtime_types::pallet_identity::types::Data;
 pub use subxt::utils::AccountId32 as AccountId;
 
 pub type Client = subxt::OnlineClient<SubstrateConfig>;
