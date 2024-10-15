@@ -6,12 +6,16 @@ use serde::Deserialize;
 use tokio_stream::StreamExt;
 use std::collections::HashMap;
 
-use node::{Client, Event, BlockHash, Data, IdentityInfo};
+pub use node::RegistrarIndex;
 
-pub type RegistrarIndex = u32;
+use node::{Client, Event, BlockHash, Data, IdentityInfo};
+use crate::node::{IdentityHash, Judgement, JudgementEnvelope};
 
 const JUDGEMENT_REQUESTED_BLOCK: &str =
     "0xece2b31d1df2d9ff118bb1ced539e395fbabf0987120ff2eed6610d0b7bd6b39";
+
+const SEED_PHRASE: &str =
+    "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -68,18 +72,25 @@ async fn handle_event(client: &Client, ri: RegistrarIndex, event: Event) -> anyh
                 .judgements
                 .0
                 .iter()
-                .any(|(_, j)| matches!(j, node::Judgement::FeePaid(_)));
+                .any(|(_, j)| matches!(j, Judgement::FeePaid(_)));
 
             if has_paid_fee {
                 println!("Judgement requested by {}", who);
 
                 let encoded_info = reg.info.encode();
-                let hash = blake2_256(&encoded_info);
-                let hash_str = hex::encode(&hash);
-                println!("Identity hash 0x{}", hash_str);
+                let hash_bytes = blake2_256(&encoded_info);
+                let identity_hash = IdentityHash::from(&hash_bytes);
+                println!("Identity hash {:?}", identity_hash);
 
                 let profile = decode_identity_info(&reg.info);
                 println!("Profile {:#?}", profile);
+
+                node::provide_judgement(&client, SEED_PHRASE, JudgementEnvelope {
+                    registrar_index,
+                    target: who,
+                    judgement: Judgement::Erroneous,
+                    identity_hash,
+                }).await?;
             }
         }
         _ => {
