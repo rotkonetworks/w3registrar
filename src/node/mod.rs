@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod substrate;
 mod api;
 
 use anyhow::{Result, anyhow};
@@ -7,11 +8,7 @@ use async_stream::try_stream;
 use subxt::SubstrateConfig;
 use tokio_stream::Stream;
 
-pub use api::Event;
-pub use api::runtime_types::pallet_identity::pallet::Event as IdentityEvent;
-pub use api::runtime_types::people_kusama_runtime::people::IdentityInfo;
-pub use api::runtime_types::pallet_identity::types::Data;
-pub use subxt::utils::AccountId32 as AccountId;
+pub use api::*;
 
 pub type Client = subxt::OnlineClient<SubstrateConfig>;
 
@@ -19,10 +16,7 @@ pub type Block = subxt::blocks::Block<SubstrateConfig, Client>;
 
 pub type BlockHash = <SubstrateConfig as subxt::Config>::Hash;
 
-pub type Registration =
-api::runtime_types::pallet_identity::types::Registration<u128, IdentityInfo>;
-
-pub type Judgement = api::runtime_types::pallet_identity::types::Judgement<u128>;
+pub use subxt::utils::AccountId32 as AccountId;
 
 pub async fn subscribe_to_events(
     client: &Client
