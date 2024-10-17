@@ -4,20 +4,15 @@ use crate::node;
 
 use serde::Deserialize;
 use tokio_stream::StreamExt;
-use std::collections::HashMap;
 
 pub use node::RegistrarIndex;
 
-use node::{
-    Client,
-    Event,
-    BlockHash,
-    IdentityData,
-    IdentityInfo,
-    Identity,
-    Judgement,
-    JudgementEnvelope
-};
+use node::BlockHash;
+use node::Client;
+use node::Event;
+use node::Identity;
+use node::Judgement;
+use node::JudgementEnvelope;
 
 const JUDGEMENT_REQUESTED_BLOCK: &str =
     "0xece2b31d1df2d9ff118bb1ced539e395fbabf0987120ff2eed6610d0b7bd6b39";
@@ -90,9 +85,6 @@ async fn handle_event(client: &Client, ri: RegistrarIndex, event: Event) -> anyh
                 let identity_hash = Identity::from(&hash_bytes);
                 println!("Identity hash {:?}", identity_hash);
 
-                let profile = decode_identity_info(&reg.info);
-                println!("Profile {:#?}", profile);
-
                 node::provide_judgement(&client, SEED_PHRASE, JudgementEnvelope {
                     registrar_index,
                     target: who,
@@ -107,91 +99,4 @@ async fn handle_event(client: &Client, ri: RegistrarIndex, event: Event) -> anyh
     }
 
     Ok(())
-}
-
-//------------------------------------------------------------------------------
-
-pub type Profile = HashMap<ProfileKey, String>;
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum ProfileKey {
-    DisplayName,
-    LegalName,
-    PgpFingerprint,
-    Matrix,
-    Email,
-    Twitter,
-    Github,
-    Discord,
-}
-
-fn decode_identity_info(info: &IdentityInfo) -> Profile {
-    use ProfileKey::*;
-
-    fn decode_str_field(k: ProfileKey, v: &IdentityData, p: &mut Profile) {
-        if let Some(value) = decode_string_data(&v) {
-            p.insert(k, value);
-        }
-    }
-
-    fn decode_pgp_field(k: ProfileKey, v: &Option<[u8; 20usize]>, p: &mut Profile) {
-        if let Some(bytes) = v {
-            p.insert(k, hex::encode(bytes));
-        }
-    }
-
-    let mut p = Profile::new();
-    decode_str_field(DisplayName, &info.display, &mut p);
-    decode_str_field(LegalName, &info.legal, &mut p);
-    decode_pgp_field(PgpFingerprint, &info.pgp_fingerprint, &mut p);
-    decode_str_field(Matrix, &info.matrix, &mut p);
-    decode_str_field(Email, &info.email, &mut p);
-    decode_str_field(Twitter, &info.twitter, &mut p);
-    decode_str_field(Github, &info.github, &mut p);
-    decode_str_field(Discord, &info.discord, &mut p);
-    p
-}
-
-fn decode_string_data(data: &IdentityData) -> Option<String> {
-    use IdentityData::*;
-    match data {
-        Raw0(b) => Some(string_from_bytes(b)),
-        Raw1(b) => Some(string_from_bytes(b)),
-        Raw2(b) => Some(string_from_bytes(b)),
-        Raw3(b) => Some(string_from_bytes(b)),
-        Raw4(b) => Some(string_from_bytes(b)),
-        Raw5(b) => Some(string_from_bytes(b)),
-        Raw6(b) => Some(string_from_bytes(b)),
-        Raw7(b) => Some(string_from_bytes(b)),
-        Raw8(b) => Some(string_from_bytes(b)),
-        Raw9(b) => Some(string_from_bytes(b)),
-        Raw10(b) => Some(string_from_bytes(b)),
-        Raw11(b) => Some(string_from_bytes(b)),
-        Raw12(b) => Some(string_from_bytes(b)),
-        Raw13(b) => Some(string_from_bytes(b)),
-        Raw14(b) => Some(string_from_bytes(b)),
-        Raw15(b) => Some(string_from_bytes(b)),
-        Raw16(b) => Some(string_from_bytes(b)),
-        Raw17(b) => Some(string_from_bytes(b)),
-        Raw18(b) => Some(string_from_bytes(b)),
-        Raw19(b) => Some(string_from_bytes(b)),
-        Raw20(b) => Some(string_from_bytes(b)),
-        Raw21(b) => Some(string_from_bytes(b)),
-        Raw22(b) => Some(string_from_bytes(b)),
-        Raw23(b) => Some(string_from_bytes(b)),
-        Raw24(b) => Some(string_from_bytes(b)),
-        Raw25(b) => Some(string_from_bytes(b)),
-        Raw26(b) => Some(string_from_bytes(b)),
-        Raw27(b) => Some(string_from_bytes(b)),
-        Raw28(b) => Some(string_from_bytes(b)),
-        Raw29(b) => Some(string_from_bytes(b)),
-        Raw30(b) => Some(string_from_bytes(b)),
-        Raw31(b) => Some(string_from_bytes(b)),
-        Raw32(b) => Some(string_from_bytes(b)),
-        _ => Option::None,
-    }
-}
-
-fn string_from_bytes(bytes: &[u8]) -> String {
-    std::str::from_utf8(&bytes).unwrap_or("").to_string()
 }
