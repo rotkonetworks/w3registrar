@@ -10,6 +10,7 @@ use subxt::SubstrateConfig;
 use tokio_stream::Stream;
 
 pub use api::*;
+pub use api::IdentityEvent as Event;
 
 pub type Client = subxt::OnlineClient<SubstrateConfig>;
 
@@ -70,8 +71,10 @@ pub async fn events_from_block(block: Block) -> Result<Vec<Event>> {
     let mut events = Vec::new();
     for item in block.events().await?.iter() {
         let details = item?;
-        if let Ok(event) = details.as_root_event::<Event>() {
-            events.push(event);
+        if let Ok(event) = details.as_root_event::<RuntimeEvent>() {
+            match event {
+                RuntimeEvent::Identity(e) => events.push(e)
+            }
         }
     }
     Ok(events)

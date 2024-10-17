@@ -60,11 +60,10 @@ async fn watch_node(client: &Client, ri: RegistrarIndex) -> anyhow::Result<()> {
 }
 
 async fn handle_event(client: &Client, ri: RegistrarIndex, event: Event) -> anyhow::Result<()> {
-    use node::IdentityEvent::*;
+    use node::Event::*;
 
     match event {
-        Event::Identity(JudgementRequested { who, registrar_index })
-        if registrar_index == ri => {
+        JudgementRequested { who, registrar_index } if registrar_index == ri => {
             use sp_core::Encode;
             use sp_core::blake2_256;
 

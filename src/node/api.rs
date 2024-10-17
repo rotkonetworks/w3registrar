@@ -33,7 +33,7 @@ pub struct BoundedVec<T>(pub Vec<T>);
 #[codec(crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
 #[decode_as_type(crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_decode")]
 #[encode_as_type(crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_encode")]
-pub enum Event {
+pub enum RuntimeEvent {
     #[codec(index = 50)]
     Identity(IdentityEvent),
 }
