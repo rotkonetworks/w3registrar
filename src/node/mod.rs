@@ -1,13 +1,11 @@
 #![allow(dead_code)]
 
-mod substrate;
 mod api;
 
 use anyhow::{anyhow, Result};
 use async_stream::try_stream;
 use subxt::ext::sp_core::sr25519::Pair as Sr25519Pair;
 use subxt::ext::sp_core::Pair;
-use subxt::utils::MultiAddress;
 use subxt::SubstrateConfig;
 use tokio_stream::Stream;
 
@@ -19,12 +17,6 @@ pub type Block = subxt::blocks::Block<SubstrateConfig, Client>;
 
 pub type BlockHash = <SubstrateConfig as subxt::Config>::Hash;
 
-pub use subxt::utils::AccountId32 as AccountId;
-
-pub type RegistrarIndex = u32;
-
-pub type IdentityHash = subxt::ext::subxt_core::utils::H256;
-
 type PairSigner = subxt::tx::PairSigner<SubstrateConfig, Sr25519Pair>;
 
 #[derive(Debug)]
@@ -32,7 +24,7 @@ pub struct JudgementEnvelope {
     pub registrar_index: RegistrarIndex,
     pub target: AccountId,
     pub judgement: Judgement,
-    pub identity_hash: IdentityHash,
+    pub identity_hash: Identity,
 }
 
 pub async fn provide_judgement(
@@ -43,9 +35,9 @@ pub async fn provide_judgement(
     let pair = Sr25519Pair::from_phrase(&seed_phrase, None)?;
     let signer = PairSigner::new(pair.0);
 
-    let call = tx().identity().provide_judgement(
+    let call = api::provide_judgement(
         env.registrar_index,
-        MultiAddress::Id(env.target.clone()),
+        Target::Id(env.target.clone()),
         env.judgement,
         env.identity_hash,
     );
@@ -89,7 +81,7 @@ pub async fn get_registration(
     client: &Client, who: &AccountId
 ) -> Result<Registration> {
     let storage = client.storage().at_latest().await?;
-    let address = api::storage().identity().identity_of(who);
+    let address = api::identity_of(who);
     match storage.fetch(&address).await? {
         None => Err(anyhow!("No registration found for {}", who)),
         Some((reg, _)) => Ok(reg),

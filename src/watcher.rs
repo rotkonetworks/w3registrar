@@ -8,8 +8,16 @@ use std::collections::HashMap;
 
 pub use node::RegistrarIndex;
 
-use node::{Client, Event, BlockHash, Data, IdentityInfo};
-use crate::node::{IdentityHash, Judgement, JudgementEnvelope};
+use node::{
+    Client,
+    Event,
+    BlockHash,
+    IdentityData,
+    IdentityInfo,
+    Identity,
+    Judgement,
+    JudgementEnvelope
+};
 
 const JUDGEMENT_REQUESTED_BLOCK: &str =
     "0xece2b31d1df2d9ff118bb1ced539e395fbabf0987120ff2eed6610d0b7bd6b39";
@@ -79,7 +87,7 @@ async fn handle_event(client: &Client, ri: RegistrarIndex, event: Event) -> anyh
 
                 let encoded_info = reg.info.encode();
                 let hash_bytes = blake2_256(&encoded_info);
-                let identity_hash = IdentityHash::from(&hash_bytes);
+                let identity_hash = Identity::from(&hash_bytes);
                 println!("Identity hash {:?}", identity_hash);
 
                 let profile = decode_identity_info(&reg.info);
@@ -120,13 +128,13 @@ pub enum ProfileKey {
 fn decode_identity_info(info: &IdentityInfo) -> Profile {
     use ProfileKey::*;
 
-    fn decode_str_field(k: ProfileKey, v: &Data, p: &mut Profile) {
+    fn decode_str_field(k: ProfileKey, v: &IdentityData, p: &mut Profile) {
         if let Some(value) = decode_string_data(&v) {
             p.insert(k, value);
         }
     }
 
-    fn decode_hex_field(k: ProfileKey, v: &Option<[u8; 20usize]>, p: &mut Profile) {
+    fn decode_pgp_field(k: ProfileKey, v: &Option<[u8; 20usize]>, p: &mut Profile) {
         if let Some(bytes) = v {
             p.insert(k, hex::encode(bytes));
         }
@@ -135,7 +143,7 @@ fn decode_identity_info(info: &IdentityInfo) -> Profile {
     let mut p = Profile::new();
     decode_str_field(DisplayName, &info.display, &mut p);
     decode_str_field(LegalName, &info.legal, &mut p);
-    decode_hex_field(PgpFingerprint, &info.pgp_fingerprint, &mut p);
+    decode_pgp_field(PgpFingerprint, &info.pgp_fingerprint, &mut p);
     decode_str_field(Matrix, &info.matrix, &mut p);
     decode_str_field(Email, &info.email, &mut p);
     decode_str_field(Twitter, &info.twitter, &mut p);
@@ -144,8 +152,8 @@ fn decode_identity_info(info: &IdentityInfo) -> Profile {
     p
 }
 
-fn decode_string_data(data: &Data) -> Option<String> {
-    use Data::*;
+fn decode_string_data(data: &IdentityData) -> Option<String> {
+    use IdentityData::*;
     match data {
         Raw0(b) => Some(string_from_bytes(b)),
         Raw1(b) => Some(string_from_bytes(b)),
