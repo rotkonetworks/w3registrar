@@ -1,81 +1,97 @@
-pub use subxt::utils::AccountId32;
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
+pub use subxt::utils::AccountId32 as AccountId;
+
+pub type RegistrarIndex = u32;
+
+pub type Deposit = u128;
 
 #[derive(
-    :: subxt :: ext :: subxt_core :: ext :: codec :: Decode,
-    :: subxt :: ext :: subxt_core :: ext :: codec :: Encode,
-    :: subxt :: ext :: subxt_core :: ext :: scale_decode :: DecodeAsType,
-    :: subxt :: ext :: subxt_core :: ext :: scale_encode :: EncodeAsType,
+    ::subxt::ext::subxt_core::ext::codec::Decode,
+    ::subxt::ext::subxt_core::ext::codec::Encode,
+    ::subxt::ext::subxt_core::ext::scale_decode::DecodeAsType,
+    ::subxt::ext::subxt_core::ext::scale_encode::EncodeAsType,
     Debug,
 )]
-# [codec (crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
-#[decode_as_type(crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_decode")]
-#[encode_as_type(crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_encode")]
-pub enum Event {
-    #[codec(index = 50)]
-    Identity(IdentityEvent),
-}
-
-#[derive(
-    :: subxt :: ext :: subxt_core :: ext :: codec :: Decode,
-    :: subxt :: ext :: subxt_core :: ext :: codec :: Encode,
-    :: subxt :: ext :: subxt_core :: ext :: scale_decode :: DecodeAsType,
-    :: subxt :: ext :: subxt_core :: ext :: scale_encode :: EncodeAsType,
-    Debug,
-)]
-# [codec (crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
+#[codec(crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
 #[decode_as_type(
     crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_decode"
 )]
 #[encode_as_type(
     crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_encode"
 )]
-#[doc = "The `Event` enum of this pallet"]
+pub struct BoundedVec<T>(pub Vec<T>);
+
+#[derive(
+    ::subxt::ext::subxt_core::ext::codec::Decode,
+    ::subxt::ext::subxt_core::ext::codec::Encode,
+    ::subxt::ext::subxt_core::ext::scale_decode::DecodeAsType,
+    ::subxt::ext::subxt_core::ext::scale_encode::EncodeAsType,
+    Debug,
+)]
+#[codec(crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
+#[decode_as_type(crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_decode")]
+#[encode_as_type(crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_encode")]
+pub enum RuntimeEvent {
+    #[codec(index = 50)]
+    Identity(IdentityEvent),
+}
+
+#[derive(
+    ::subxt::ext::subxt_core::ext::codec::Decode,
+    ::subxt::ext::subxt_core::ext::codec::Encode,
+    ::subxt::ext::subxt_core::ext::scale_decode::DecodeAsType,
+    ::subxt::ext::subxt_core::ext::scale_encode::EncodeAsType,
+    Debug,
+)]
+#[codec(crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
+#[decode_as_type(
+    crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_decode"
+)]
+#[encode_as_type(
+    crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_encode"
+)]
 pub enum IdentityEvent {
     #[codec(index = 0)]
-    #[doc = "A name was set or reset (which will remove all judgements)."]
     IdentitySet {
-        who: AccountId32,
+        who: AccountId,
     },
     #[codec(index = 1)]
-    #[doc = "A name was cleared, and the given balance returned."]
     IdentityCleared {
-        who: AccountId32,
-        deposit: u128,
+        who: AccountId,
+        deposit: Deposit,
     },
     #[codec(index = 2)]
-    #[doc = "A name was removed and the given balance slashed."]
     IdentityKilled {
-        who: AccountId32,
-        deposit: u128,
+        who: AccountId,
+        deposit: Deposit,
     },
     #[codec(index = 3)]
-    #[doc = "A judgement was asked from a registrar."]
     JudgementRequested {
-        who: AccountId32,
-        registrar_index: u32,
+        who: AccountId,
+        registrar_index: RegistrarIndex,
     },
     #[codec(index = 4)]
-    #[doc = "A judgement request was retracted."]
     JudgementUnrequested {
-        who: AccountId32,
-        registrar_index: u32,
+        who: AccountId,
+        registrar_index: RegistrarIndex,
     },
     #[codec(index = 5)]
-    #[doc = "A judgement was given by a registrar."]
     JudgementGiven {
-        target: AccountId32,
-        registrar_index: u32,
+        target: AccountId,
+        registrar_index: RegistrarIndex,
     },
 }
 
 #[derive(
-    :: subxt :: ext :: subxt_core :: ext :: codec :: Decode,
-    :: subxt :: ext :: subxt_core :: ext :: codec :: Encode,
-    :: subxt :: ext :: subxt_core :: ext :: scale_decode :: DecodeAsType,
-    :: subxt :: ext :: subxt_core :: ext :: scale_encode :: EncodeAsType,
+    ::subxt::ext::subxt_core::ext::codec::Decode,
+    ::subxt::ext::subxt_core::ext::codec::Encode,
+    ::subxt::ext::subxt_core::ext::scale_decode::DecodeAsType,
+    ::subxt::ext::subxt_core::ext::scale_encode::EncodeAsType,
     Debug,
 )]
-# [codec (crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
+#[codec(crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
 #[decode_as_type(
     crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_decode"
 )]
@@ -84,17 +100,49 @@ pub enum IdentityEvent {
 )]
 pub struct Registration {
     pub judgements: BoundedVec<(u32, Judgement)>,
+    pub deposit: Deposit,
     pub info: IdentityInfo,
 }
 
 #[derive(
-    :: subxt :: ext :: subxt_core :: ext :: codec :: Decode,
-    :: subxt :: ext :: subxt_core :: ext :: codec :: Encode,
-    :: subxt :: ext :: subxt_core :: ext :: scale_decode :: DecodeAsType,
-    :: subxt :: ext :: subxt_core :: ext :: scale_encode :: EncodeAsType,
+    ::subxt::ext::subxt_core::ext::codec::Decode,
+    ::subxt::ext::subxt_core::ext::codec::Encode,
+    ::subxt::ext::subxt_core::ext::scale_decode::DecodeAsType,
+    ::subxt::ext::subxt_core::ext::scale_encode::EncodeAsType,
     Debug,
 )]
-# [codec (crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
+#[codec(crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
+#[decode_as_type(
+    crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_decode"
+)]
+#[encode_as_type(
+    crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_encode"
+)]
+pub enum Judgement {
+    #[codec(index = 0)]
+    Unknown,
+    #[codec(index = 1)]
+    FeePaid(u128),
+    #[codec(index = 2)]
+    Reasonable,
+    #[codec(index = 3)]
+    KnownGood,
+    #[codec(index = 4)]
+    OutOfDate,
+    #[codec(index = 5)]
+    LowQuality,
+    #[codec(index = 6)]
+    Erroneous,
+}
+
+#[derive(
+    ::subxt::ext::subxt_core::ext::codec::Decode,
+    ::subxt::ext::subxt_core::ext::codec::Encode,
+    ::subxt::ext::subxt_core::ext::scale_decode::DecodeAsType,
+    ::subxt::ext::subxt_core::ext::scale_encode::EncodeAsType,
+    Debug,
+)]
+#[codec(crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
 #[decode_as_type(
     crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_decode"
 )]
@@ -102,33 +150,33 @@ pub struct Registration {
     crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_encode"
 )]
 pub struct IdentityInfo {
-    pub display: Data,
-    pub legal: Data,
-    pub web: Data,
-    pub matrix: Data,
-    pub email: Data,
+    pub display: IdentityData,
+    pub legal: IdentityData,
+    pub web: IdentityData,
+    pub matrix: IdentityData,
+    pub email: IdentityData,
     pub pgp_fingerprint: Option<[u8; 20usize]>,
-    pub image: Data,
-    pub twitter: Data,
-    pub github: Data,
-    pub discord: Data,
+    pub image: IdentityData,
+    pub twitter: IdentityData,
+    pub github: IdentityData,
+    pub discord: IdentityData,
 }
 
 #[derive(
-    :: subxt :: ext :: subxt_core :: ext :: codec :: Decode,
-    :: subxt :: ext :: subxt_core :: ext :: codec :: Encode,
-    :: subxt :: ext :: subxt_core :: ext :: scale_decode :: DecodeAsType,
-    :: subxt :: ext :: subxt_core :: ext :: scale_encode :: EncodeAsType,
+    ::subxt::ext::subxt_core::ext::codec::Decode,
+    ::subxt::ext::subxt_core::ext::codec::Encode,
+    ::subxt::ext::subxt_core::ext::scale_decode::DecodeAsType,
+    ::subxt::ext::subxt_core::ext::scale_encode::EncodeAsType,
     Debug,
 )]
-# [codec (crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
+#[codec(crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
 #[decode_as_type(
     crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_decode"
 )]
 #[encode_as_type(
     crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_encode"
 )]
-pub enum Data {
+pub enum IdentityData {
     #[codec(index = 0)]
     None,
     #[codec(index = 1)]
@@ -207,80 +255,27 @@ pub enum Data {
     ShaThree256([u8; 32usize]),
 }
 
-#[derive(
-    :: subxt :: ext :: subxt_core :: ext :: codec :: Decode,
-    :: subxt :: ext :: subxt_core :: ext :: codec :: Encode,
-    :: subxt :: ext :: subxt_core :: ext :: scale_decode :: DecodeAsType,
-    :: subxt :: ext :: subxt_core :: ext :: scale_encode :: EncodeAsType,
-    Debug,
-)]
-# [codec (crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
-#[decode_as_type(
-    crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_decode"
-)]
-#[encode_as_type(
-    crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_encode"
-)]
-pub enum Judgement {
-    #[codec(index = 0)]
-    Unknown,
-    #[codec(index = 1)]
-    FeePaid(u128),
-    #[codec(index = 2)]
-    Reasonable,
-    #[codec(index = 3)]
-    KnownGood,
-    #[codec(index = 4)]
-    OutOfDate,
-    #[codec(index = 5)]
-    LowQuality,
-    #[codec(index = 6)]
-    Erroneous,
-}
-
-#[derive(
-    :: subxt :: ext :: subxt_core :: ext :: codec :: Decode,
-    :: subxt :: ext :: subxt_core :: ext :: codec :: Encode,
-    :: subxt :: ext :: subxt_core :: ext :: scale_decode :: DecodeAsType,
-    :: subxt :: ext :: subxt_core :: ext :: scale_encode :: EncodeAsType,
-    Debug,
-)]
-# [codec (crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
-#[decode_as_type(
-    crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_decode"
-)]
-#[encode_as_type(
-    crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_encode"
-)]
-pub struct BoundedVec<_0>(pub Vec<_0>);
-
 //------------------------------------------------------------------------------
-// STORAGE
+
+pub type IdentityOf = (Registration, Option<BoundedVec<u8>>);
+
+use subxt::utils::Yes;
+use subxt::storage::{StaticAddress, StaticStorageKey};
 
 use std::borrow::Borrow;
-use subxt::ext::subxt_core::storage::address;
 
-#[doc = " Information that is pertinent to identify the entity behind an account. First item is the"]
-#[doc = " registration, second is the account's primary username."]
-#[doc = ""]
-#[doc = " TWOX-NOTE: OK ― `AccountId` is a secure hash."]
 pub fn identity_of(
-    _0: impl Borrow<AccountId32>,
-) -> address::StaticAddress<
-    address::StaticStorageKey<
-        AccountId32,
-    >,
-    (Registration, Option<BoundedVec<u8>>),
-    subxt::ext::subxt_core::utils::Yes,
+    _0: impl Borrow<AccountId>,
+) -> StaticAddress<StaticStorageKey<AccountId>,
+    IdentityOf,
+    Yes,
     (),
     (),
 > {
-    address::StaticAddress::new_static(
+    StaticAddress::new_static(
         "Identity",
         "IdentityOf",
-        address::StaticStorageKey::new(
-            _0.borrow(),
-        ),
+        StaticStorageKey::new(_0.borrow()),
         [
             150u8, 8u8, 52u8, 88u8, 246u8, 82u8, 229u8, 62u8, 172u8, 30u8, 102u8,
             182u8, 49u8, 76u8, 106u8, 226u8, 159u8, 217u8, 16u8, 1u8, 8u8, 216u8,
@@ -288,3 +283,61 @@ pub fn identity_of(
         ],
     )
 }
+
+//------------------------------------------------------------------------------
+
+pub type Target = subxt::utils::MultiAddress<AccountId, ()>;
+
+pub type Identity = subxt::ext::subxt_core::utils::H256;
+
+use subxt::ext::subxt_core::tx::payload::StaticPayload;
+
+#[derive(
+    ::subxt::ext::subxt_core::ext::codec::Decode,
+    ::subxt::ext::subxt_core::ext::codec::Encode,
+    ::subxt::ext::subxt_core::ext::scale_decode::DecodeAsType,
+    ::subxt::ext::subxt_core::ext::scale_encode::EncodeAsType,
+    Debug,
+)]
+#[codec(crate = :: subxt :: ext :: subxt_core :: ext :: codec)]
+#[decode_as_type(
+    crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_decode"
+)]
+#[encode_as_type(
+    crate_path = ":: subxt :: ext :: subxt_core :: ext :: scale_encode"
+)]
+pub struct ProvideJudgement {
+    #[codec(compact)]
+    pub reg_index: RegistrarIndex,
+    pub target: Target,
+    pub judgement: Judgement,
+    pub identity: Identity,
+}
+
+pub fn provide_judgement(
+    reg_index: RegistrarIndex,
+    target: Target,
+    judgement: Judgement,
+    identity: Identity,
+) -> StaticPayload<ProvideJudgement>
+{
+    StaticPayload::new_static(
+        "Identity",
+        "provide_judgement",
+        ProvideJudgement {
+            reg_index,
+            target,
+            judgement,
+            identity,
+        },
+        [
+            145u8, 188u8, 61u8, 236u8, 183u8, 49u8, 49u8, 149u8, 240u8, 184u8,
+            202u8, 75u8, 69u8, 0u8, 95u8, 103u8, 132u8, 24u8, 107u8, 221u8, 236u8,
+            75u8, 231u8, 125u8, 39u8, 189u8, 45u8, 202u8, 116u8, 123u8, 236u8,
+            96u8,
+        ],
+    )
+}
+
+
+

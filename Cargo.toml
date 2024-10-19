@@ -12,7 +12,7 @@ tokio = { version = "1.39.2", features = ["full"] }
 toml = "0.8.19"
 tracing-subscriber = "0.3.18"
 tracing = "0.1.40"
-subxt = "0.37.0"
+subxt = { version = "0.37.0", features = ["substrate-compat"] }
 serde_json = "1.0.125"
 hex = "0.4.3"
 uuid = { version = "1.10.0", features = ["v4", "macro-diagnostics"] }
@@ -25,6 +25,7 @@ sqlx = { version = "0.8.0", features = [ "runtime-tokio", "sqlite" ] }
 matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk.git", rev = "19e89bbd6a0df1c4a5636252b02b9e16cc7ab44d" }
 tokio-stream = "0.1.16"
 async-stream = "0.3.6"
+sp-core = "34.0.0"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

@@ -1,40 +1,90 @@
+#![allow(dead_code)]
+
 mod api;
 
-pub use api::*;
-
-use anyhow::anyhow;
+use anyhow::{anyhow, Result};
 use async_stream::try_stream;
+use subxt::ext::sp_core::sr25519::Pair as Sr25519Pair;
+use subxt::ext::sp_core::Pair;
+use subxt::SubstrateConfig;
 use tokio_stream::Stream;
-use tracing::info;
 
-pub type Client = subxt::OnlineClient<subxt::SubstrateConfig>;
+pub use api::*;
+pub use api::IdentityEvent as Event;
 
-pub async fn subscribe_to_identity_events(
+pub type Client = subxt::OnlineClient<SubstrateConfig>;
+
+pub type Block = subxt::blocks::Block<SubstrateConfig, Client>;
+
+pub type BlockHash = <SubstrateConfig as subxt::Config>::Hash;
+
+type PairSigner = subxt::tx::PairSigner<SubstrateConfig, Sr25519Pair>;
+
+#[derive(Debug)]
+pub struct JudgementEnvelope {
+    pub registrar_index: RegistrarIndex,
+    pub target: AccountId,
+    pub judgement: Judgement,
+    pub identity_hash: Identity,
+}
+
+pub async fn provide_judgement(
     client: &Client,
-) -> anyhow::Result<impl Stream<Item = anyhow::Result<IdentityEvent>>> {
+    seed_phrase: &str,
+    env: JudgementEnvelope
+) -> Result<()> {
+    let pair = Sr25519Pair::from_phrase(&seed_phrase, None)?;
+    let signer = PairSigner::new(pair.0);
+
+    let call = api::provide_judgement(
+        env.registrar_index,
+        Target::Id(env.target.clone()),
+        env.judgement,
+        env.identity_hash,
+    );
+
+    client.tx()
+        .sign_and_submit_then_watch_default(&call, &signer)
+        .await?
+        .wait_for_finalized_success()
+        .await?;
+
+    Ok(())
+}
+
+pub async fn subscribe_to_events(
+    client: &Client
+) -> Result<impl Stream<Item = Result<Event>>> {
     let mut block_stream = client.blocks().subscribe_finalized().await?;
 
     Ok(try_stream! {
-        while let Some(block_res) = block_stream.next().await {
-            let block = block_res?;
-            for event_res in block.events().await?.iter() {
-                let event_details = event_res?;
-                if let Ok(event) = event_details.as_root_event::<Event>() {
-                    info!("Received {:?}", event);
-                    match event {
-                        Event::Identity(e) => yield e,
-                    };
-                }
+        while let Some(item) = block_stream.next().await {
+            let block = item?;
+            for event in events_from_block(block).await?.into_iter() {
+                yield event;
             }
         }
     })
 }
 
+pub async fn events_from_block(block: Block) -> Result<Vec<Event>> {
+    let mut events = Vec::new();
+    for item in block.events().await?.iter() {
+        let details = item?;
+        if let Ok(event) = details.as_root_event::<RuntimeEvent>() {
+            match event {
+                RuntimeEvent::Identity(e) => events.push(e)
+            }
+        }
+    }
+    Ok(events)
+}
+
 pub async fn get_registration(
-    client: &Client, who: &AccountId32
-) -> anyhow::Result<Registration> {
+    client: &Client, who: &AccountId
+) -> Result<Registration> {
     let storage = client.storage().at_latest().await?;
-    let address = identity_of(who);
+    let address = api::identity_of(who);
     match storage.fetch(&address).await? {
         None => Err(anyhow!("No registration found for {}", who)),
         Some((reg, _)) => Ok(reg),
