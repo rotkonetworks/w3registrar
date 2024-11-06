@@ -15,7 +15,7 @@ use node::Judgement;
 use node::JudgementEnvelope;
 
 const JUDGEMENT_REQUESTED_BLOCK: &str =
-    "0xece2b31d1df2d9ff118bb1ced539e395fbabf0987120ff2eed6610d0b7bd6b39";
+    "0xcd1d14950d301b0cd2660532aec68e3d62b207e257cf7af5453b09ddd888caf7";
 
 const SEED_PHRASE: &str =
     "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
