@@ -26,6 +26,8 @@ matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk.git", rev = 
 tokio-stream = "0.1.16"
 async-stream = "0.3.6"
 sp-core = "34.0.0"
+actix-web = "4.9.0"
+flume = "0.11.1"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
