@@ -1,6 +1,7 @@
 mod matrix;
 mod node;
 mod watcher;
+mod api;
 
 use std::fs;
 use anyhow::anyhow;
@@ -36,5 +37,6 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::load_from("config.toml")?;
 
+    api::spawn_services(config.matrix).await?;
     watcher::run(config.watcher).await
 }
