@@ -167,24 +167,6 @@ pub async fn start_bot(
 
     // listens for incomming registration requests sent from the HTTP server
     let _ = tokio::spawn(async move {
-        match recive_registration_from_serv.recv() {
-            Ok(reg) => {
-                info!("Registration recived for {:#?}", reg);
-                for acc in reg.accounts.iter() {
-                    requestd_accounts.lock().await.insert(
-                        acc.to_owned(),
-                        AcctMetadata {
-                            status: crate::api::VerifStatus::Pending,
-                            id: reg.id.clone(),
-                        },
-                    );
-                }
-                _origin.lock().await.origin = Origin::derive(reg).origin;
-            }
-            Err(e) => {
-                info!("Error: {:?}", e);
-            }
-        }
         for reg in recive_registration_from_serv.iter() {
             info!("Registration recived for {:#?}", reg);
             for acc in reg.accounts.iter() {
@@ -196,7 +178,7 @@ pub async fn start_bot(
                     },
                 );
             }
-            _origin.lock().await.origin = Origin::derive(reg).origin;
+                _origin.lock().await.origin.extend(Origin::derive(reg).origin)
         }
     });
 
