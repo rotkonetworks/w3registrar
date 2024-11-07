@@ -258,8 +258,8 @@ async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client
     });
 }
 
-#[derive(Clone)]
 /// Used to handle incoming registration requests
+#[derive(Clone)]
 pub struct ReqHandler {
     /// Send registration status to the local HTTP server
     sender: Sender<RegistrationResponse>,

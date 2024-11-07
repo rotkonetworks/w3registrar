@@ -166,26 +166,33 @@ pub async fn spawn_services(cfg: Config) -> Result<(), std::io::Error> {
     tokio::spawn(async {
         // spawning the matrix home server
         let (recv, send) = matrix::start_bot(cfg).await.unwrap();
-        // spawning the HTTP server
-        HttpServer::new(move || {
-            App::new()
-                .wrap(middleware::Logger::default())
-                .app_data(web::JsonConfig::default().limit(4096))
-                .service(
-                    web::resource("/register")
-                        .app_data(web::JsonConfig::default().limit(1024))
-                        .app_data(web::Data::new(Conn {
-                            sender: send.clone(),
-                            reciver: recv.clone(),
-                        }))
-                        .route(web::post().to(verify)),
-                )
-        })
-        .bind(("127.0.0.1", 8080))
-        .unwrap()
-        .run()
-        .await
-        .unwrap();
+        spaw_http_serv("/register", send, recv, "127.0.0.1", 8080).await.unwrap(); 
     });
     Ok(())
+}
+
+pub async fn spaw_http_serv(
+    registration_endpoint: &'static str,
+    sender: Sender<RegistrationRequest>,
+    reciver: Receiver<RegistrationResponse>,
+    ip: &'static str,
+    port: u16
+) -> Result<(), std::io::Error> {
+    HttpServer::new(move || {
+        App::new()
+            .wrap(middleware::Logger::default())
+            .app_data(web::JsonConfig::default().limit(1024))
+            .service(
+                web::resource(registration_endpoint)
+                    .app_data(web::Data::new(Conn {
+                        sender: sender.clone(),
+                        reciver: reciver.clone(),
+                    }))
+                    .route(web::post().to(verify)),
+            )
+    })
+    .bind((ip, port))
+    .unwrap()
+    .run()
+    .await
 }
