@@ -263,7 +263,7 @@ async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client
 pub struct ReqHandler {
     /// Send registration status to the local HTTP server
     sender: Sender<RegistrationResponse>,
-    /// Contains a vector of __all__ recived registration accounts
+    /// Contains a vector of __all__ received registration accounts
     tracker: Arc<Mutex<HashMap<Account, AcctMetadata>>>,
     /// ID's and associated accounts
     origin: Arc<Mutex<Origin>>,
