@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
-mod api;
+#[subxt::subxt(runtime_metadata_path = "./identity.scale")]
+pub mod api {}
 
 use anyhow::{anyhow, Result};
 use async_stream::try_stream;
