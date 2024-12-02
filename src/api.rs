@@ -431,29 +431,3 @@ pub async fn spawn_ws_serv(
         .listen()
         .await
 }
-
-pub async fn spaw_http_serv(
-    registration_endpoint: &'static str,
-    sender: Sender<RegistrationRequest>,
-    reciver: Receiver<RegistrationResponse>,
-    ip: &'static str,
-    port: u16
-) -> Result<(), std::io::Error> {
-    HttpServer::new(move || {
-        App::new()
-            .wrap(middleware::Logger::default())
-            .app_data(web::JsonConfig::default().limit(1024))
-            .service(
-                web::resource(registration_endpoint)
-                    .app_data(web::Data::new(Conn {
-                        sender: sender.clone(),
-                        reciver: reciver.clone(),
-                    }))
-                    .route(web::post().to(verify)),
-            )
-    })
-    .bind((ip, port))
-    .unwrap()
-    .run()
-    .await
-}
