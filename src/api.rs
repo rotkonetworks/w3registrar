@@ -1,13 +1,34 @@
 #![allow(dead_code)]
-use std::{collections::HashMap, time::Duration};
 
-use actix_web::{middleware, web, App, HttpRequest, HttpResponse, HttpServer};
-use flume::{Receiver, Sender};
+use anyhow::anyhow;
+use futures::StreamExt;
+use futures_util::{stream::SplitSink, SinkExt};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use tracing::info;
+use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
+use subxt::utils::AccountId32;
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::{
+        mpsc::{Receiver, Sender},
+        Mutex,
+    },
+};
+use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
+use tracing::{error, info};
 
-use crate::matrix::{self, Config, RegistrationResponse};
+use crate::{
+    matrix::{self, Config, RegistrationResponse},
+    node::{
+        self,
+        api::runtime_types::{
+            pallet_identity::types::{Data as IdentityData, Judgement},
+            people_rococo_runtime::people::IdentityInfo,
+        },
+        runtime_types::pallet_identity::types::Registration,
+        Client,
+    },
+    token::Token,
+};
 
 #[derive(Clone, Debug)]
 pub enum VerifStatus {
@@ -25,16 +46,17 @@ impl VerifStatus {
 #[derive(Debug)]
 pub struct AcctMetadata {
     pub status: VerifStatus,
-    pub id: usize,
+    pub id: AccountId32,
+    pub token: Token,
 }
 
 pub struct RequestTracker {
     pub req: HashMap<Account, VerifStatus>,
-    pub acc_id: usize,
+    pub acc_id: AccountId32,
 }
 
 impl RequestTracker {
-    fn new(req: HashMap<Account, VerifStatus>, acc_id: usize) -> Self {
+    fn new(req: HashMap<Account, VerifStatus>, acc_id: AccountId32) -> Self {
         Self { req, acc_id }
     }
 
@@ -63,10 +85,9 @@ impl From<RegistrationRequest> for RequestTracker {
     fn from(value: RegistrationRequest) -> Self {
         let mut map: HashMap<Account, VerifStatus> = HashMap::new();
         for acc in value.accounts {
-            // let password = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
             map.insert(acc, VerifStatus::Pending);
         }
-        RequestTracker::new(map, value.id)
+        RequestTracker::new(map, AccountId32::from_str(&value.id).unwrap())
     }
 }
 
@@ -92,6 +113,13 @@ impl Account {
             None => return None,
         }
     }
+
+    pub fn inner(&self) -> String {
+        match self {
+            Account::Twitter(v) => v.to_owned(),
+            Account::Discord(v) => v.to_owned(),
+        }
+    }
 }
 
 /// TODO: move this to a "common" module
@@ -99,53 +127,19 @@ impl Account {
 pub struct RegistrationRequest {
     pub accounts: Vec<Account>,
     pub name: String,
-    pub id: usize,
+    pub id: String,
     pub timeout: u64,
+    pub reg_index: u32,
 }
 
-/// This handler uses json extractor with limit
-/// This should will wait for the verification status to be
-/// handled by the matrix HS, and will return only if:
-/// - verification is done successfully
-/// - verification deadline has arrived
-//
-// TODO: add other response types like:
-// * user is already verified
-// * verification request already exist
-// #[post("/register")]
-async fn verify(
-    item: web::Json<RegistrationRequest>,
-    con: web::Data<Conn>,
-    req: HttpRequest,
-) -> HttpResponse {
-    let timeout = item.0.timeout;
-    if timeout > 360 {
-        return HttpResponse::Ok().json(json!({
-            "status": "invalid timeout (shoudl be less/or equal to 360)",
-        }));
-    }
-    // TODO: check if accounts are already verified
-    // sneding request to the matrix HS
-    con.sender.send(item.0).unwrap();
-    if con.reciver.is_disconnected() {
-        return HttpResponse::Ok().json(json!({
-            "status": "dropped",
-        }));
-    }
-
-    // waiting for response from the matrix HS
-    match con.reciver.recv_timeout(Duration::from_secs(timeout)) {
-        Ok(v) => {
-            info!("Verification is done for {:#?}", v);
-            return HttpResponse::Ok().json(v);
-        }
-        Err(e) => {
-            info!("Verification expired: {:?}", e);
-            return HttpResponse::Ok().json(json!({
-                "status": "expired",
-            }));
-        }
-    };
+/// TODO: move this to a "common" module
+#[derive(Debug)]
+pub struct FullRegistrationRequest {
+    pub accounts: Vec<Account>,
+    pub name: String,
+    pub id: AccountId32,
+    pub timeout: u64,
+    pub stream: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
 }
 
 // TODO: make register_user and wait_for_response methods
@@ -161,31 +155,331 @@ struct Conn {
 // - manage verified accs of an owner(id) on the chain
 // - set verified accounts
 // - TBD...
+//
 /// Spawns the HTTP server, and the Matrix client
-pub async fn spawn_services(cfg: Config) -> Result<(), std::io::Error> {
-    tokio::spawn(async {
-        // spawning the matrix home server
-        let (recv, send) = matrix::start_bot(cfg).await.unwrap();
-        // spawning the HTTP server
-        HttpServer::new(move || {
-            App::new()
-                .wrap(middleware::Logger::default())
-                .app_data(web::JsonConfig::default().limit(4096))
-                .service(
-                    web::resource("/register")
-                        .app_data(web::JsonConfig::default().limit(1024))
-                        .app_data(web::Data::new(Conn {
-                            sender: send.clone(),
-                            reciver: recv.clone(),
-                        }))
-                        .route(web::post().to(verify)),
-                )
+pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
+    let (recv, send) = matrix::start_bot(cfg).await.unwrap();
+    spawn_ws_serv(send, recv, [127, 0, 0, 1], 8080).await
+}
+
+#[derive(Clone, Debug)]
+struct Listiner {
+    ip: [u8; 4],
+    port: u16,
+    sender: Arc<Mutex<Sender<FullRegistrationRequest>>>,
+    reciver: Arc<Mutex<Receiver<RegistrationResponse>>>,
+}
+
+/// Converts the inner of [IdentityData] to a [String]
+fn identity_data_tostring(data: &IdentityData) -> Option<String> {
+    info!("Data: {:?}", data);
+    match data {
+        IdentityData::Raw0(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw1(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw2(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw3(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw4(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw5(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw6(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw7(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw8(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw9(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw10(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw11(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw12(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw13(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw14(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw15(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw16(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw17(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw18(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw19(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw20(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw21(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw22(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw23(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw24(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw25(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw26(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw27(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw28(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw29(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw30(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw31(v) => Some(String::from_utf8_lossy(v).to_string()),
+        IdentityData::Raw32(v) => Some(String::from_utf8_lossy(v).to_string()),
+        _ => None,
+    }
+}
+
+impl Listiner {
+    pub async fn new(
+        ip: [u8; 4],
+        port: u16,
+        sender: Arc<Mutex<Sender<FullRegistrationRequest>>>,
+        reciver: Arc<Mutex<Receiver<RegistrationResponse>>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            ip,
+            port,
+            sender,
+            reciver,
         })
-        .bind(("127.0.0.1", 8080))
-        .unwrap()
-        .run()
+    }
+
+    // TODO: check if Judgement is requested (JudgementRequested)
+    /// checks if the registration request is well synchronized with the registrar node
+    pub async fn check_node(
+        id: AccountId32,
+        accounts: Vec<Account>,
+    ) -> anyhow::Result<(), anyhow::Error> {
+        let client = Client::from_url("wss://dev.rotko.net/people-rococo").await?;
+        let registration = node::get_registration(&client, &id).await;
+        info!("registration: {:#?}", registration);
+        match registration {
+            Ok(reg) => {
+                Self::is_complete(&reg, &accounts)?;
+                Self::has_paid_fee(reg.judgements.0)?;
+                Ok(())
+            }
+            Err(_) => Err(anyhow!(
+                "coudn't get registration of {} from the BC node",
+                id
+            )),
+        }
+    }
+
+    /// Checks if fee is paid
+    fn has_paid_fee(judgements: Vec<(u32, Judgement<u128>)>) -> anyhow::Result<(), anyhow::Error> {
+        if judgements
+            .iter()
+            .any(|(_, j)| matches!(j, Judgement::FeePaid(_)))
+        {
+            Ok(())
+        } else {
+            Err(anyhow!("fee is not paid!"))
+        }
+    }
+
+    /// Compares between the accounts on the idendtity object on the check_node
+    /// and the recived requests
+    pub fn is_complete<'a>(
+        registration: &Registration<u128, IdentityInfo>,
+        expected: &Vec<Account>,
+    ) -> anyhow::Result<(), anyhow::Error> {
+        for acc in expected {
+            match acc {
+                Account::Twitter(twit_acc) => {
+                    match identity_data_tostring(&registration.info.twitter) {
+                        Some(identity_twit_acc) => {
+                            if !twit_acc.eq(&identity_twit_acc) {
+                                return Err(anyhow!(
+                                    "got {}, expected {}",
+                                    twit_acc,
+                                    identity_twit_acc
+                                ));
+                            }
+                        }
+                        None => {
+                            return Err(anyhow!("twitter acc {} not in the identity obj", twit_acc))
+                        }
+                    }
+                }
+                Account::Discord(discord_acc) => {
+                    match identity_data_tostring(&registration.info.discord) {
+                        Some(identity_discord_acc) => {
+                            if !discord_acc.eq(&identity_discord_acc) {
+                                return Err(anyhow!(
+                                    "got {}, expected {}",
+                                    discord_acc,
+                                    identity_discord_acc,
+                                ));
+                            }
+                        }
+                        None => {
+                            return Err(anyhow!("discord acc {} not in identity obj", discord_acc))
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn handle_incoming<'a>(
+        message: Message,
+        sender: Arc<Mutex<Sender<FullRegistrationRequest>>>,
+        reciver: Arc<Mutex<Receiver<RegistrationResponse>>>,
+        out: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+    ) -> anyhow::Result<&'a str> {
+        match message {
+            Message::Text(t) => {
+                // TODO: handle the unwrap
+                match serde_json::from_str::<RegistrationRequest>(&t) {
+                    Ok(reg_req) => match Self::check_node(
+                        AccountId32::from_str(&reg_req.id.clone())?,
+                        reg_req.accounts.clone(),
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            sender
+                                .lock()
+                                .await
+                                .send(FullRegistrationRequest {
+                                    id: AccountId32::from_str(&reg_req.id.clone())?,
+                                    accounts: reg_req.accounts.clone(),
+                                    name: reg_req.name,
+                                    timeout: reg_req.timeout,
+                                    stream: out,
+                                })
+                                .await
+                                .unwrap();
+                            match tokio::time::timeout(
+                                Duration::from_secs(reg_req.timeout),
+                                reciver.lock().await.recv(),
+                            )
+                            .await
+                            {
+                                Ok(Some(_)) => {
+                                    node::register_identity(
+                                        AccountId32::from_str(&reg_req.id.clone())?,
+                                        reg_req.reg_index,
+                                    )
+                                    .await?;
+                                    return Ok("Done");
+                                }
+                                _ => return Err(anyhow!("expired")),
+                            }
+                        }
+                        Err(e) => return Err(anyhow!("not registred, error: {}", e)),
+                    },
+                    Err(e) => return Err(anyhow!("unrecognize request, error: {}", e)),
+                }
+            }
+            Message::Close(_) => return Err(anyhow!("closing connection")),
+            _ => return Err(anyhow!("unrecognized message format!")),
+        }
+    }
+
+    // TODO: change return type to Result
+    pub async fn handle_connection(&self, stream: TcpStream) {
+        let ws_stream = tokio_tungstenite::accept_async(stream)
+            .await
+            .expect("Error during the websocket handshake occurred");
+        let (outgoing, mut incoming) = ws_stream.split();
+        let out = Arc::new(Mutex::new(outgoing));
+
+        while let Some(Ok(message)) = incoming.next().await {
+            let _out = Arc::clone(&out);
+            match Self::handle_incoming(
+                message,
+                Arc::clone(&self.sender),
+                Arc::clone(&self.reciver),
+                _out,
+            )
+            .await
+            {
+                Ok(v) => {
+                    info!("{}", format!(r#"{{status: {:?}}}"#, v));
+                    out.lock()
+                        .await
+                        .send(Message::Text(format!(r#"{{status: {:?}}}"#, v)))
+                        .await
+                        .unwrap();
+                }
+                Err(e) => {
+                    info!("{}", format!(r#"{{status: {:?}}}"#, e));
+                    out.lock()
+                        .await
+                        .send(Message::Text(format!(r#"{{status: {:?}}}"#, e)))
+                        .await
+                        .unwrap();
+                }
+            }
+        }
+    }
+
+    pub async fn listen(self: Arc<Self>) -> anyhow::Result<()> {
+        let addr = SocketAddr::from((self.ip, self.port));
+        let listener = TcpListener::bind(&addr).await?;
+        loop {
+            match listener.accept().await {
+                Ok((stream, addr)) => {
+                    info!("incoming connection from {:?}...", addr);
+                    let server = self.clone();
+                    tokio::spawn(async move {
+                        server.handle_connection(stream).await;
+                    });
+                    info!("connection is being processed...");
+                }
+                Err(e) => {
+                    error!("could not accept ws connection! {}", e);
+                }
+            }
+        }
+    }
+}
+
+pub async fn spawn_ws_serv(
+    sender: Arc<Mutex<Sender<FullRegistrationRequest>>>,
+    reciver: Arc<Mutex<Receiver<RegistrationResponse>>>,
+    ip: [u8; 4],
+    port: u16,
+) -> anyhow::Result<()> {
+    Listiner::new(ip, port, sender, reciver)
         .await
-        .unwrap();
-    });
-    Ok(())
+        .listen()
+        .await
+}
+
+pub async fn spaw_http_serv(
+    registration_endpoint: &'static str,
+    sender: Sender<RegistrationRequest>,
+    reciver: Receiver<RegistrationResponse>,
+    ip: &'static str,
+    port: u16
+) -> Result<(), std::io::Error> {
+    HttpServer::new(move || {
+        App::new()
+            .wrap(middleware::Logger::default())
+            .app_data(web::JsonConfig::default().limit(1024))
+            .service(
+                web::resource(registration_endpoint)
+                    .app_data(web::Data::new(Conn {
+                        sender: sender.clone(),
+                        reciver: reciver.clone(),
+                    }))
+                    .route(web::post().to(verify)),
+            )
+    })
+    .bind((ip, port))
+    .unwrap()
+    .run()
+    .await
+}
+
+pub async fn spaw_http_serv(
+    registration_endpoint: &'static str,
+    sender: Sender<RegistrationRequest>,
+    reciver: Receiver<RegistrationResponse>,
+    ip: &'static str,
+    port: u16
+) -> Result<(), std::io::Error> {
+    HttpServer::new(move || {
+        App::new()
+            .wrap(middleware::Logger::default())
+            .app_data(web::JsonConfig::default().limit(1024))
+            .service(
+                web::resource(registration_endpoint)
+                    .app_data(web::Data::new(Conn {
+                        sender: sender.clone(),
+                        reciver: reciver.clone(),
+                    }))
+                    .route(web::post().to(verify)),
+            )
+    })
+    .bind((ip, port))
+    .unwrap()
+    .run()
+    .await
 }

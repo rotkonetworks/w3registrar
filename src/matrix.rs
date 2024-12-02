@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
-use flume::{Receiver, Sender};
+use futures::SinkExt;
 use matrix_sdk::{
-    config::SyncSettings,
+    config::{RequestConfig, StoreConfig, SyncSettings},
     deserialized_responses::RawSyncOrStrippedState,
     encryption::{identities::Device, BackupDownloadStrategy, EncryptionSettings},
     event_handler::Ctx,
@@ -20,14 +20,21 @@ use matrix_sdk::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{sync::Mutex, time::{sleep, Duration}};
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::{
+    sync::Mutex,
+    time::{sleep, Duration},
+};
 use tracing::info;
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::api::{Account, AcctMetadata, RegistrationRequest, VerifStatus};
+use crate::{
+    api::{Account, AcctMetadata, FullRegistrationRequest, VerifStatus},
+    token::{AuthToken, Token},
+};
 
 const STATE_DIR: &str = "/tmp/matrix";
 
@@ -72,6 +79,12 @@ async fn login(cfg: Config, state_dir: &str) -> anyhow::Result<Client> {
     info!("Creating client");
     let client = Client::builder()
         .homeserver_url(cfg.homeserver.to_owned())
+        .store_config(StoreConfig::new())
+        .request_config(
+            RequestConfig::new()
+                .timeout(Duration::from_secs(60))
+                .retry_timeout(Duration::from_secs(60)),
+        )
         .sqlite_store(state_dir, None)
         .with_encryption_settings(EncryptionSettings {
             auto_enable_cross_signing: true,
@@ -87,6 +100,7 @@ async fn login(cfg: Config, state_dir: &str) -> anyhow::Result<Client> {
         let session = tokio::fs::read_to_string(session_path).await?;
         let session: MatrixSession = serde_json::from_str(&session)?;
         client.restore_session(session).await?;
+        info!("Logged in as {}", cfg.username);
     } else {
         info!("Logging in as {}", cfg.username);
         client
@@ -146,18 +160,15 @@ async fn login(cfg: Config, state_dir: &str) -> anyhow::Result<Client> {
 /// bridged messages
 pub async fn start_bot(
     cfg: Config,
-) -> anyhow::Result<(Receiver<RegistrationResponse>, Sender<RegistrationRequest>)> {
-    let client = login(cfg, STATE_DIR).await?;
-    if let Some(device_id) = client.device_id() {
-        info!("Logged in with device ID {:#?}", device_id);
-    }
-    // Perform an initial sync to set up state.
-    info!("Performing initial sync");
-
-    let (send_response_to_serv, rescive_response_from_matrix) =
-        flume::unbounded::<RegistrationResponse>();
-    let (send_registration_to_matrix, recive_registration_from_serv) =
-        flume::unbounded::<RegistrationRequest>();
+) -> anyhow::Result<(
+    Arc<Mutex<Receiver<RegistrationResponse>>>,
+    Arc<Mutex<Sender<FullRegistrationRequest>>>,
+)> {
+    let (send_response_to_serv, rescive_response_from_matrix) = tokio::sync::mpsc::channel(100);
+    let (send_registration_to_matrix, mut recive_registration_from_serv): (
+        Sender<FullRegistrationRequest>,
+        Receiver<FullRegistrationRequest>,
+    ) = tokio::sync::mpsc::channel(100);
 
     let requestd_accounts: Arc<Mutex<HashMap<Account, AcctMetadata>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -167,65 +178,78 @@ pub async fn start_bot(
 
     // listens for incomming registration requests sent from the HTTP server
     let _ = tokio::spawn(async move {
-        match recive_registration_from_serv.recv() {
-            Ok(reg) => {
+        loop {
+            if let Some(reg) = recive_registration_from_serv.recv().await {
                 info!("Registration recived for {:#?}", reg);
                 for acc in reg.accounts.iter() {
+                    let token = Token::generate().await;
+                    info!("Token {:?} for {:#?}", token.show(), acc);
+                    // inform about the expect messages
+                    reg.stream
+                        .clone()
+                        .lock()
+                        .await
+                        .send(tokio_tungstenite::tungstenite::Message::Text(format!(
+                            r#"{{{:?}:{}}}"#,
+                            acc,
+                            token.show()
+                        )))
+                        .await
+                        .unwrap();
+
                     requestd_accounts.lock().await.insert(
                         acc.to_owned(),
                         AcctMetadata {
                             status: crate::api::VerifStatus::Pending,
                             id: reg.id.clone(),
+                            token,
                         },
                     );
                 }
-                _origin.lock().await.origin = Origin::derive(reg).origin;
-            }
-            Err(e) => {
-                info!("Error: {:?}", e);
+                _origin
+                    .lock()
+                    .await
+                    .origin
+                    .extend(Origin::derive(reg).origin)
             }
         }
-        for reg in recive_registration_from_serv.iter() {
-            info!("Registration recived for {:#?}", reg);
-            for acc in reg.accounts.iter() {
-                requestd_accounts.lock().await.insert(
-                    acc.to_owned(),
-                    AcctMetadata {
-                        status: crate::api::VerifStatus::Pending,
-                        id: reg.id.clone(),
-                    },
-                );
-            }
-            _origin.lock().await.origin = Origin::derive(reg).origin;
-        }
     });
-
-    let response = client.sync_once(SyncSettings::default()).await.unwrap();
-
-    client.add_event_handler_context(ReqHandler {
-        sender: send_response_to_serv,
-        tracker: _requested_accounts,
-        origin,
-    });
-
-    client.add_event_handler(on_stripped_state_member);
-    client.add_event_handler(on_room_message);
-    // create and add context here
-    // Note that the context can be used only in this function, unless returned
-    // which cannot happen since the add_event_handler_context takes ownership
-    // of it
-    info!(
-        "Encryption Status: {:#?}",
-        client.encryption().cross_signing_status().await.unwrap()
-    );
 
     tokio::spawn(async move {
+        let client = login(cfg, STATE_DIR).await.unwrap();
+        client.add_event_handler_context(ReqHandler {
+            sender: send_response_to_serv,
+            tracker: _requested_accounts,
+            origin,
+        });
+
+        client.add_event_handler(on_stripped_state_member);
+        client.add_event_handler(on_room_message);
+        // create and add context here
+        // Note that the context can be used only in this function, unless returned
+        // which cannot happen since the add_event_handler_context takes ownership
+        // of it
+        info!(
+            "Encryption Status: {:#?}",
+            client.encryption().cross_signing_status().await.unwrap()
+        );
+
         info!("Listening for messages...");
-        let settings = SyncSettings::default().token(response.next_batch);
-        client.sync(settings).await.unwrap();
+        if let Some(device_id) = client.device_id() {
+            info!("Logged in with device ID {:#?}", device_id);
+        }
+        // let settings = SyncSettings::default().token(response.next_batch);
+        let settings = SyncSettings::default().timeout(Duration::from_secs(30));
+        match client.sync(settings).await {
+            Ok(_) => info!("sync is done Successfully!"),
+            Err(e) => tracing::error!("can't sync duo to {:#?}", e),
+        };
     });
 
-    Ok((rescive_response_from_matrix, send_registration_to_matrix))
+    Ok((
+        Arc::new(Mutex::new(rescive_response_from_matrix)),
+        Arc::new(Mutex::new(send_registration_to_matrix)),
+    ))
 }
 
 async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client, room: Room) {
@@ -258,12 +282,12 @@ async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client
     });
 }
 
-#[derive(Clone)]
 /// Used to handle incoming registration requests
+#[derive(Clone)]
 pub struct ReqHandler {
     /// Send registration status to the local HTTP server
     sender: Sender<RegistrationResponse>,
-    /// Contains a vector of __all__ recived registration accounts
+    /// Contains a vector of __all__ received registration accounts
     tracker: Arc<Mutex<HashMap<Account, AcctMetadata>>>,
     /// ID's and associated accounts
     origin: Arc<Mutex<Origin>>,
@@ -302,15 +326,35 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room, ctx: Ctx
                                         info!("\nAcc: {:#?}", acc);
                                         // checks if this is a registred user from the HTTP server
                                         match ctx.tracker.lock().await.get_mut(&acc) {
-                                            Some(v) => {
-                                                info!("\nAcc meta: {:#?}", v);
+                                            Some(acc_meta) => {
+                                                if acc_meta.token.show() != text_content.body {
+                                                    info!("Recived bad token from {:?}", acc);
+                                                    info!(
+                                                        "Recived {:?} while expecting {:?}",
+                                                        acc_meta.token.show(),
+                                                        text_content.body
+                                                    );
+                                                    return;
+                                                }
+                                                info!("\nAcc meta: {:#?}", acc_meta);
+                                                info!(
+                                                    "Recived the correct message! {:?}",
+                                                    v.to_string()
+                                                );
+                                                info!(r#"{{{:?}: Done}}"#, acc);
+                                                // acc_meta.stream.lock().await.send(
+                                                //     tokio_tungstenite::tungstenite::Message::Text(
+                                                //         format!(r#"{{{:?}: Done}}"#, acc),
+                                                //     ),
+                                                // ).await.unwrap();
                                                 // gets the global object of all registed id's and
                                                 // their associated accounts (Discord+Twitter 4 now)
                                                 let mut all_verified = true;
                                                 let mut origin = ctx.origin.lock().await;
                                                 // gets accounts that are related to to this id
-                                                let accs = origin.origin.get_mut(&v.id).unwrap();
-                                                // check status of this account
+                                                let accs =
+                                                    origin.origin.get_mut(&acc_meta.id.0).unwrap();
+                                                // check status of this accont
                                                 match accs.get_mut(&acc) {
                                                     Some(verif_status) => {
                                                         verif_status.set_done().await.unwrap();
@@ -328,11 +372,11 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room, ctx: Ctx
                                                                 _ => {}
                                                             }
                                                         }
-                                                        v.status = VerifStatus::Done;
+                                                        acc_meta.status = VerifStatus::Done;
                                                         // if all registration sis done,inform the HTTP server
                                                         if all_verified {
                                                             info!(
-                                                                "\nAll Accs {:?} are registred!",
+                                                                "\nAll Accs [{:?}] are registred!",
                                                                 acc
                                                             );
                                                             ctx.sender
@@ -342,6 +386,7 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room, ctx: Ctx
                                                                             String::from("done"),
                                                                         ),
                                                                 })
+                                                                .await
                                                                 .unwrap();
                                                         }
                                                     }
@@ -373,16 +418,16 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room, ctx: Ctx
 /// Used to hold/keep track of verification requests
 #[derive(Default, Clone)]
 struct Origin {
-    origin: HashMap<usize, HashMap<Account, VerifStatus>>,
+    origin: HashMap<[u8; 32], HashMap<Account, VerifStatus>>,
 }
 
 impl Origin {
     /// Constructs an [Origin] form [RegistrationRequest] giving all the associated
     /// accounts the [RegistrationStatus::Pending] status
-    pub fn derive(image: RegistrationRequest) -> Self {
+    pub fn derive(image: FullRegistrationRequest) -> Self {
         let mut leaf: HashMap<Account, VerifStatus> = HashMap::new();
-        let mut head: HashMap<usize, HashMap<Account, VerifStatus>> = HashMap::new();
-        let id = image.id;
+        let mut head: HashMap<[u8; 32], HashMap<Account, VerifStatus>> = HashMap::new();
+        let id = image.id.0;
         for req in image.accounts {
             leaf.insert(req, VerifStatus::Pending);
         }
@@ -391,8 +436,8 @@ impl Origin {
     }
 
     /// Updates the request tree given a [RegistrationRequest]
-    pub fn insert(&mut self, image: RegistrationRequest) {
-        let id = image.id;
+    pub fn insert(&mut self, image: FullRegistrationRequest) {
+        let id = image.id.0;
         let thing = self.origin.get_mut(&id);
         match thing {
             Some(v) => {

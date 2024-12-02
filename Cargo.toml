@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 serde = { version = "1.0.208", features = ["derive"] }
 anyhow = "1.0.86"
-warp = "0.3"
 futures = "0.3.30"
 tokio = { version = "1.39.2", features = ["full"] }
 toml = "0.8.19"
@@ -26,8 +25,9 @@ matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk.git", rev = 
 tokio-stream = "0.1.16"
 async-stream = "0.3.6"
 sp-core = "34.0.0"
-actix-web = "4.9.0"
-flume = "0.11.1"
+tokio-tungstenite = "0.24.0"
+futures-util = "0.3.31"
+subxt-signer = "0.38.0"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

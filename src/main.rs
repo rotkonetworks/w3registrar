@@ -1,11 +1,12 @@
+mod api;
 mod matrix;
 mod node;
+mod token;
 mod watcher;
-mod api;
 
-use std::fs;
 use anyhow::anyhow;
 use serde::Deserialize;
+use std::fs;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 
@@ -21,10 +22,9 @@ struct Config {
 
 impl Config {
     pub fn load_from(path: &str) -> anyhow::Result<Self> {
-        let content = fs::read_to_string(path)
-            .map_err(|_| anyhow!("Failed to open config `{}`.", path))?;
-        toml::from_str(&content)
-            .map_err(|err| anyhow!("Failed to parse config: {:?}", err))
+        let content =
+            fs::read_to_string(path).map_err(|_| anyhow!("Failed to open config `{}`.", path))?;
+        toml::from_str(&content).map_err(|err| anyhow!("Failed to parse config: {:?}", err))
     }
 }
 
@@ -32,11 +32,10 @@ impl Config {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
+        .with_line_number(true)
         .with_span_events(FmtSpan::CLOSE)
         .init();
 
-    let config = Config::load_from("config.toml")?;
-
-    api::spawn_services(config.matrix).await?;
-    watcher::run(config.watcher).await
+    let config = Config::load_from("config.toml").unwrap();
+    api::spawn_services(config.matrix).await
 }
