@@ -24,7 +24,7 @@
       {
         defaultPackage = naersk-lib.buildPackage ./.;
         devShell = with pkgs; mkShell {
-          buildInputs = [ rust pkg-config openssl shim-unsigned ];
+          buildInputs = [ rust pkg-config openssl shim-unsigned subxt ];
         };
       });
 }
