@@ -145,7 +145,7 @@ pub struct FullRegistrationRequest {
 // TODO: make register_user and wait_for_response methods
 struct Conn {
     sender: Sender<RegistrationRequest>,
-    reciver: Receiver<RegistrationResponse>,
+    receiver: Receiver<RegistrationResponse>,
 }
 
 // TODO: refacor the address, port, size limit, and number of concurent connections
@@ -167,7 +167,7 @@ struct Listiner {
     ip: [u8; 4],
     port: u16,
     sender: Arc<Mutex<Sender<FullRegistrationRequest>>>,
-    reciver: Arc<Mutex<Receiver<RegistrationResponse>>>,
+    receiver: Arc<Mutex<Receiver<RegistrationResponse>>>,
 }
 
 /// Converts the inner of [IdentityData] to a [String]
@@ -216,13 +216,13 @@ impl Listiner {
         ip: [u8; 4],
         port: u16,
         sender: Arc<Mutex<Sender<FullRegistrationRequest>>>,
-        reciver: Arc<Mutex<Receiver<RegistrationResponse>>>,
+        receiver: Arc<Mutex<Receiver<RegistrationResponse>>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             ip,
             port,
             sender,
-            reciver,
+            receiver,
         })
     }
 
@@ -308,7 +308,7 @@ impl Listiner {
     pub async fn handle_incoming<'a>(
         message: Message,
         sender: Arc<Mutex<Sender<FullRegistrationRequest>>>,
-        reciver: Arc<Mutex<Receiver<RegistrationResponse>>>,
+        receiver: Arc<Mutex<Receiver<RegistrationResponse>>>,
         out: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
     ) -> anyhow::Result<&'a str> {
         match message {
@@ -336,7 +336,7 @@ impl Listiner {
                                 .unwrap();
                             match tokio::time::timeout(
                                 Duration::from_secs(reg_req.timeout),
-                                reciver.lock().await.recv(),
+                                receiver.lock().await.recv(),
                             )
                             .await
                             {
@@ -374,7 +374,7 @@ impl Listiner {
             match Self::handle_incoming(
                 message,
                 Arc::clone(&self.sender),
-                Arc::clone(&self.reciver),
+                Arc::clone(&self.receiver),
                 _out,
             )
             .await
@@ -422,64 +422,12 @@ impl Listiner {
 
 pub async fn spawn_ws_serv(
     sender: Arc<Mutex<Sender<FullRegistrationRequest>>>,
-    reciver: Arc<Mutex<Receiver<RegistrationResponse>>>,
+    receiver: Arc<Mutex<Receiver<RegistrationResponse>>>,
     ip: [u8; 4],
     port: u16,
 ) -> anyhow::Result<()> {
-    Listiner::new(ip, port, sender, reciver)
+    Listiner::new(ip, port, sender, receiver)
         .await
         .listen()
         .await
-}
-
-pub async fn spaw_http_serv(
-    registration_endpoint: &'static str,
-    sender: Sender<RegistrationRequest>,
-    reciver: Receiver<RegistrationResponse>,
-    ip: &'static str,
-    port: u16
-) -> Result<(), std::io::Error> {
-    HttpServer::new(move || {
-        App::new()
-            .wrap(middleware::Logger::default())
-            .app_data(web::JsonConfig::default().limit(1024))
-            .service(
-                web::resource(registration_endpoint)
-                    .app_data(web::Data::new(Conn {
-                        sender: sender.clone(),
-                        reciver: reciver.clone(),
-                    }))
-                    .route(web::post().to(verify)),
-            )
-    })
-    .bind((ip, port))
-    .unwrap()
-    .run()
-    .await
-}
-
-pub async fn spaw_http_serv(
-    registration_endpoint: &'static str,
-    sender: Sender<RegistrationRequest>,
-    reciver: Receiver<RegistrationResponse>,
-    ip: &'static str,
-    port: u16
-) -> Result<(), std::io::Error> {
-    HttpServer::new(move || {
-        App::new()
-            .wrap(middleware::Logger::default())
-            .app_data(web::JsonConfig::default().limit(1024))
-            .service(
-                web::resource(registration_endpoint)
-                    .app_data(web::Data::new(Conn {
-                        sender: sender.clone(),
-                        reciver: reciver.clone(),
-                    }))
-                    .route(web::post().to(verify)),
-            )
-    })
-    .bind((ip, port))
-    .unwrap()
-    .run()
-    .await
 }
