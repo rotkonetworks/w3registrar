@@ -47,7 +47,7 @@ pub async fn register_identity<'a>(who: AccountId32, reg_index: u32) -> anyhow::
     let judgement = api::tx().identity().provide_judgement(
         reg_index,
         subxt::utils::MultiAddress::Address32(who.to_owned().0),
-        runtime_types::pallet_identity::types::Judgement::KnownGood,
+        runtime_types::pallet_identity::types::Judgement::Reasonable,
         api::identity::calls::types::provide_judgement::Identity::from_str(&hash).unwrap(),
     );
 
@@ -62,5 +62,5 @@ pub async fn register_identity<'a>(who: AccountId32, reg_index: u32) -> anyhow::
         .sign_and_submit(&judgement, &singer, conf)
         .await
         .unwrap();
-    Ok("KnownGood")
+    Ok("Judged")
 }
