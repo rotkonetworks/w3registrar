@@ -13,11 +13,12 @@
 
         rust_overlay = import (builtins.fetchTarball "https://github.com/oxalica/rust-overlay/archive/master.tar.gz");
         pkgs = import <nixpkgs> { overlays = [ rust_overlay ]; };
-        rustVersion = "1.81.0";
+        rustVersion = "1.83.0";
         rust = pkgs.rust-bin.stable.${rustVersion}.default.override {
         extensions = [
           "rust-src" # for rust-analyzer
           "rustc"
+          "rust-analyzer"
           "cargo"
         ];};
       in
