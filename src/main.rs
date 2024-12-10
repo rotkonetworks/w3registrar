@@ -37,5 +37,5 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::load_from("config.toml").unwrap();
-    api::spawn_services(config.matrix).await
+    api::spawn_services(config).await
 }

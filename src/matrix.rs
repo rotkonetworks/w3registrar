@@ -13,7 +13,7 @@ use matrix_sdk::{
         events::room::{
             create::RoomCreateEventContent,
             member::StrippedRoomMemberEvent,
-            message::{MessageType, OriginalSyncRoomMessageEvent},
+            message::{MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent},
         },
     },
     Client,
@@ -31,12 +31,13 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::api::{RegistrationRequest, Source};
 use crate::{
     api::{Account, AcctMetadata, FullRegistrationRequest, VerifStatus},
     token::{AuthToken, Token},
 };
 
-const STATE_DIR: &str = "/tmp/matrix";
+const STATE_DIR: &str = "/tmp/matrix_";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum RegistrationStatus {
@@ -56,6 +57,7 @@ pub struct Config {
     pub password: String,
     pub security_key: String,
     pub admins: Vec<Nickname>,
+    pub state_dir: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -72,8 +74,8 @@ async fn verify_device(device: &Device) -> anyhow::Result<()> {
 /// Preform the login to the matrix account specified in the [Config], while
 /// checking for previous sessions info in from the `<state_dir>/session.json`
 /// and if found, it will attempt to use it.
-async fn login(cfg: Config, state_dir: &str) -> anyhow::Result<Client> {
-    let state_dir = Path::new(state_dir);
+async fn login(cfg: Config) -> anyhow::Result<Client> {
+    let state_dir = Path::new(&cfg.state_dir);
     let session_path = state_dir.join("session.json");
 
     info!("Creating client");
@@ -158,17 +160,20 @@ async fn login(cfg: Config, state_dir: &str) -> anyhow::Result<Client> {
 /// Starts the matrix bot, this function should be used to
 /// login to the specified matrix account in the config, and start monitor
 /// bridged messages
+/// Sender: Sends registration request to the matrix bot
+/// Receiver: Receives registration status from the matrix bot
 pub async fn start_bot(
     cfg: Config,
 ) -> anyhow::Result<(
+    // used to recive responses sent from the matrix bot
     Arc<Mutex<Receiver<RegistrationResponse>>>,
-    Arc<Mutex<Sender<FullRegistrationRequest>>>,
+    // used to send requests to the matrix bot
+    Arc<Mutex<Sender<Source>>>,
 )> {
-    let (send_response_to_serv, rescive_response_from_matrix) = tokio::sync::mpsc::channel(100);
-    let (send_registration_to_matrix, mut recive_registration_from_serv): (
-        Sender<FullRegistrationRequest>,
-        Receiver<FullRegistrationRequest>,
-    ) = tokio::sync::mpsc::channel(100);
+    let (send_response_to_serv, receive_response_from_matrix) =
+        tokio::sync::mpsc::channel::<RegistrationResponse>(100);
+    let (send_registration_to_matrix, mut receive_registration_from_serv) =
+        tokio::sync::mpsc::channel::<Source>(100);
 
     let requestd_accounts: Arc<Mutex<HashMap<Account, AcctMetadata>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -176,47 +181,68 @@ pub async fn start_bot(
     let origin: Arc<Mutex<Origin>> = Arc::new(Mutex::new(Origin::default()));
     let mut _origin = origin.clone();
 
-    // listens for incomming registration requests sent from the HTTP server
+    // listens for incomming registration requests sent from other sources
     let _ = tokio::spawn(async move {
         loop {
-            if let Some(reg) = recive_registration_from_serv.recv().await {
-                info!("Registration recived for {:#?}", reg);
-                for acc in reg.accounts.iter() {
-                    let token = Token::generate().await;
-                    info!("Token {:?} for {:#?}", token.show(), acc);
-                    // inform about the expect messages
-                    reg.stream
-                        .clone()
-                        .lock()
-                        .await
-                        .send(tokio_tungstenite::tungstenite::Message::Text(format!(
-                            r#"{{{:?}:{}}}"#,
-                            acc,
-                            token.show()
-                        )))
-                        .await
-                        .unwrap();
+            if let Some(reg) = receive_registration_from_serv.recv().await {
+                match reg {
+                    Source::Node(reg) => {
+                        info!("Registration recived for {:#?}", reg);
+                        for acc in reg.accounts.iter() {
+                            let token = Token::generate().await;
+                            info!("Token {:?} for {:#?}", token.show(), acc);
+                            // inform about the expect messages
+                            requestd_accounts.lock().await.insert(
+                                acc.to_owned(),
+                                AcctMetadata {
+                                    status: crate::api::VerifStatus::Pending,
+                                    id: reg.id.clone(),
+                                    token,
+                                },
+                            );
+                        }
+                        _origin.lock().await.origin.extend(Origin::from(reg).origin)
+                    }
+                    Source::Client(reg) => {
+                        info!("Registration recived for {:#?}", reg);
+                        for acc in reg.accounts.iter() {
+                            let token = Token::generate().await;
+                            info!("Token {:?} for {:#?}", token.show(), acc);
+                            // inform about the expect messages
+                            reg.stream
+                                .clone()
+                                .lock()
+                                .await
+                                .send(tokio_tungstenite::tungstenite::Message::Text(format!(
+                                    r#"{{{:?}:{}}}"#,
+                                    acc,
+                                    token.show()
+                                )))
+                                .await
+                                .unwrap();
 
-                    requestd_accounts.lock().await.insert(
-                        acc.to_owned(),
-                        AcctMetadata {
-                            status: crate::api::VerifStatus::Pending,
-                            id: reg.id.clone(),
-                            token,
-                        },
-                    );
+                            requestd_accounts.lock().await.insert(
+                                acc.to_owned(),
+                                AcctMetadata {
+                                    status: crate::api::VerifStatus::Pending,
+                                    id: reg.id.clone(),
+                                    token,
+                                },
+                            );
+                        }
+                        _origin
+                            .lock()
+                            .await
+                            .origin
+                            .extend(Origin::derive(reg).origin)
+                    }
                 }
-                _origin
-                    .lock()
-                    .await
-                    .origin
-                    .extend(Origin::derive(reg).origin)
             }
         }
     });
 
     tokio::spawn(async move {
-        let client = login(cfg, STATE_DIR).await.unwrap();
+        let client = login(cfg).await.unwrap();
         client.add_event_handler_context(ReqHandler {
             sender: send_response_to_serv,
             tracker: _requested_accounts,
@@ -247,7 +273,7 @@ pub async fn start_bot(
     });
 
     Ok((
-        Arc::new(Mutex::new(rescive_response_from_matrix)),
+        Arc::new(Mutex::new(receive_response_from_matrix)),
         Arc::new(Mutex::new(send_registration_to_matrix)),
     ))
 }
@@ -285,7 +311,7 @@ async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client
 /// Used to handle incoming registration requests
 #[derive(Clone)]
 pub struct ReqHandler {
-    /// Send registration status to the local HTTP server
+    /// Send registration status to the local registration listiner (BC/WS)
     sender: Sender<RegistrationResponse>,
     /// Contains a vector of __all__ received registration accounts
     tracker: Arc<Mutex<HashMap<Account, AcctMetadata>>>,
@@ -327,12 +353,18 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room, ctx: Ctx
                                         // checks if this is a registred user from the HTTP server
                                         match ctx.tracker.lock().await.get_mut(&acc) {
                                             Some(acc_meta) => {
+                                                if text_content.body.eq("Send challenge") {
+                                                    let msg = RoomMessageEventContent::text_plain(
+                                                        acc_meta.token.show(),
+                                                    );
+                                                    _room.send(msg).await.unwrap();
+                                                }
                                                 if acc_meta.token.show() != text_content.body {
                                                     info!("Recived bad token from {:?}", acc);
                                                     info!(
                                                         "Recived {:?} while expecting {:?}",
+                                                        text_content.body,
                                                         acc_meta.token.show(),
-                                                        text_content.body
                                                     );
                                                     return;
                                                 }
@@ -342,11 +374,6 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room, ctx: Ctx
                                                     v.to_string()
                                                 );
                                                 info!(r#"{{{:?}: Done}}"#, acc);
-                                                // acc_meta.stream.lock().await.send(
-                                                //     tokio_tungstenite::tungstenite::Message::Text(
-                                                //         format!(r#"{{{:?}: Done}}"#, acc),
-                                                //     ),
-                                                // ).await.unwrap();
                                                 // gets the global object of all registed id's and
                                                 // their associated accounts (Discord+Twitter 4 now)
                                                 let mut all_verified = true;
@@ -421,18 +448,43 @@ struct Origin {
     origin: HashMap<[u8; 32], HashMap<Account, VerifStatus>>,
 }
 
-impl Origin {
-    /// Constructs an [Origin] form [RegistrationRequest] giving all the associated
-    /// accounts the [RegistrationStatus::Pending] status
-    pub fn derive(image: FullRegistrationRequest) -> Self {
+impl From<FullRegistrationRequest> for Origin {
+    fn from(value: FullRegistrationRequest) -> Self {
         let mut leaf: HashMap<Account, VerifStatus> = HashMap::new();
         let mut head: HashMap<[u8; 32], HashMap<Account, VerifStatus>> = HashMap::new();
-        let id = image.id.0;
-        for req in image.accounts {
+        let id = value.id.0;
+        for req in value.accounts {
             leaf.insert(req, VerifStatus::Pending);
         }
         head.insert(id, leaf);
         Self { origin: head }
+    }
+}
+
+impl From<RegistrationRequest> for Origin {
+    fn from(value: RegistrationRequest) -> Self {
+        let mut leaf: HashMap<Account, VerifStatus> = HashMap::new();
+        let mut head: HashMap<[u8; 32], HashMap<Account, VerifStatus>> = HashMap::new();
+        let id = value.id.0;
+        for req in value.accounts {
+            leaf.insert(req, VerifStatus::Pending);
+        }
+        head.insert(id, leaf);
+        Self { origin: head }
+    }
+}
+
+impl Origin {
+    /// Constructs an [Origin] form [FullRegistrationRequest] giving all the associated
+    /// accounts the [VerifStatus::Pending] status
+    fn derive(image: FullRegistrationRequest) -> Self {
+        let mut accs = HashMap::new();
+        let mut origin = HashMap::new();
+        for acc in image.accounts {
+            accs.insert(acc, VerifStatus::Pending);
+        }
+        origin.insert(image.id.0, accs);
+        Self { origin }
     }
 
     /// Updates the request tree given a [RegistrationRequest]

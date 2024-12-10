@@ -4,7 +4,7 @@ use anyhow::anyhow;
 use futures::StreamExt;
 use futures_util::{stream::SplitSink, SinkExt};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 use subxt::utils::AccountId32;
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -17,17 +17,20 @@ use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 use tracing::{error, info};
 
 use crate::{
-    matrix::{self, Config, RegistrationResponse},
+    matrix::{self, RegistrationResponse},
     node::{
         self,
         api::runtime_types::{
             pallet_identity::types::{Data as IdentityData, Judgement},
             people_rococo_runtime::people::IdentityInfo,
         },
+        identity::events::JudgementRequested,
         runtime_types::pallet_identity::types::Registration,
         Client,
     },
     token::Token,
+    watcher::Config as WatcherConfig,
+    Config,
 };
 
 #[derive(Clone, Debug)]
@@ -87,7 +90,7 @@ impl From<RegistrationRequest> for RequestTracker {
         for acc in value.accounts {
             map.insert(acc, VerifStatus::Pending);
         }
-        RequestTracker::new(map, AccountId32::from_str(&value.id).unwrap())
+        RequestTracker::new(map, value.id.to_owned())
     }
 }
 
@@ -113,6 +116,16 @@ impl Account {
             None => return None,
         }
     }
+    pub fn into_accounts(value: IdentityInfo) -> Vec<Account> {
+        let mut toreturn = vec![];
+        if let Some(acc) = identity_data_tostring(&value.discord) {
+            toreturn.push(Account::Discord(acc))
+        }
+        if let Some(acc) = identity_data_tostring(&value.twitter) {
+            toreturn.push(Account::Twitter(acc))
+        }
+        return toreturn;
+    }
 
     pub fn inner(&self) -> String {
         match self {
@@ -127,7 +140,7 @@ impl Account {
 pub struct RegistrationRequest {
     pub accounts: Vec<Account>,
     pub name: String,
-    pub id: String,
+    pub id: AccountId32,
     pub timeout: u64,
     pub reg_index: u32,
 }
@@ -148,6 +161,12 @@ struct Conn {
     receiver: Receiver<RegistrationResponse>,
 }
 
+#[derive(Debug)]
+pub enum Source {
+    Node(RegistrationRequest),
+    Client(FullRegistrationRequest),
+}
+
 // TODO: refacor the address, port, size limit, and number of concurent connections
 // TODO: return something that the watcher can use to commmunicate with the two services
 // this thing will be used to:
@@ -158,16 +177,9 @@ struct Conn {
 //
 /// Spawns the HTTP server, and the Matrix client
 pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
-    let (recv, send) = matrix::start_bot(cfg).await.unwrap();
+    let (recv, send) = matrix::start_bot(cfg.matrix).await.unwrap();
+    spawn_node_listiner(cfg.watcher, Arc::clone(&send)).await?;
     spawn_ws_serv(send, recv, [127, 0, 0, 1], 8080).await
-}
-
-#[derive(Clone, Debug)]
-struct Listiner {
-    ip: [u8; 4],
-    port: u16,
-    sender: Arc<Mutex<Sender<FullRegistrationRequest>>>,
-    receiver: Arc<Mutex<Receiver<RegistrationResponse>>>,
 }
 
 /// Converts the inner of [IdentityData] to a [String]
@@ -211,11 +223,20 @@ fn identity_data_tostring(data: &IdentityData) -> Option<String> {
     }
 }
 
+#[derive(Clone, Debug)]
+struct Listiner {
+    ip: [u8; 4],
+    port: u16,
+    sender: Arc<Mutex<Sender<Source>>>,
+    receiver: Arc<Mutex<Receiver<RegistrationResponse>>>,
+}
+
 impl Listiner {
     pub async fn new(
         ip: [u8; 4],
         port: u16,
-        sender: Arc<Mutex<Sender<FullRegistrationRequest>>>,
+        sender: Arc<Mutex<Sender<Source>>>,
+        // TODO: change this!
         receiver: Arc<Mutex<Receiver<RegistrationResponse>>>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -249,6 +270,7 @@ impl Listiner {
     }
 
     /// Checks if fee is paid
+    /// TODO: migrate this to a common module
     fn has_paid_fee(judgements: Vec<(u32, Judgement<u128>)>) -> anyhow::Result<(), anyhow::Error> {
         if judgements
             .iter()
@@ -262,6 +284,7 @@ impl Listiner {
 
     /// Compares between the accounts on the idendtity object on the check_node
     /// and the recived requests
+    /// TODO: migrate this to a common module
     pub fn is_complete<'a>(
         registration: &Registration<u128, IdentityInfo>,
         expected: &Vec<Account>,
@@ -305,9 +328,10 @@ impl Listiner {
         Ok(())
     }
 
+    /// Handels WS incomming connections
     pub async fn handle_incoming<'a>(
         message: Message,
-        sender: Arc<Mutex<Sender<FullRegistrationRequest>>>,
+        sender: Arc<Mutex<Sender<Source>>>,
         receiver: Arc<Mutex<Receiver<RegistrationResponse>>>,
         out: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
     ) -> anyhow::Result<&'a str> {
@@ -315,44 +339,38 @@ impl Listiner {
             Message::Text(t) => {
                 // TODO: handle the unwrap
                 match serde_json::from_str::<RegistrationRequest>(&t) {
-                    Ok(reg_req) => match Self::check_node(
-                        AccountId32::from_str(&reg_req.id.clone())?,
-                        reg_req.accounts.clone(),
-                    )
-                    .await
-                    {
-                        Ok(()) => {
-                            sender
-                                .lock()
+                    Ok(reg_req) => {
+                        match Self::check_node(reg_req.id.clone(), reg_req.accounts.clone()).await {
+                            Ok(()) => {
+                                sender
+                                    .lock()
+                                    .await
+                                    .send(Source::Client(FullRegistrationRequest {
+                                        id: reg_req.id.clone(),
+                                        accounts: reg_req.accounts.clone(),
+                                        name: reg_req.name,
+                                        timeout: reg_req.timeout,
+                                        stream: out,
+                                    }))
+                                    .await
+                                    .unwrap();
+                                match tokio::time::timeout(
+                                    Duration::from_secs(reg_req.timeout),
+                                    receiver.lock().await.recv(),
+                                )
                                 .await
-                                .send(FullRegistrationRequest {
-                                    id: AccountId32::from_str(&reg_req.id.clone())?,
-                                    accounts: reg_req.accounts.clone(),
-                                    name: reg_req.name,
-                                    timeout: reg_req.timeout,
-                                    stream: out,
-                                })
-                                .await
-                                .unwrap();
-                            match tokio::time::timeout(
-                                Duration::from_secs(reg_req.timeout),
-                                receiver.lock().await.recv(),
-                            )
-                            .await
-                            {
-                                Ok(Some(_)) => {
-                                    node::register_identity(
-                                        AccountId32::from_str(&reg_req.id.clone())?,
-                                        reg_req.reg_index,
-                                    )
-                                    .await?;
-                                    return Ok("Done");
+                                {
+                                    Ok(Some(source)) => {
+                                        node::register_identity(reg_req.id, reg_req.reg_index)
+                                            .await?;
+                                        return Ok("Done");
+                                    }
+                                    _ => return Err(anyhow!("expired")),
                                 }
-                                _ => return Err(anyhow!("expired")),
                             }
+                            Err(e) => return Err(anyhow!("not registred, error: {}", e)),
                         }
-                        Err(e) => return Err(anyhow!("not registred, error: {}", e)),
-                    },
+                    }
                     Err(e) => return Err(anyhow!("unrecognize request, error: {}", e)),
                 }
             }
@@ -421,7 +439,7 @@ impl Listiner {
 }
 
 pub async fn spawn_ws_serv(
-    sender: Arc<Mutex<Sender<FullRegistrationRequest>>>,
+    sender: Arc<Mutex<Sender<Source>>>,
     receiver: Arc<Mutex<Receiver<RegistrationResponse>>>,
     ip: [u8; 4],
     port: u16,
@@ -430,4 +448,65 @@ pub async fn spawn_ws_serv(
         .await
         .listen()
         .await
+}
+
+pub async fn spawn_node_listiner(
+    cfg: WatcherConfig,
+    sender: Arc<Mutex<Sender<Source>>>,
+) -> anyhow::Result<()> {
+    NodeListiner::new(cfg.endpoint, sender).await.listen().await
+}
+
+struct NodeListiner {
+    client: Client,
+    sender: Arc<Mutex<Sender<Source>>>,
+}
+
+impl NodeListiner {
+    // TODO: change return from Self to Result<Self>
+    pub async fn new(url: String, sender: Arc<Mutex<Sender<Source>>>) -> Arc<Self> {
+        Arc::new(Self {
+            client: Client::from_url(&url).await.unwrap(),
+            sender,
+        })
+    }
+
+    pub async fn listen(self: Arc<Self>) -> anyhow::Result<()> {
+        let mut block_stream = self.client.blocks().subscribe_finalized().await?;
+        while let Some(item) = block_stream.next().await {
+            let block = item?;
+            for event in block.events().await.unwrap().iter() {
+                match event.unwrap().as_event::<JudgementRequested>() {
+                    Ok(Some(req)) => {
+                        info!("Judgement requested from other client!");
+                        info!("status: {:?}", self.handle_registration(&req.who).await);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_registration(&self, who: &AccountId32) -> anyhow::Result<(), anyhow::Error> {
+        let registration = node::get_registration(&self.client, who).await;
+        match registration {
+            Ok(reg) => {
+                Listiner::has_paid_fee(reg.judgements.0)?;
+                self.sender
+                    .lock()
+                    .await
+                    .send(Source::Node(RegistrationRequest {
+                        timeout: 300,
+                        accounts: Account::into_accounts(reg.info),
+                        name: String::new(),
+                        id: who.to_owned(),
+                        reg_index: 0,
+                    }))
+                    .await?;
+                return Ok(());
+            }
+            Err(_) => return Err(anyhow!("could not get registration for {}", who)),
+        }
+    }
 }
