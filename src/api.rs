@@ -190,8 +190,8 @@ struct Conn {
     receiver: Receiver<RegistrationResponse>,
 }
 
-// TODO: refacor the address, port, size limit, and number of concurent connections
-// TODO: return something that the watcher can use to commmunicate with the two services
+// TODO: refactor the address, port, size limit, and number of concurrent connections
+// TODO: return something that the watcher can use to communicate with the two services
 // this thing will be used to:
 // - check if a verification is already done for an acc of an owner(id)
 // - ...
@@ -353,7 +353,7 @@ impl Listener {
         return None;
     }
 
-    /// Handles WS incomming connections
+    /// Handles WS incoming connections
     pub async fn _handle_incoming<'a>(
         &self,
         message: Message,
@@ -434,7 +434,7 @@ impl Listener {
                                     _ => return Err(anyhow!("expired")),
                                 }
                             }
-                            Err(e) => return Err(anyhow!("not registred, error: {}", e)),
+                            Err(e) => return Err(anyhow!("not registered, error: {}", e)),
                         }
                     }
                     Err(e) => return Err(anyhow!("unrecognize request, error: {}", e)),
@@ -695,7 +695,7 @@ impl RedisConnection {
         Ok(())
     }
 
-    /// Checks if all acccounts under the hashset of the `id` key is verified
+    /// Checks if all accounts under the hashset of the `id` key is verified
     pub fn is_all_verified(&mut self, id: &AccountId32) -> anyhow::Result<bool> {
         let metadata: String = self
             .conn
