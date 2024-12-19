@@ -3,7 +3,6 @@
 use anyhow::anyhow;
 use futures::StreamExt;
 use futures_util::{stream::SplitSink, SinkExt};
-use redis;
 use redis::{Client as RedisClient, Commands};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -31,8 +30,7 @@ use crate::{
         runtime_types::pallet_identity::types::Registration,
         Client as NodeClient,
     },
-    token::AuthToken,
-    token::Token,
+    token::{AuthToken,Token},
     watcher::Config as WatcherConfig,
     Config,
 };
@@ -78,13 +76,13 @@ pub struct RequestTracker {
 }
 
 impl RequestTracker {
-    fn new(req: HashMap<Account, VerifStatus>, account_id: AccountId32) -> Self {
-        Self { req, account_id }
+    fn new(requests: HashMap<Account, VerifStatus>, account_id: AccountId32) -> Self {
+        Self { requests, account_id }
     }
 
     fn all_done(&self) -> bool {
-        for account in self.req.values() {
-            match acc {
+        for account in self.requests.values() {
+            match account {
                 VerifStatus::Done => {}
                 VerifStatus::Pending => return false,
             }
@@ -92,8 +90,8 @@ impl RequestTracker {
         true
     }
 
-    fn is_done(&self, acc: &Account) -> bool {
-        match self.req.get(acc) {
+    fn is_done(&self, account: &Account) -> bool {
+        match self.requests.get(account) {
             Some(v) => match v {
                 VerifStatus::Done => return true,
                 VerifStatus::Pending => return false,
@@ -107,9 +105,9 @@ impl From<RegistrationRequest> for RequestTracker {
     fn from(value: RegistrationRequest) -> Self {
         let mut map: HashMap<Account, VerifStatus> = HashMap::new();
         for account in value.accounts {
-            map.insert(acc, VerifStatus::Pending);
+            map.insert(account, VerifStatus::Pending);
         }
-        RequestTracker::new(map, value.id.to_owned())
+        RequestTracker { requests: map, account_id: value.id.to_owned() }
     }
 }
 
@@ -261,24 +259,17 @@ impl Listener {
         accounts: Vec<Account>,
     ) -> anyhow::Result<(), anyhow::Error> {
         let client = NodeClient::from_url("wss://dev.rotko.net/people-rococo").await?;
-        let registration = node::get_registration(&client, &id).await;
+        let registration = node::get_registration(&client, &id).await?;
         info!("registration: {:#?}", registration);
-        match registration {
-            Ok(reg) => {
-                Self::is_complete(&reg, &accounts)?;
-                Self::has_paid_fee(reg.judgements.0)?;
-                Ok(())
-            }
-            Err(_) => Err(anyhow!(
-                "couldn't get registration of {} from the BC node",
-                id
-            )),
-        }
+        
+        Self::is_complete(&registration, &accounts)?;
+        Self::has_paid_fee(&registration.judgements.0)?;
+        Ok(())
     }
 
     /// Checks if fee is paid
     /// TODO: migrate this to a common module
-    fn has_paid_fee(judgements: Vec<(u32, Judgement<u128>)>) -> anyhow::Result<(), anyhow::Error> {
+    fn has_paid_fee(judgements: &Vec<(u32, Judgement<u128>)>) -> anyhow::Result<(), anyhow::Error> {
         if judgements
             .iter()
             .any(|(_, j)| matches!(j, Judgement::FeePaid(_)))
@@ -297,7 +288,7 @@ impl Listener {
         expected: &Vec<Account>,
     ) -> anyhow::Result<(), anyhow::Error> {
         for account in expected {
-            match acc {
+            match account {
                 Account::Twitter(twitter_account) => {
                     match identity_data_to_string(&registration.info.twitter) {
                         Some(identity_twitter_account) => {
@@ -618,8 +609,9 @@ impl NodeListener {
     async fn handle_registration(&self, who: &AccountId32) -> Result<(), anyhow::Error> {
         let registration = Self::get_and_validate_registration(&self.client, who).await?;
 
-        // Validate fee payment # TODO: there is more registrars in mainnet than ours
-        Listener::has_paid_fee(registration.judgements.0)?;
+        // Validate fee payment 
+        // TODO: there is more registrars in mainnet than ours
+        Listener::has_paid_fee(&registration.judgements.0)?;
 
         // Set up Redis connection
         let mut conn = Self::create_redis_connection()?;
