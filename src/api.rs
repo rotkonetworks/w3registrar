@@ -283,46 +283,29 @@ impl Listener {
     /// Compares between the accounts on the identity object on the check_node
     /// and the received requests
     /// TODO: migrate this to a common module
-    pub fn is_complete<'a>(
+    pub fn is_complete(
         registration: &Registration<u128, IdentityInfo>,
         expected: &Vec<Account>,
-    ) -> anyhow::Result<(), anyhow::Error> {
+    ) -> anyhow::Result<()> {
         for account in expected {
-            match account {
-                Account::Twitter(twitter_account) => {
-                    match identity_data_to_string(&registration.info.twitter) {
-                        Some(identity_twitter_account) => {
-                            if !twitter_account.eq(&identity_twitter_account) {
-                                return Err(anyhow!(
-                                    "got {}, expected {}",
-                                    twitter_account,
-                                    identity_twitter_account
-                                ));
-                            }
-                        }
-                        None => {
-                            return Err(anyhow!("twitter acc {} not in the identity obj", twitter_account))
-                        }
-                    }
-                }
-                Account::Discord(discord_account) => {
-                    match identity_data_to_string(&registration.info.discord) {
-                        Some(identity_discord_account) => {
-                            if !discord_account.eq(&identity_discord_account) {
-                                return Err(anyhow!(
-                                    "got {}, expected {}",
-                                    discord_account,
-                                    identity_discord_account,
-                                ));
-                            }
-                        }
-                        None => {
-                            return Err(anyhow!("discord acc {} not in identity obj", discord_account))
-                        }
-                    }
-                }
-            }
+            Self::validate_account(account, &registration.info)?;
         }
+        Ok(())
+    }
+
+    fn validate_account(account: &Account, info: &IdentityInfo) -> anyhow::Result<()> {
+        let (expected_name, identity_data, account_type) = match account {
+            Account::Twitter(name) => (name, &info.twitter, "twitter"),
+            Account::Discord(name) => (name, &info.discord, "discord"),
+        };
+
+        let identity_name = identity_data_to_string(identity_data)
+            .ok_or_else(|| anyhow!("{} acc {} not in identity obj", account_type, expected_name))?;
+
+        if expected_name != &identity_name {
+            return Err(anyhow!("got {}, expected {}", expected_name, identity_name));
+        }
+
         Ok(())
     }
 
