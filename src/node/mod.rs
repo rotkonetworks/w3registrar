@@ -16,6 +16,8 @@ use api::runtime_types::pallet_identity::types::Registration;
 use api::runtime_types::people_rococo_runtime::people::IdentityInfo;
 use subxt::utils::AccountId32;
 
+use crate::config::Config;
+
 pub use api::*;
 
 pub type Client = subxt::OnlineClient<SubstrateConfig>;
@@ -25,7 +27,6 @@ pub type Block = subxt::blocks::Block<SubstrateConfig, Client>;
 pub type BlockHash = <SubstrateConfig as subxt::Config>::Hash;
 
 type PairSigner = subxt::tx::PairSigner<SubstrateConfig, Sr25519Pair>;
-
 
 pub async fn get_registration(
     client: &Client,
@@ -40,15 +41,22 @@ pub async fn get_registration(
     }
 }
 
-pub async fn register_identity<'a>(who: AccountId32, reg_index: u32) -> anyhow::Result<&'a str> {
-    let client = Client::from_url("wss://dev.rotko.net/people-rococo").await?;
-    let registration = get_registration(&client, &who).await.unwrap();
+pub async fn register_identity<'a>(who: AccountId32, reg_index: u32, config: &Config) -> anyhow::Result<&'a str> {
+    let client = Client::from_url(&config.node.endpoint)
+        .await
+        .map_err(|e| {
+            anyhow!(
+                "unable to connect to people-rococo network because of {}",
+                e.to_string()
+            )
+        })?;
+    let registration = get_registration(&client, &who).await?;
     let hash = hex::encode(blake2_256(&registration.info.encode()));
     let judgement = api::tx().identity().provide_judgement(
         reg_index,
         subxt::utils::MultiAddress::Address32(who.to_owned().0),
-        runtime_types::pallet_identity::types::Judgement::KnownGood,
-        api::identity::calls::types::provide_judgement::Identity::from_str(&hash).unwrap(),
+        runtime_types::pallet_identity::types::Judgement::Reasonable,
+        api::identity::calls::types::provide_judgement::Identity::from_str(&hash)?,
     );
 
     let singer: subxt::tx::signer::PairSigner<SubstrateConfig, subxt::ext::sp_core::sr25519::Pair> = {
@@ -57,10 +65,8 @@ pub async fn register_identity<'a>(who: AccountId32, reg_index: u32) -> anyhow::
     };
 
     let conf = subxt::config::substrate::SubstrateExtrinsicParamsBuilder::new().build();
-    client
-        .tx()
-        .sign_and_submit(&judgement, &singer, conf)
-        .await
-        .unwrap();
-    Ok("KnownGood")
+    match client.tx().sign_and_submit(&judgement, &singer, conf).await {
+        Ok(_) => return Ok("Judged with "),
+        Err(_) => return Err(anyhow!("unable to submit judgement")),
+    }
 }
