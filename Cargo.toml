@@ -28,6 +28,7 @@ sp-core = "34.0.0"
 tokio-tungstenite = "0.24.0"
 futures-util = "0.3.31"
 subxt-signer = "0.38.0"
+redis = { version = "0.27.6", features = ["aio", "json", "log", "tokio-comp", "uuid"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
