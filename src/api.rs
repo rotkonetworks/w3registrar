@@ -83,7 +83,7 @@ impl RequestTracker {
     }
 
     fn all_done(&self) -> bool {
-        for acc in self.req.values() {
+        for account in self.req.values() {
             match acc {
                 VerifStatus::Done => {}
                 VerifStatus::Pending => return false,
@@ -106,7 +106,7 @@ impl RequestTracker {
 impl From<RegistrationRequest> for RequestTracker {
     fn from(value: RegistrationRequest) -> Self {
         let mut map: HashMap<Account, VerifStatus> = HashMap::new();
-        for acc in value.accounts {
+        for account in value.accounts {
             map.insert(acc, VerifStatus::Pending);
         }
         RequestTracker::new(map, value.id.to_owned())
@@ -296,37 +296,37 @@ impl Listener {
         registration: &Registration<u128, IdentityInfo>,
         expected: &Vec<Account>,
     ) -> anyhow::Result<(), anyhow::Error> {
-        for acc in expected {
+        for account in expected {
             match acc {
-                Account::Twitter(twit_acc) => {
+                Account::Twitter(twitter_account) => {
                     match identity_data_to_string(&registration.info.twitter) {
-                        Some(identity_twit_acc) => {
-                            if !twit_acc.eq(&identity_twit_acc) {
+                        Some(identity_twitter_account) => {
+                            if !twitter_account.eq(&identity_twitter_account) {
                                 return Err(anyhow!(
                                     "got {}, expected {}",
-                                    twit_acc,
-                                    identity_twit_acc
+                                    twitter_account,
+                                    identity_twitter_account
                                 ));
                             }
                         }
                         None => {
-                            return Err(anyhow!("twitter acc {} not in the identity obj", twit_acc))
+                            return Err(anyhow!("twitter acc {} not in the identity obj", twitter_account))
                         }
                     }
                 }
-                Account::Discord(discord_acc) => {
+                Account::Discord(discord_account) => {
                     match identity_data_to_string(&registration.info.discord) {
-                        Some(identity_discord_acc) => {
-                            if !discord_acc.eq(&identity_discord_acc) {
+                        Some(identity_discord_account) => {
+                            if !discord_account.eq(&identity_discord_account) {
                                 return Err(anyhow!(
                                     "got {}, expected {}",
-                                    discord_acc,
-                                    identity_discord_acc,
+                                    discord_account,
+                                    identity_discord_account,
                                 ));
                             }
                         }
                         None => {
-                            return Err(anyhow!("discord acc {} not in identity obj", discord_acc))
+                            return Err(anyhow!("discord acc {} not in identity obj", discord_account))
                         }
                     }
                 }
