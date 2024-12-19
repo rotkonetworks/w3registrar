@@ -244,12 +244,12 @@ fn identity_data_tostring(data: &IdentityData) -> Option<String> {
 }
 
 #[derive(Debug, Clone)]
-struct Listiner {
+struct Listener {
     ip: [u8; 4],
     port: u16,
 }
 
-impl Listiner {
+impl Listener {
     pub async fn new(ip: [u8; 4], port: u16) -> Self {
         Self { ip, port }
     }
@@ -498,7 +498,7 @@ impl Listiner {
 
 /// Spawns a websocket server to listen for incoming registration requests
 pub async fn spawn_ws_serv(cfg: WebsocketConfig) -> anyhow::Result<()> {
-    Listiner::new(cfg.ip, cfg.port).await.listen().await
+    Listener::new(cfg.ip, cfg.port).await.listen().await
 }
 
 /// Spanws a new client (substrate) to listen for incoming events, in particular
@@ -619,7 +619,7 @@ impl NodeListener {
         let registration = Self::get_and_validate_registration(&self.client, who).await?;
 
         // Validate fee payment # TODO: there is more registrars in mainnet than ours
-        Listiner::has_paid_fee(registration.judgements.0)?;
+        Listener::has_paid_fee(registration.judgements.0)?;
 
         // Set up Redis connection
         let mut conn = Self::create_redis_connection()?;
