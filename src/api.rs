@@ -261,7 +261,6 @@ impl Listener {
         let client = NodeClient::from_url("wss://dev.rotko.net/people-rococo").await?;
         let registration = node::get_registration(&client, &id).await?;
         info!("registration: {:#?}", registration);
-        
         Self::is_complete(&registration, &accounts)?;
         Self::has_paid_fee(&registration.judgements.0)?;
         Ok(())
@@ -272,7 +271,7 @@ impl Listener {
     fn has_paid_fee(judgements: &Vec<(u32, Judgement<u128>)>) -> anyhow::Result<(), anyhow::Error> {
         if judgements
             .iter()
-            .any(|(_, j)| matches!(j, Judgement::FeePaid(_)))
+                .any(|(_, j)| matches!(j, Judgement::FeePaid(_)))
         {
             Ok(())
         } else {
@@ -345,18 +344,18 @@ impl Listener {
         text: &str,
         out: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
     ) -> anyhow::Result<()> {
-        let reg_req = parse_registration_request(text)?;
+        let reg_req = Self::parse_registration_request(text)?;
         Self::check_node(reg_req.id.clone(), reg_req.accounts.clone()).await?;
 
         let mut conn = RedisConnection::create_conn("redis://127.0.0.1/")?;
-        store_registration_data(&mut conn, &reg_req)?;
+        Self::store_registration_data(&mut conn, &reg_req)?;
 
-        for account in reg_req.accounts {
-            process_account(&mut conn, &account, &reg_req, &out).await?;
+        for account in &reg_req.accounts {
+            Self::process_account(&mut conn, account, &reg_req, &out).await?;
         }
 
-        await_registration_completion(&reg_req).await?;
-        node::register_identity(reg_req.id, reg_req.reg_index).await
+        Self::await_registration_completion(&reg_req).await?;
+        node::register_identity(reg_req.id, reg_req.reg_index).await.map(|_| ())
     }
 
     fn parse_registration_request(text: &str) -> anyhow::Result<RegistrationRequest> {
@@ -365,11 +364,12 @@ impl Listener {
     }
 
     fn store_registration_data(
-        conn: &mut RedisConnection,
+        conn: &mut RedisConnection, 
         reg_req: &RegistrationRequest,
     ) -> anyhow::Result<()> {
         let id_str = serde_json::to_string(&reg_req.id)?;
-        let accounts = HashSet::from_iter(reg_req.accounts.iter());
+        let accounts: HashSet<&Account, std::collections::hash_map::RandomState> =
+            HashSet::from_iter(reg_req.accounts.iter());
         let accounts_str = serde_json::to_string(&accounts)?;
         let status_str = serde_json::to_string(&VerifStatus::Pending)?;
 
@@ -395,8 +395,8 @@ impl Listener {
     ) -> anyhow::Result<()> {
         let token = Token::generate().await;
 
-        send_token_message(out, account, &token).await?;
-        store_account_data(conn, account, reg_req, &token)?;
+        Self::send_token_message(out, account, &token).await?;
+        Self::store_account_data(conn, account, reg_req, &token)?;
 
         Ok(())
     }
