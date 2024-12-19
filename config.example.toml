@@ -3,6 +3,10 @@ endpoint = "wss://dev.rotko.net/people-rococo/"
 registrar_index = 0
 keystore_path = "./keyfile"
 
+[websocket]
+ip = [127,0,0,1]
+port = 8080
+
 [matrix]
 homeserver = "https://matrix.org"
 username = "regbot"
