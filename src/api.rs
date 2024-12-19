@@ -135,7 +135,7 @@ impl Account {
             None => return None,
         }
     }
-    pub fn into_accounts(value: &IdentityInfo) -> Vec<Account> {
+    pub fn extract_accounts_from_identity(value: &IdentityInfo) -> Vec<Account> {
         let mut result = vec![];
         if let Some(acc) = identity_data_to_string(&value.discord) {
             result.push(Account::Discord(acc))
@@ -147,7 +147,7 @@ impl Account {
         return result;
     }
 
-    pub fn inner(&self) -> String {
+    pub fn get_account_name(&self) -> String {
         match self {
             Account::Twitter(v) => v.to_owned(),
             Account::Discord(v) => v.to_owned(),
@@ -571,7 +571,7 @@ impl NodeListener {
         who: &AccountId32,
         reg: &Registration<u128, IdentityInfo>,
     ) -> Result<(), anyhow::Error> {
-        let accounts = Account::into_accounts(&reg.info);
+        let accounts = Account::extract_accounts_from_identity(&reg.info);
         let account_set = HashSet::<&Account>::from_iter(accounts.iter());
 
         redis::pipe()
@@ -628,7 +628,7 @@ impl NodeListener {
         Self::store_wallet_registration(&mut conn, who, &registration)?;
 
         // Store individual account data
-        for account in Account::into_accounts(&registration.info) {
+        for account in Account::extract_accounts_from_identity(&registration.info) {
             Self::store_account_data(&mut conn, &account, who).await?;
         }
 
