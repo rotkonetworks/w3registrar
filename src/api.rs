@@ -61,7 +61,7 @@ pub enum VerifStatus {
 impl VerifStatus {
     pub async fn set_done(&mut self) -> anyhow::Result<()> {
         *self = Self::Done;
-        return anyhow::Result::Ok(());
+        anyhow::Result::Ok(())
     }
 }
 
@@ -89,7 +89,7 @@ impl RequestTracker {
                 VerifStatus::Pending => return false,
             }
         }
-        return true;
+        true
     }
 
     fn is_done(&self, acc: &Account) -> bool {
@@ -144,7 +144,7 @@ impl Account {
             result.push(Account::Twitter(acc))
         }
         // TODO: add matrix itself?
-        return result;
+        result
     }
 
     pub fn get_account_name(&self) -> String {
@@ -350,7 +350,7 @@ impl Listener {
                 _ => {}
             }
         }
-        return None;
+        None
     }
 
     /// Handles WS incoming connections
@@ -661,7 +661,7 @@ impl RedisConnection {
         while let Some(item) = res.next() {
             keys.push(item);
         }
-        return keys;
+        keys
     }
 
     /// TODO
