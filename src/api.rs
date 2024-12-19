@@ -66,20 +66,20 @@ impl VerifStatus {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct AcctMetadata {
+pub struct AccountMetadata {
     pub status: VerifStatus,
     pub id: AccountId32,
     pub token: Token,
 }
 
 pub struct RequestTracker {
-    pub req: HashMap<Account, VerifStatus>,
-    pub acc_id: AccountId32,
+    pub requests: HashMap<Account, VerifStatus>,
+    pub account_id: AccountId32,
 }
 
 impl RequestTracker {
-    fn new(req: HashMap<Account, VerifStatus>, acc_id: AccountId32) -> Self {
-        Self { req, acc_id }
+    fn new(req: HashMap<Account, VerifStatus>, account_id: AccountId32) -> Self {
+        Self { req, account_id }
     }
 
     fn all_done(&self) -> bool {
@@ -199,7 +199,7 @@ struct Conn {
 pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
     matrix::start_bot(cfg.matrix).await?;
     spawn_node_listener(cfg.watcher).await?;
-    spawn_ws_serv(cfg.websocket).await
+    spawn_websocket_service(cfg.websocket).await
 }
 
 /// Converts the inner of [IdentityData] to a [String]
@@ -354,7 +354,7 @@ impl Listener {
     }
 
     /// Handles WS incoming connections
-    pub async fn _handle_incoming<'a>(
+    pub async fn handle_incoming<'a>(
         &self,
         message: Message,
         out: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
@@ -454,7 +454,7 @@ impl Listener {
         let out = Arc::new(Mutex::new(outgoing));
         while let Some(Ok(message)) = incoming.next().await {
             let _out = Arc::clone(&out);
-            match self._handle_incoming(message, _out).await {
+            match self.handle_incoming(message, _out).await {
                 Ok(v) => {
                     info!("{}", format!(r#"{{"status": "{:?}""}}"#, v));
                     out.lock()
@@ -497,7 +497,7 @@ impl Listener {
 }
 
 /// Spawns a websocket server to listen for incoming registration requests
-pub async fn spawn_ws_serv(cfg: WebsocketConfig) -> anyhow::Result<()> {
+pub async fn spawn_websocket_service(cfg: WebsocketConfig) -> anyhow::Result<()> {
     Listener::new(cfg.ip, cfg.port).await.listen().await
 }
 
@@ -716,7 +716,7 @@ impl RedisConnection {
 
     /// Removes the `account` from the list of the pending account on the hashset 
     /// with `id` as a key
-    pub fn remove_acc(&mut self, id: &AccountId32, account: &Account) -> anyhow::Result<()> {
+    pub fn remove_account(&mut self, id: &AccountId32, account: &Account) -> anyhow::Result<()> {
         let metadata: String = self
             .conn
             .hget(&serde_json::to_string(id).unwrap(), "accounts")?;
