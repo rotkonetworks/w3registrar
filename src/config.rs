@@ -24,6 +24,7 @@ pub struct RedisConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
 pub struct NodeConfig {
     pub endpoint: String,
     pub registrar_index: RegistrarIndex,
@@ -64,18 +65,22 @@ impl Config {
             .map_err(|err| anyhow!("Failed to parse config: {:?}", err))
     }
 
+    #[allow(dead_code)]
     pub fn redis(&self) -> &RedisConfig {
         &self.redis
     }
 
+    #[allow(dead_code)]
     pub fn node(&self) -> &NodeConfig {
         &self.node
     }
 
+    #[allow(dead_code)]
     pub fn matrix(&self) -> &MatrixConfig {
         &self.matrix
     }
 
+    #[allow(dead_code)]
     pub fn websocket(&self) -> &WebsocketConfig {
         &self.websocket
     }

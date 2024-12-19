@@ -179,7 +179,7 @@ struct Conn {
 // - ...
 /// Spawns the HTTP server, and the Matrix client
 pub async fn spawn_services(config: Config) -> anyhow::Result<()> {
-    matrix::start_bot(config.matrix.clone()).await?;
+    matrix::start_bot(config.matrix.clone(), config.redis.clone()).await?;
     spawn_node_listener(&config).await?;
     spawn_websocket_service(&config).await
 }
