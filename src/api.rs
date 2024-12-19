@@ -328,94 +328,133 @@ impl Listener {
     }
 
     /// Handles WS incoming connections
-    pub async fn handle_incoming<'a>(
+    pub async fn handle_incoming(
         &self,
         message: Message,
         out: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
-    ) -> anyhow::Result<&'a str> {
+    ) -> anyhow::Result<()> {
         match message {
-            Message::Text(t) => {
-                // TODO: handle the unwrap
-                match serde_json::from_str::<RegistrationRequest>(&t) {
-                    Ok(reg_req) => {
-                        match Self::check_node(reg_req.id.clone(), reg_req.accounts.clone()).await {
-                            Ok(()) => {
-                                let mut conn = RedisConnection::create_conn("redis://127.0.0.1/")?;
+            Message::Text(text) => self.process_registration_request(&text, out).await,
+            Message::Close(_) => Err(anyhow!("closing connection")),
+            _ => Err(anyhow!("unrecognized message format")),
+        }
+    }
 
-                                redis::pipe()
-                                    .cmd("HSET")
-                                    .arg(serde_json::to_string(&reg_req.id.to_owned()).unwrap())
-                                    .arg("accounts")
-                                    .arg(
-                                        serde_json::to_string::<HashSet<&Account>>(
-                                            &HashSet::from_iter(reg_req.accounts.iter()),
-                                        )
-                                        .unwrap(),
-                                    )
-                                    .arg("status")
-                                    .arg(serde_json::to_string(&VerifStatus::Pending).unwrap())
-                                    .cmd("EXPIRE") // expire time
-                                    .arg(serde_json::to_string(&reg_req.id.to_owned()).unwrap())
-                                    .arg(reg_req.timeout)
-                                    .exec(&mut conn.conn)
-                                    .unwrap();
+    async fn process_registration_request(
+        &self,
+        text: &str,
+        out: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+    ) -> anyhow::Result<()> {
+        let reg_req = parse_registration_request(text)?;
+        Self::check_node(reg_req.id.clone(), reg_req.accounts.clone()).await?;
 
-                                for account in reg_req.accounts {
-                                    let token = Token::generate().await;
-                                    out.lock()
-                                        .await
-                                        .send(Message::Text(format!(
-                                            r#"{{{:?}: {}}}"#,
-                                            account,
-                                            token.show()
-                                        )))
-                                        .await
-                                        .unwrap();
+        let mut conn = RedisConnection::create_conn("redis://127.0.0.1/")?;
+        store_registration_data(&mut conn, &reg_req)?;
 
-                                    // acc stuff
-                                    redis::pipe()
-                                        .cmd("HSET") // create a set
-                                        .arg(format!(
-                                            "{}:{}",
-                                            serde_json::to_string(&account).unwrap(),
-                                            serde_json::to_string(&reg_req.id.clone()).unwrap()
-                                        ))
-                                        .arg("status")
-                                        .arg(serde_json::to_string(&VerifStatus::Pending).unwrap())
-                                        .arg("wallet_id")
-                                        .arg(serde_json::to_string(&reg_req.id.clone()).unwrap())
-                                        .arg("token")
-                                        .arg(serde_json::to_string(&token).unwrap())
-                                        .cmd("EXPIRE") // expire time
-                                        .arg(serde_json::to_string(&account).unwrap())
-                                        .arg(reg_req.timeout)
-                                        .exec(&mut conn.conn)
-                                        .unwrap();
-                                }
+        for account in reg_req.accounts {
+            process_account(&mut conn, &account, &reg_req, &out).await?;
+        }
 
-                                match tokio::time::timeout(
-                                    Duration::from_secs(reg_req.timeout),
-                                    Self::monitor_hash_changes(
-                                        RedisClient::open("redis://127.0.0.1/").unwrap(),
-                                        serde_json::to_string(&reg_req.id.to_owned()).unwrap(),
-                                    ),
-                                )
-                                .await
-                                {
-                                    Ok(Some(_source)) => {
-                                        node::register_identity(reg_req.id, reg_req.reg_index).await
-                                    }
-                                    _ => return Err(anyhow!("expired")),
-                                }
-                            }
-                            Err(e) => return Err(anyhow!("not registered, error: {}", e)),
-                        }
-                    }
-                    Err(e) => return Err(anyhow!("unrecognize request, error: {}", e)),
-                }
-            }
-            Message::Close(_) => return Err(anyhow!("closing self.connection")),
-            _ => return Err(anyhow!("unrecognized message format!")),
+        await_registration_completion(&reg_req).await?;
+        node::register_identity(reg_req.id, reg_req.reg_index).await
+    }
+
+    fn parse_registration_request(text: &str) -> anyhow::Result<RegistrationRequest> {
+        serde_json::from_str(text)
+            .map_err(|e| anyhow!("unrecognized request: {}", e))
+    }
+
+    fn store_registration_data(
+        conn: &mut RedisConnection,
+        reg_req: &RegistrationRequest,
+    ) -> anyhow::Result<()> {
+        let id_str = serde_json::to_string(&reg_req.id)?;
+        let accounts = HashSet::from_iter(reg_req.accounts.iter());
+        let accounts_str = serde_json::to_string(&accounts)?;
+        let status_str = serde_json::to_string(&VerifStatus::Pending)?;
+
+        redis::pipe()
+            .cmd("HSET")
+            .arg(&id_str)
+            .arg("accounts")
+            .arg(&accounts_str)
+            .arg("status")
+            .arg(&status_str)
+            .cmd("EXPIRE")
+            .arg(&id_str)
+            .arg(reg_req.timeout)
+            .exec(&mut conn.conn)
+            .map_err(|e| anyhow!("failed to store registration: {}", e))
+    }
+
+    async fn process_account(
+        conn: &mut RedisConnection,
+        account: &Account,
+        reg_req: &RegistrationRequest,
+        out: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+    ) -> anyhow::Result<()> {
+        let token = Token::generate().await;
+
+        send_token_message(out, account, &token).await?;
+        store_account_data(conn, account, reg_req, &token)?;
+
+        Ok(())
+    }
+
+    async fn send_token_message(
+        out: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+        account: &Account,
+        token: &Token,
+    ) -> anyhow::Result<()> {
+        out.lock()
+            .await
+            .send(Message::Text(format!(
+                        r#"{{{:?}: {}}}"#,
+                        account,
+                        token.show()
+            )))
+            .await
+            .map_err(|e| anyhow!("failed to send token: {}", e))
+    }
+
+    fn store_account_data(
+        conn: &mut RedisConnection,
+        account: &Account,
+        reg_req: &RegistrationRequest,
+        token: &Token,
+    ) -> anyhow::Result<()> {
+        let key = format!(
+            "{}:{}",
+            serde_json::to_string(account)?,
+            serde_json::to_string(&reg_req.id)?
+        );
+
+        redis::pipe()
+            .cmd("HSET")
+            .arg(&key)
+            .arg("status")
+            .arg(serde_json::to_string(&VerifStatus::Pending)?)
+            .arg("wallet_id")
+            .arg(serde_json::to_string(&reg_req.id)?)
+            .arg("token")
+            .arg(serde_json::to_string(token)?)
+            .cmd("EXPIRE")
+            .arg(&key)
+            .arg(reg_req.timeout)
+            .exec(&mut conn.conn)
+            .map_err(|e| anyhow!("failed to store account data: {}", e))
+    }
+
+    async fn await_registration_completion(reg_req: &RegistrationRequest) -> anyhow::Result<()> {
+        let client = RedisClient::open("redis://127.0.0.1/")?;
+        let id_str = serde_json::to_string(&reg_req.id)?;
+
+        match tokio::time::timeout(
+            Duration::from_secs(reg_req.timeout),
+            Self::monitor_hash_changes(client, id_str),
+        ).await {
+            Ok(Some(_)) => Ok(()),
+            _ => Err(anyhow!("registration timeout")),
         }
     }
 
@@ -431,12 +470,12 @@ impl Listener {
             match self.handle_incoming(message, _out).await {
                 Ok(v) => {
                     info!("{}", format!(r#"{{"status": "{:?}""}}"#, v));
-                    out.lock()
-                        .await
-                        .send(Message::Text(format!(r#"{{"status": "{:?}"}}"#, v)))
-                        .await
-                        .unwrap();
-                }
+                out.lock()
+                    .await
+                    .send(Message::Text(format!(r#"{{"status": "{:?}"}}"#, v)))
+                    .await
+                    .unwrap();
+                    }
                 Err(e) => {
                     info!("{}", format!(r#"{{"status": "{:?}"}}"#, e));
                     out.lock()
@@ -444,7 +483,7 @@ impl Listener {
                         .send(Message::Text(format!(r#"{{"status": "{:?}"}}"#, e)))
                         .await
                         .unwrap();
-                }
+                    }
             }
         }
     }
