@@ -19,20 +19,22 @@ use matrix_sdk::{
     },
     Client,
 };
-use redis;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::{sleep, Duration};
 use tracing::{info, error};
 use anyhow::{Result, Context};
-use crate::config::{RedisConfig, MatrixConfig};
 
 use std::path::Path;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
+use subxt::utils::AccountId32;
 
-use crate::api::RedisConnection;
 use crate::{
-    api::{Account, VerifStatus},
-    token::AuthToken,
+    api::{Account, AccountMetadata, VerifStatus, RedisConnection},
+    token::{AuthToken, Token},
+    config::{RedisConfig, MatrixConfig},
 };
 
 // Configuration constants
@@ -199,22 +201,43 @@ async fn login(cfg: MatrixConfig) -> Result<Client> {
     Ok(client)
 }
 
-struct MatrixBot {
-    redis_conn: redis::Connection,
+pub struct MatrixBot {
+    redis: Arc<Mutex<RedisConnection>>,
+    accounts: Arc<Mutex<HashMap<Account, AccountMetadata>>>,
+    origin: Arc<Mutex<HashMap<AccountId32, HashMap<Account, VerifStatus>>>>,
+    response_sender: mpsc::Sender<RegistrationResponse>,
+}
+
+impl MatrixBot {
+    pub async fn new(redis_config: &RedisConfig) -> Result<(Self, mpsc::Receiver<RegistrationResponse>)> {
+        let (tx, rx) = mpsc::channel(100);
+        Ok((Self {
+            redis: Arc::new(Mutex::new(RedisConnection::create_conn(&redis_config.url)?)),
+            accounts: Arc::new(Mutex::new(HashMap::new())),
+            origin: Arc::new(Mutex::new(HashMap::new())), // init empty origin map
+            response_sender: tx,
+        }, rx))
+    }
 }
 
 /// Starts the matrix bot to monitor bridged messages.
 /// - Sender: Sends registration request to the matrix bot
 /// - Receiver: Receives registration status from the matrix bot
-pub async fn start_bot(cfg: MatrixConfig, redis_config: RedisConfig) -> Result<()> {
+pub async fn start_bot(cfg: MatrixConfig, redis_config: RedisConfig) 
+    -> Result<mpsc::Receiver<RegistrationResponse>> 
+{
     let client = login(cfg).await?;
-    let redis_config = redis_config.clone();
+    let (bot, rx) = MatrixBot::new(&redis_config).await?;
+    let bot = Arc::new(bot);
 
     client.add_event_handler(on_stripped_state_member);
-    client.add_event_handler(move |ev, room| {
-        let redis_config = redis_config.clone();
-        async move {
-            on_room_message(ev, room, &redis_config).await;
+    client.add_event_handler({
+        let bot = bot.clone();
+        move |ev, room| {
+            let bot = bot.clone();
+            async move {
+                on_room_message(ev, room, bot.as_ref()).await;
+            }
         }
     });
 
@@ -227,7 +250,8 @@ pub async fn start_bot(cfg: MatrixConfig, redis_config: RedisConfig) -> Result<(
         info!("Logged in with device ID {device_id:?}");
     }
 
-    start_sync_loop(client).await
+    start_sync_loop(client).await?; // Add the ? here
+    Ok(rx)
 }
 
 async fn start_sync_loop(client: Client) -> Result<()> {
@@ -319,7 +343,11 @@ impl MessageAction {
     }
 }
 
-async fn on_room_message(ev: OriginalSyncRoomMessageEvent, room: Room, redis_config: &RedisConfig) {
+async fn on_room_message(
+    ev: OriginalSyncRoomMessageEvent, 
+    room: Room, 
+    bot: &MatrixBot
+) {
     let MessageType::Text(text_content) = ev.content.msgtype else {
         return;
     };
@@ -327,49 +355,97 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, room: Room, redis_con
     let states = match room.get_state_events(ruma::events::StateEventType::RoomMember).await {
         Ok(states) => states,
         Err(e) => {
-            tracing::error!("Failed to get room states: {}", e);
+            error!("Failed to get room states: {}", e);
             return;
         }
     };
 
-    // Process each state event to find and handle bridge accounts
     for state in states {
         // some blackmagic event casting
         let state_content: RawSyncOrStrippedState<RoomCreateEventContent> = state.cast();
         
         if let Some(account) = extract_account_from_state(state_content) {
-            if let Err(e) = handle_incoming(account, &text_content, &room, redis_config).await {
-                tracing::error!("Failed to handle incoming message: {}", e);
+            if let Err(e) = handle_verification(account, &text_content.body, bot).await {
+                error!("Failed to handle verification: {}", e);
             }
         }
     }
+}
+
+async fn handle_verification(
+    account: Account,
+    message: &str, 
+    bot: &MatrixBot,
+) -> Result<()> {
+    let mut redis = bot.redis.lock().await;
+    let account_key = serde_json::to_string(&account)?;
+    
+    // Get account metadata
+    let wallet_id = redis.get_wallet_id(&account_key);
+    let stored_token = redis.get_challenge_token(&account_key);
+    let current_status = redis.get_status(&account_key);
+
+    // Verify token
+    if message != stored_token.show() {
+        info!("Received invalid token from {account:?}. Expected {}, got {message}", 
+            stored_token.show());
+        return Ok(());
+    }
+
+    match current_status {
+        VerifStatus::Done => {
+            info!("Account {account:?} already verified");
+            return Ok(());
+        }
+        VerifStatus::Pending => {
+            redis.set_status(&account_key, VerifStatus::Done)?;
+            redis.remove_account(&wallet_id, &account)?;
+
+            if redis.is_all_verified(&wallet_id)? {
+                redis.signal_done(&wallet_id)?;
+                bot.response_sender
+                    .send(RegistrationResponse {
+                        status: RegistrationStatus::Done(String::from("done")),
+                    })
+                    .await?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 async fn handle_incoming(
     acc: Account,
     text_content: &TextMessageEventContent,
     room: &Room,
-    redis_config: &RedisConfig,
+    bot: &MatrixBot,
 ) -> anyhow::Result<()> {
     info!("\nAcc: {:#?}\nContent: {:#?}", acc, text_content);
-    
-    let mut redis = RedisConnection::create_conn(&redis_config.url)?;
-    let account_key = format!("{}:*", serde_json::to_string(&acc)?);
-    let accounts = redis.search(account_key);
-    
-    if accounts.is_empty() {
-        return Ok(());
-    }
 
-    let action = MessageAction::from_content(&text_content.body);
-    match action {
-        MessageAction::SendChallenge => {
-            send_challenges(&accounts, &mut redis, room).await
-        },
-        MessageAction::VerifyChallenge(response) => {
-            process_verification(&accounts, &mut redis, &acc, &response).await
+    let mut accounts = bot.accounts.lock().await;
+    if let Some(metadata) = accounts.get_mut(&acc) {
+        if text_content.body == metadata.token.show() {
+            let mut redis = bot.redis.lock().await;
+            redis.set_status(&serde_json::to_string(&acc)?, VerifStatus::Done)?;
+            redis.remove_account(&metadata.id, &acc)?;
+
+            if redis.is_all_verified(&metadata.id)? {
+                info!("\nAll accounts for wallet {} are verified!", metadata.id);
+                bot.response_sender.send(RegistrationResponse {
+                    status: RegistrationStatus::Done(String::from("done")),
+                }).await?;
+                redis.signal_done(&metadata.id)?;
+            }
+        } else {
+            info!(
+                "Received incorrect token from {:?}. Expected {:?}, got {:?}",
+                acc, metadata.token.show(), text_content.body
+            );
         }
     }
+
+    Ok(())
 }
 
 async fn send_challenges(
