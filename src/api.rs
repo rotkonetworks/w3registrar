@@ -198,7 +198,7 @@ struct Conn {
 /// Spawns the HTTP server, and the Matrix client
 pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
     matrix::start_bot(cfg.matrix).await?;
-    spawn_node_listiner(cfg.watcher).await?;
+    spawn_node_listener(cfg.watcher).await?;
     spawn_ws_serv(cfg.websocket).await
 }
 
@@ -270,7 +270,7 @@ impl Listener {
                 Ok(())
             }
             Err(_) => Err(anyhow!(
-                "coudn't get registration of {} from the BC node",
+                "couldn't get registration of {} from the BC node",
                 id
             )),
         }
@@ -289,8 +289,8 @@ impl Listener {
         }
     }
 
-    /// Compares between the accounts on the idendtity object on the check_node
-    /// and the recived requests
+    /// Compares between the accounts on the identity object on the check_node
+    /// and the received requests
     /// TODO: migrate this to a common module
     pub fn is_complete<'a>(
         registration: &Registration<u128, IdentityInfo>,
@@ -353,7 +353,7 @@ impl Listener {
         return None;
     }
 
-    /// Handels WS incomming connections
+    /// Handles WS incomming connections
     pub async fn _handle_incoming<'a>(
         &self,
         message: Message,
@@ -501,9 +501,9 @@ pub async fn spawn_ws_serv(cfg: WebsocketConfig) -> anyhow::Result<()> {
     Listener::new(cfg.ip, cfg.port).await.listen().await
 }
 
-/// Spanws a new client (substrate) to listen for incoming events, in particular
+/// Spawns a new client (substrate) to listen for incoming events, in particular
 /// `requestJudgement` requests
-pub async fn spawn_node_listiner(
+pub async fn spawn_node_listener(
     cfg: WatcherConfig,
     // TODO: add redis db url
 ) -> anyhow::Result<()> {
@@ -665,7 +665,7 @@ impl RedisConnection {
     }
 
     /// TODO
-    pub fn get_challange_token(&mut self, account: &str) -> Token {
+    pub fn get_challenge_token(&mut self, account: &str) -> Token {
         let token: String = self.conn.hget(account, "token").unwrap();
         serde_json::from_str(&token).unwrap()
     }
