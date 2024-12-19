@@ -136,14 +136,15 @@ impl Account {
         }
     }
     pub fn into_accounts(value: &IdentityInfo) -> Vec<Account> {
-        let mut toreturn = vec![];
+        let mut result = vec![];
         if let Some(acc) = identity_data_tostring(&value.discord) {
-            toreturn.push(Account::Discord(acc))
+            result.push(Account::Discord(acc))
         }
         if let Some(acc) = identity_data_tostring(&value.twitter) {
-            toreturn.push(Account::Twitter(acc))
+            result.push(Account::Twitter(acc))
         }
-        return toreturn;
+        // TODO: add matrix itself?
+        return result;
     }
 
     pub fn inner(&self) -> String {
@@ -551,54 +552,87 @@ impl NodeListener {
         Ok(())
     }
 
-    async fn handle_registration(&self, who: &AccountId32) -> anyhow::Result<(), anyhow::Error> {
-        let registration = node::get_registration(&self.client, who).await;
-        match registration {
-            Ok(reg) => {
-                Listiner::has_paid_fee(reg.judgements.0)?;
-                // TODO: abstract all redis opperations away
-                let mut conn = RedisConnection::create_conn("redis://127.0.0.1/")?;
-                redis::pipe()
-                    .cmd("HSET")
-                    .arg(serde_json::to_string(who).unwrap())
-                    .arg("accounts")
-                    .arg(
-                        serde_json::to_string::<HashSet<&Account>>(&HashSet::from_iter(
-                            Account::into_accounts(&reg.info).iter(),
-                        ))
-                        .unwrap(),
-                    )
-                    .arg("status")
-                    .arg(serde_json::to_string(&VerifStatus::Pending).unwrap())
-                    .cmd("EXPIRE") // expire time
-                    .arg(serde_json::to_string(who).unwrap())
-                    .arg(300)
-                    .exec(&mut conn.conn)
-                    .unwrap();
+    fn create_redis_connection() -> Result<RedisConnection, anyhow::Error> {
+        RedisConnection::create_conn("redis://127.0.0.1/")
+            .map_err(|e| anyhow!("Failed to create Redis connection: {}", e))
+    }
 
-                // TODO: make all commands chained together and then executed 
-                // all at once!
-                for account in Account::into_accounts(&reg.info) {
-                    // acc stuff
-                    redis::pipe()
-                        .cmd("HSET") // create a set
-                        .arg(serde_json::to_string(&account).unwrap())
-                        .arg("status")
-                        .arg(serde_json::to_string(&VerifStatus::Pending).unwrap())
-                        .arg("wallet_id")
-                        .arg(serde_json::to_string(who).unwrap())
-                        .arg("token")
-                        .arg(serde_json::to_string(&Token::generate().await).unwrap())
-                        .cmd("EXPIRE") // expire time
-                        .arg(serde_json::to_string(&account).unwrap())
-                        .arg(300)
-                        .exec(&mut conn.conn)
-                        .unwrap();
-                }
-                return Ok(());
-            }
-            Err(_) => return Err(anyhow!("could not get registration for {}", who)),
+    async fn get_and_validate_registration(
+        client: &NodeClient,
+        who: &AccountId32,
+    ) -> Result<Registration<u128, IdentityInfo>, anyhow::Error> {
+        node::get_registration(client, who)
+            .await
+            .map_err(|_| anyhow!("could not get registration for {}", who))
+    }
+
+    fn store_wallet_registration(
+        conn: &mut RedisConnection,
+        who: &AccountId32,
+        reg: &Registration<u128, IdentityInfo>,
+    ) -> Result<(), anyhow::Error> {
+        let accounts = Account::into_accounts(&reg.info);
+        let account_set = HashSet::<&Account>::from_iter(accounts.iter());
+
+        redis::pipe()
+            .cmd("HSET")
+            .arg(serde_json::to_string(who)?)
+            .arg("accounts")
+            .arg(serde_json::to_string(&account_set)?)
+            .arg("status")
+            .arg(serde_json::to_string(&VerifStatus::Pending)?)
+            .cmd("EXPIRE")
+            .arg(serde_json::to_string(who)?)
+            .arg(300)
+            .exec(&mut conn.conn)
+            .map_err(|e| anyhow!("Failed to store wallet registration: {}", e))?;
+
+        Ok(())
+    }
+
+    async fn store_account_data(
+        conn: &mut RedisConnection,
+        account: &Account,
+        who: &AccountId32,
+    ) -> Result<(), anyhow::Error> {
+        let token = Token::generate().await;
+
+        redis::pipe()
+            .cmd("HSET")
+            .arg(serde_json::to_string(account)?)
+            .arg("status")
+            .arg(serde_json::to_string(&VerifStatus::Pending)?)
+            .arg("wallet_id")
+            .arg(serde_json::to_string(who)?)
+            .arg("token")
+            .arg(serde_json::to_string(&token)?)
+            .cmd("EXPIRE")
+            .arg(serde_json::to_string(account)?)
+            .arg(300)
+            .exec(&mut conn.conn)
+            .map_err(|e| anyhow!("Failed to store account data: {}", e))?;
+
+        Ok(())
+    }
+
+    async fn handle_registration(&self, who: &AccountId32) -> Result<(), anyhow::Error> {
+        let registration = Self::get_and_validate_registration(&self.client, who).await?;
+
+        // Validate fee payment # TODO: there is more registrars in mainnet than ours
+        Listiner::has_paid_fee(registration.judgements.0)?;
+
+        // Set up Redis connection
+        let mut conn = Self::create_redis_connection()?;
+
+        // Store wallet registration data
+        Self::store_wallet_registration(&mut conn, who, &registration)?;
+
+        // Store individual account data
+        for account in Account::into_accounts(&registration.info) {
+            Self::store_account_data(&mut conn, &account, who).await?;
         }
+
+        Ok(())
     }
 }
 pub struct RedisConnection {
