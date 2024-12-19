@@ -670,12 +670,10 @@ impl RedisConnection {
 
     /// searchs through the redis DB for keys that are similar to the `pattern`
     pub fn search(&mut self, pattern: String) -> Vec<String> {
-        let mut keys = vec![];
-        let mut res = self.conn.scan_match::<&str, String>(&pattern).unwrap();
-        while let Some(item) = res.next() {
-            keys.push(item);
-        }
-        keys
+        self.conn
+            .scan_match::<&str, String>(&pattern)
+            .unwrap()
+            .collect()
     }
 
     /// TODO
