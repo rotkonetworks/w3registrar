@@ -506,18 +506,18 @@ pub async fn spawn_node_listiner(
     cfg: WatcherConfig,
     // TODO: add redis db url
 ) -> anyhow::Result<()> {
-    NodeListiner::new(cfg.endpoint).await.listen().await
+    NodeListener::new(cfg.endpoint).await.listen().await
 }
 
 /// Used to listen/interact with BC events on the substrate node
 #[derive(Debug, Clone)]
-struct NodeListiner {
+struct NodeListener {
     client: NodeClient,
 }
 
-impl NodeListiner {
+impl NodeListener {
     // TODO: change return from Self to Result<Self>
-    /// Creates a new [NodeListiner]
+    /// Creates a new [NodeListener]
     ///
     /// # Panics
     /// This function will fail if the _redis_url_ is an invalid url to a redis DB
