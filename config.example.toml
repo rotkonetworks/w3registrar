@@ -13,7 +13,7 @@ admins = [
 url = "redis://127.0.0.1"
 timeout = 300
 
-[watcher]
+[node]
 endpoint = "wss://dev.rotko.net/people-rococo/"
 registrar_index = 0
 keystore_path = "./keyfile"

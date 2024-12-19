@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::{sleep, Duration};
 use tracing::info;
+use crate::config::MatrixConfig;
 
 use std::path::Path;
 
@@ -46,16 +47,6 @@ pub struct RegistrationResponse {
     status: RegistrationStatus,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct Config {
-    pub homeserver: String,
-    pub username: String,
-    pub password: String,
-    pub security_key: String,
-    pub admins: Vec<Nickname>,
-    pub state_dir: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Nickname(String);
 
@@ -70,7 +61,7 @@ async fn verify_device(device: &Device) -> anyhow::Result<()> {
 /// Preform the login to the matrix account specified in the [Config], while
 /// checking for previous sessions info in from the `<state_dir>/session.json`
 /// and if found, it will attempt to use it.
-async fn login(cfg: Config) -> anyhow::Result<Client> {
+async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
     let state_dir = Path::new(&cfg.state_dir);
     let session_path = state_dir.join("session.json");
 
@@ -161,7 +152,7 @@ struct MatrixBot {
 /// bridged messages
 /// Sender: Sends registration request to the matrix bot
 /// Receiver: Receives registration status from the matrix bot
-pub async fn start_bot(cfg: Config) -> anyhow::Result<()> {
+pub async fn start_bot(cfg: MatrixConfig) -> anyhow::Result<()> {
     let client = login(cfg).await?;
 
     client.add_event_handler(on_stripped_state_member);

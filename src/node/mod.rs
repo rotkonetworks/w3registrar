@@ -16,6 +16,8 @@ use api::runtime_types::pallet_identity::types::Registration;
 use api::runtime_types::people_rococo_runtime::people::IdentityInfo;
 use subxt::utils::AccountId32;
 
+use crate::config::Config;
+
 pub use api::*;
 
 pub type Client = subxt::OnlineClient<SubstrateConfig>;
@@ -39,8 +41,8 @@ pub async fn get_registration(
     }
 }
 
-pub async fn register_identity<'a>(who: AccountId32, reg_index: u32) -> anyhow::Result<&'a str> {
-    let client = Client::from_url("wss://dev.rotko.net/people-rococo")
+pub async fn register_identity<'a>(who: AccountId32, reg_index: u32, config: &Config) -> anyhow::Result<&'a str> {
+    let client = Client::from_url(&config.node.endpoint)
         .await
         .map_err(|e| {
             anyhow!(
