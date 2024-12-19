@@ -137,10 +137,10 @@ impl Account {
     }
     pub fn into_accounts(value: &IdentityInfo) -> Vec<Account> {
         let mut result = vec![];
-        if let Some(acc) = identity_data_tostring(&value.discord) {
+        if let Some(acc) = identity_data_to_string(&value.discord) {
             result.push(Account::Discord(acc))
         }
-        if let Some(acc) = identity_data_tostring(&value.twitter) {
+        if let Some(acc) = identity_data_to_string(&value.twitter) {
             result.push(Account::Twitter(acc))
         }
         // TODO: add matrix itself?
@@ -203,7 +203,7 @@ pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
 }
 
 /// Converts the inner of [IdentityData] to a [String]
-fn identity_data_tostring(data: &IdentityData) -> Option<String> {
+fn identity_data_to_string(data: &IdentityData) -> Option<String> {
     info!("Data: {:?}", data);
     match data {
         IdentityData::Raw0(v) => Some(String::from_utf8_lossy(v).to_string()),
@@ -299,7 +299,7 @@ impl Listener {
         for acc in expected {
             match acc {
                 Account::Twitter(twit_acc) => {
-                    match identity_data_tostring(&registration.info.twitter) {
+                    match identity_data_to_string(&registration.info.twitter) {
                         Some(identity_twit_acc) => {
                             if !twit_acc.eq(&identity_twit_acc) {
                                 return Err(anyhow!(
@@ -315,7 +315,7 @@ impl Listener {
                     }
                 }
                 Account::Discord(discord_acc) => {
-                    match identity_data_tostring(&registration.info.discord) {
+                    match identity_data_to_string(&registration.info.discord) {
                         Some(identity_discord_acc) => {
                             if !discord_acc.eq(&identity_discord_acc) {
                                 return Err(anyhow!(
