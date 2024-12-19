@@ -5,6 +5,7 @@ mod token;
 mod watcher;
 
 use anyhow::anyhow;
+use api::WebsocketConfig;
 use serde::Deserialize;
 use std::fs;
 use tracing::Level;
@@ -18,6 +19,7 @@ use watcher::Config as WatcherConfig;
 struct Config {
     matrix: MatrixConfig,
     watcher: WatcherConfig,
+    websocket: WebsocketConfig
 }
 
 impl Config {

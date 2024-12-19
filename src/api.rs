@@ -3,7 +3,10 @@
 use anyhow::anyhow;
 use futures::StreamExt;
 use futures_util::{stream::SplitSink, SinkExt};
+use redis;
+use redis::{Client as RedisClient, Commands};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 use subxt::utils::AccountId32;
 use tokio::{
@@ -26,14 +29,30 @@ use crate::{
         },
         identity::events::JudgementRequested,
         runtime_types::pallet_identity::types::Registration,
-        Client,
+        Client as NodeClient,
     },
+    token::AuthToken,
     token::Token,
     watcher::Config as WatcherConfig,
     Config,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Deserialize)]
+pub struct WebsocketConfig {
+    ip: [u8; 4],
+    port: u16,
+}
+
+impl Default for WebsocketConfig {
+    fn default() -> Self {
+        Self {
+            ip: [127, 0, 0, 1],
+            port: 8080,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub enum VerifStatus {
     Done,
     Pending,
@@ -46,7 +65,7 @@ impl VerifStatus {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct AcctMetadata {
     pub status: VerifStatus,
     pub id: AccountId32,
@@ -116,7 +135,7 @@ impl Account {
             None => return None,
         }
     }
-    pub fn into_accounts(value: IdentityInfo) -> Vec<Account> {
+    pub fn into_accounts(value: &IdentityInfo) -> Vec<Account> {
         let mut toreturn = vec![];
         if let Some(acc) = identity_data_tostring(&value.discord) {
             toreturn.push(Account::Discord(acc))
@@ -139,47 +158,47 @@ impl Account {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RegistrationRequest {
     pub accounts: Vec<Account>,
-    pub name: String,
     pub id: AccountId32,
     pub timeout: u64,
     pub reg_index: u32,
 }
 
-/// TODO: move this to a "common" module
-#[derive(Debug)]
-pub struct FullRegistrationRequest {
-    pub accounts: Vec<Account>,
-    pub name: String,
-    pub id: AccountId32,
-    pub timeout: u64,
-    pub stream: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RegistrationElement {
+    accounts: Vec<(Account, VerifStatus)>,
+    request_status: VerifStatus,
 }
 
+impl RegistrationElement {
+    pub fn new(accounts: Vec<(Account, VerifStatus)>, request_status: VerifStatus) -> Self {
+        Self {
+            accounts,
+            request_status,
+        }
+    }
+
+    pub fn extend(&mut self, accounts: Vec<Account>) {
+        for account in accounts {
+            self.accounts.push((account, VerifStatus::Pending));
+        }
+    }
+}
 // TODO: make register_user and wait_for_response methods
 struct Conn {
     sender: Sender<RegistrationRequest>,
     receiver: Receiver<RegistrationResponse>,
 }
 
-#[derive(Debug)]
-pub enum Source {
-    Node(RegistrationRequest),
-    Client(FullRegistrationRequest),
-}
-
 // TODO: refacor the address, port, size limit, and number of concurent connections
 // TODO: return something that the watcher can use to commmunicate with the two services
 // this thing will be used to:
 // - check if a verification is already done for an acc of an owner(id)
-// - manage verified accs of an owner(id) on the chain
-// - set verified accounts
-// - TBD...
-//
+// - ...
 /// Spawns the HTTP server, and the Matrix client
 pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
-    let (recv, send) = matrix::start_bot(cfg.matrix).await.unwrap();
-    spawn_node_listiner(cfg.watcher, Arc::clone(&send)).await?;
-    spawn_ws_serv(send, recv, [127, 0, 0, 1], 8080).await
+    matrix::start_bot(cfg.matrix).await?;
+    spawn_node_listiner(cfg.watcher).await?;
+    spawn_ws_serv(cfg.websocket).await
 }
 
 /// Converts the inner of [IdentityData] to a [String]
@@ -223,28 +242,15 @@ fn identity_data_tostring(data: &IdentityData) -> Option<String> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 struct Listiner {
     ip: [u8; 4],
     port: u16,
-    sender: Arc<Mutex<Sender<Source>>>,
-    receiver: Arc<Mutex<Receiver<RegistrationResponse>>>,
 }
 
 impl Listiner {
-    pub async fn new(
-        ip: [u8; 4],
-        port: u16,
-        sender: Arc<Mutex<Sender<Source>>>,
-        // TODO: change this!
-        receiver: Arc<Mutex<Receiver<RegistrationResponse>>>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            ip,
-            port,
-            sender,
-            receiver,
-        })
+    pub async fn new(ip: [u8; 4], port: u16) -> Self {
+        Self { ip, port }
     }
 
     // TODO: check if Judgement is requested (JudgementRequested)
@@ -253,7 +259,7 @@ impl Listiner {
         id: AccountId32,
         accounts: Vec<Account>,
     ) -> anyhow::Result<(), anyhow::Error> {
-        let client = Client::from_url("wss://dev.rotko.net/people-rococo").await?;
+        let client = NodeClient::from_url("wss://dev.rotko.net/people-rococo").await?;
         let registration = node::get_registration(&client, &id).await;
         info!("registration: {:#?}", registration);
         match registration {
@@ -328,11 +334,28 @@ impl Listiner {
         Ok(())
     }
 
+    async fn monitor_hash_changes(client: RedisClient, key: String) -> Option<String> {
+        let mut pubsub = client.get_async_pubsub().await.unwrap();
+        let channel = format!("__keyspace@0__:{}", key);
+        pubsub.subscribe(channel).await.unwrap();
+        while let Some(_) = pubsub.on_message().next().await {
+            let mut con = client.get_connection().unwrap();
+            let status: String = con.hget(&key, String::from("status")).unwrap();
+            let status: VerifStatus = serde_json::from_str(&status).unwrap();
+            match status {
+                VerifStatus::Done => {
+                    return Some(String::from("Done"));
+                }
+                _ => {}
+            }
+        }
+        return None;
+    }
+
     /// Handels WS incomming connections
-    pub async fn handle_incoming<'a>(
+    pub async fn _handle_incoming<'a>(
+        &self,
         message: Message,
-        sender: Arc<Mutex<Sender<Source>>>,
-        receiver: Arc<Mutex<Receiver<RegistrationResponse>>>,
         out: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
     ) -> anyhow::Result<&'a str> {
         match message {
@@ -342,28 +365,70 @@ impl Listiner {
                     Ok(reg_req) => {
                         match Self::check_node(reg_req.id.clone(), reg_req.accounts.clone()).await {
                             Ok(()) => {
-                                sender
-                                    .lock()
-                                    .await
-                                    .send(Source::Client(FullRegistrationRequest {
-                                        id: reg_req.id.clone(),
-                                        accounts: reg_req.accounts.clone(),
-                                        name: reg_req.name,
-                                        timeout: reg_req.timeout,
-                                        stream: out,
-                                    }))
-                                    .await
+                                let mut conn = RedisConnection::create_conn("redis://127.0.0.1/")?;
+
+                                redis::pipe()
+                                    .cmd("HSET")
+                                    .arg(serde_json::to_string(&reg_req.id.to_owned()).unwrap())
+                                    .arg("accounts")
+                                    .arg(
+                                        serde_json::to_string::<HashSet<&Account>>(
+                                            &HashSet::from_iter(reg_req.accounts.iter()),
+                                        )
+                                        .unwrap(),
+                                    )
+                                    .arg("status")
+                                    .arg(serde_json::to_string(&VerifStatus::Pending).unwrap())
+                                    .cmd("EXPIRE") // expire time
+                                    .arg(serde_json::to_string(&reg_req.id.to_owned()).unwrap())
+                                    .arg(reg_req.timeout)
+                                    .exec(&mut conn.conn)
                                     .unwrap();
+
+                                for account in reg_req.accounts {
+                                    let token = Token::generate().await;
+                                    out.lock()
+                                        .await
+                                        .send(Message::Text(format!(
+                                            r#"{{{:?}: {}}}"#,
+                                            account,
+                                            token.show()
+                                        )))
+                                        .await
+                                        .unwrap();
+
+                                    // acc stuff
+                                    redis::pipe()
+                                        .cmd("HSET") // create a set
+                                        .arg(format!(
+                                            "{}:{}",
+                                            serde_json::to_string(&account).unwrap(),
+                                            serde_json::to_string(&reg_req.id.clone()).unwrap()
+                                        ))
+                                        .arg("status")
+                                        .arg(serde_json::to_string(&VerifStatus::Pending).unwrap())
+                                        .arg("wallet_id")
+                                        .arg(serde_json::to_string(&reg_req.id.clone()).unwrap())
+                                        .arg("token")
+                                        .arg(serde_json::to_string(&token).unwrap())
+                                        .cmd("EXPIRE") // expire time
+                                        .arg(serde_json::to_string(&account).unwrap())
+                                        .arg(reg_req.timeout)
+                                        .exec(&mut conn.conn)
+                                        .unwrap();
+                                }
+
                                 match tokio::time::timeout(
                                     Duration::from_secs(reg_req.timeout),
-                                    receiver.lock().await.recv(),
+                                    Self::monitor_hash_changes(
+                                        RedisClient::open("redis://127.0.0.1/").unwrap(),
+                                        serde_json::to_string(&reg_req.id.to_owned()).unwrap(),
+                                    ),
                                 )
                                 .await
                                 {
-                                    Ok(Some(source)) => {
-                                        node::register_identity(reg_req.id, reg_req.reg_index)
-                                            .await?;
-                                        return Ok("Done");
+                                    Ok(Some(_source)) => {
+                                        node::register_identity(reg_req.id, reg_req.reg_index).await
                                     }
                                     _ => return Err(anyhow!("expired")),
                                 }
@@ -374,7 +439,7 @@ impl Listiner {
                     Err(e) => return Err(anyhow!("unrecognize request, error: {}", e)),
                 }
             }
-            Message::Close(_) => return Err(anyhow!("closing connection")),
+            Message::Close(_) => return Err(anyhow!("closing self.connection")),
             _ => return Err(anyhow!("unrecognized message format!")),
         }
     }
@@ -386,30 +451,22 @@ impl Listiner {
             .expect("Error during the websocket handshake occurred");
         let (outgoing, mut incoming) = ws_stream.split();
         let out = Arc::new(Mutex::new(outgoing));
-
         while let Some(Ok(message)) = incoming.next().await {
             let _out = Arc::clone(&out);
-            match Self::handle_incoming(
-                message,
-                Arc::clone(&self.sender),
-                Arc::clone(&self.receiver),
-                _out,
-            )
-            .await
-            {
+            match self._handle_incoming(message, _out).await {
                 Ok(v) => {
-                    info!("{}", format!(r#"{{status: {:?}}}"#, v));
+                    info!("{}", format!(r#"{{"status": "{:?}""}}"#, v));
                     out.lock()
                         .await
-                        .send(Message::Text(format!(r#"{{status: {:?}}}"#, v)))
+                        .send(Message::Text(format!(r#"{{"status": "{:?}"}}"#, v)))
                         .await
                         .unwrap();
                 }
                 Err(e) => {
-                    info!("{}", format!(r#"{{status: {:?}}}"#, e));
+                    info!("{}", format!(r#"{{"status": "{:?}"}}"#, e));
                     out.lock()
                         .await
-                        .send(Message::Text(format!(r#"{{status: {:?}}}"#, e)))
+                        .send(Message::Text(format!(r#"{{"status": "{:?}"}}"#, e)))
                         .await
                         .unwrap();
                 }
@@ -417,16 +474,16 @@ impl Listiner {
         }
     }
 
-    pub async fn listen(self: Arc<Self>) -> anyhow::Result<()> {
+    pub async fn listen(self) -> anyhow::Result<()> {
         let addr = SocketAddr::from((self.ip, self.port));
         let listener = TcpListener::bind(&addr).await?;
         loop {
             match listener.accept().await {
                 Ok((stream, addr)) => {
                     info!("incoming connection from {:?}...", addr);
-                    let server = self.clone();
+                    let clone = self.clone();
                     tokio::spawn(async move {
-                        server.handle_connection(stream).await;
+                        clone.handle_connection(stream).await;
                     });
                     info!("connection is being processed...");
                 }
@@ -438,53 +495,59 @@ impl Listiner {
     }
 }
 
-pub async fn spawn_ws_serv(
-    sender: Arc<Mutex<Sender<Source>>>,
-    receiver: Arc<Mutex<Receiver<RegistrationResponse>>>,
-    ip: [u8; 4],
-    port: u16,
-) -> anyhow::Result<()> {
-    Listiner::new(ip, port, sender, receiver)
-        .await
-        .listen()
-        .await
+/// Spawns a websocket server to listen for incoming registration requests
+pub async fn spawn_ws_serv(cfg: WebsocketConfig) -> anyhow::Result<()> {
+    Listiner::new(cfg.ip, cfg.port).await.listen().await
 }
 
+/// Spanws a new client (substrate) to listen for incoming events, in particular
+/// `requestJudgement` requests
 pub async fn spawn_node_listiner(
     cfg: WatcherConfig,
-    sender: Arc<Mutex<Sender<Source>>>,
+    // TODO: add redis db url
 ) -> anyhow::Result<()> {
-    NodeListiner::new(cfg.endpoint, sender).await.listen().await
+    NodeListiner::new(cfg.endpoint).await.listen().await
 }
 
+/// Used to listen/interact with BC events on the substrate node
+#[derive(Debug, Clone)]
 struct NodeListiner {
-    client: Client,
-    sender: Arc<Mutex<Sender<Source>>>,
+    client: NodeClient,
 }
 
 impl NodeListiner {
     // TODO: change return from Self to Result<Self>
-    pub async fn new(url: String, sender: Arc<Mutex<Sender<Source>>>) -> Arc<Self> {
-        Arc::new(Self {
-            client: Client::from_url(&url).await.unwrap(),
-            sender,
-        })
+    /// Creates a new [NodeListiner]
+    ///
+    /// # Panics
+    /// This function will fail if the _redis_url_ is an invalid url to a redis DB
+    /// or if _node_url_ is not a valid url for a substrate BC node
+    pub async fn new(node_url: String) -> Self {
+        Self {
+            client: NodeClient::from_url(&node_url).await.unwrap(),
+        }
     }
 
-    pub async fn listen(self: Arc<Self>) -> anyhow::Result<()> {
-        let mut block_stream = self.client.blocks().subscribe_finalized().await?;
-        while let Some(item) = block_stream.next().await {
-            let block = item?;
-            for event in block.events().await.unwrap().iter() {
-                match event.unwrap().as_event::<JudgementRequested>() {
-                    Ok(Some(req)) => {
-                        info!("Judgement requested from other client!");
-                        info!("status: {:?}", self.handle_registration(&req.who).await);
+    /// Listens for incoming BC events on the substrate node
+    pub async fn listen(self) -> anyhow::Result<()> {
+        tokio::spawn(async move {
+            let mut block_stream = self.client.blocks().subscribe_finalized().await.unwrap();
+            while let Some(item) = block_stream.next().await {
+                let block = item.unwrap();
+                for event in block.events().await.unwrap().iter() {
+                    match event.unwrap().as_event::<JudgementRequested>() {
+                        Ok(Some(req)) => {
+                            let clone = self.clone();
+                            tokio::spawn(async move {
+                                info!("Judgement requested from other client!");
+                                info!("status: {:?}", clone.handle_registration(&req.who).await);
+                            });
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
-        }
+        });
         Ok(())
     }
 
@@ -493,20 +556,144 @@ impl NodeListiner {
         match registration {
             Ok(reg) => {
                 Listiner::has_paid_fee(reg.judgements.0)?;
-                self.sender
-                    .lock()
-                    .await
-                    .send(Source::Node(RegistrationRequest {
-                        timeout: 300,
-                        accounts: Account::into_accounts(reg.info),
-                        name: String::new(),
-                        id: who.to_owned(),
-                        reg_index: 0,
-                    }))
-                    .await?;
+                // TODO: abstract all redis opperations away
+                let mut conn = RedisConnection::create_conn("redis://127.0.0.1/")?;
+                redis::pipe()
+                    .cmd("HSET")
+                    .arg(serde_json::to_string(who).unwrap())
+                    .arg("accounts")
+                    .arg(
+                        serde_json::to_string::<HashSet<&Account>>(&HashSet::from_iter(
+                            Account::into_accounts(&reg.info).iter(),
+                        ))
+                        .unwrap(),
+                    )
+                    .arg("status")
+                    .arg(serde_json::to_string(&VerifStatus::Pending).unwrap())
+                    .cmd("EXPIRE") // expire time
+                    .arg(serde_json::to_string(who).unwrap())
+                    .arg(300)
+                    .exec(&mut conn.conn)
+                    .unwrap();
+
+                // TODO: make all commands chained together and then executed 
+                // all at once!
+                for account in Account::into_accounts(&reg.info) {
+                    // acc stuff
+                    redis::pipe()
+                        .cmd("HSET") // create a set
+                        .arg(serde_json::to_string(&account).unwrap())
+                        .arg("status")
+                        .arg(serde_json::to_string(&VerifStatus::Pending).unwrap())
+                        .arg("wallet_id")
+                        .arg(serde_json::to_string(who).unwrap())
+                        .arg("token")
+                        .arg(serde_json::to_string(&Token::generate().await).unwrap())
+                        .cmd("EXPIRE") // expire time
+                        .arg(serde_json::to_string(&account).unwrap())
+                        .arg(300)
+                        .exec(&mut conn.conn)
+                        .unwrap();
+                }
                 return Ok(());
             }
             Err(_) => return Err(anyhow!("could not get registration for {}", who)),
         }
+    }
+}
+pub struct RedisConnection {
+    conn: redis::Connection,
+}
+
+impl RedisConnection {
+    /// TODO
+    pub fn create_conn(addr: &str) -> anyhow::Result<Self> {
+        let client = RedisClient::open(addr)?;
+        let mut conn = client.get_connection()?;
+
+        let _: () = redis::cmd("CONFIG")
+            .arg("SET")
+            .arg("notify-keyspace-events")
+            .arg("KEA")
+            .query(&mut conn)?;
+        info!("redis connection configured");
+        Ok(Self { conn })
+    }
+
+    /// searchs through the redis DB for keys that are similar to the `pattern`
+    pub fn search(&mut self, pattern: String) -> Vec<String> {
+        let mut keys = vec![];
+        let mut res = self.conn.scan_match::<&str, String>(&pattern).unwrap();
+        while let Some(item) = res.next() {
+            keys.push(item);
+        }
+        return keys;
+    }
+
+    /// TODO
+    pub fn get_challange_token(&mut self, account: &str) -> Token {
+        let token: String = self.conn.hget(account, "token").unwrap();
+        serde_json::from_str(&token).unwrap()
+    }
+
+    /// Gets the wallet_id of an account in the format of "[Account]:[AccountId32]"
+    pub fn get_wallet_id(&mut self, account: &str) -> AccountId32 {
+        let account = self
+            .conn
+            .hget::<&str, &str, String>(account, "wallet_id")
+            .unwrap();
+        serde_json::from_str(&account).unwrap()
+    }
+
+    /// TODO
+    pub fn get_status(&mut self, account: &str) -> VerifStatus {
+        let status: String = self.conn.hget(account, "status").unwrap();
+        serde_json::from_str::<VerifStatus>(&status).unwrap()
+    }
+
+    /// TODO
+    pub fn set_status(&mut self, account: &str, status: VerifStatus) -> anyhow::Result<()> {
+        self.conn.hset::<&str, &str, String, ()>(
+            account,
+            "status",
+            serde_json::to_string(&status)?,
+        )?;
+        Ok(())
+    }
+
+    /// Checks if all acccounts under the hashset of the `id` key is verified
+    pub fn is_all_verified(&mut self, id: &AccountId32) -> anyhow::Result<bool> {
+        let metadata: String = self
+            .conn
+            .hget(&serde_json::to_string(id).unwrap(), "accounts")?;
+        let metadata: HashSet<Account> = serde_json::from_str(&metadata)?;
+        Ok(metadata.len() == 0)
+    }
+
+    /// Sets the _status_ field of the hashset of `id` to [VerifStatus::Done]
+    pub fn signal_done(&mut self, id: &AccountId32) -> anyhow::Result<()> {
+        self.conn.hset::<String, &str, String, ()>(
+            serde_json::to_string(&id)?,
+            "status",
+            serde_json::to_string(&VerifStatus::Done)?,
+        )?;
+        Ok(())
+    }
+
+    /// Removes the `account` from the list of the pending account on the hashset 
+    /// with `id` as a key
+    pub fn remove_acc(&mut self, id: &AccountId32, account: &Account) -> anyhow::Result<()> {
+        let metadata: String = self
+            .conn
+            .hget(&serde_json::to_string(id).unwrap(), "accounts")?;
+        let mut metadata: HashSet<Account> = serde_json::from_str(&metadata)?;
+
+        metadata.remove(account);
+        self.conn.hset::<String, &str, String, ()>(
+            serde_json::to_string(&id)?,
+            "accounts",
+            serde_json::to_string(&metadata)?,
+        )?;
+        Ok(())
     }
 }
