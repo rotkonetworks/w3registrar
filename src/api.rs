@@ -611,7 +611,7 @@ pub struct RedisConnection {
 }
 
 impl RedisConnection {
-    /// Connects to running redis server given [RedisConfig]
+    /// Connect to running redis server given [RedisConfig]
     pub fn create_conn(addr: &RedisConfig) -> anyhow::Result<Self> {
         let client = RedisClient::open(addr.to_full_domain())?;
         let mut conn = client.get_connection()?;
@@ -625,7 +625,7 @@ impl RedisConnection {
         Ok(Self { conn })
     }
 
-    /// searchs through the redis DB for keys that are similar to the `pattern`
+    /// Search through the redis DB for keys that are similar to the `pattern`
     pub fn search(&mut self, pattern: String) -> Vec<String> {
         let mut keys = vec![];
         let mut res = self.conn.scan_match::<&str, String>(&pattern).unwrap();
@@ -635,7 +635,7 @@ impl RedisConnection {
         return keys;
     }
 
-    /// Get's the chalange [Token] from a hashset with `account` as a name, `token`
+    /// Get the chalange [Token] from a hashset with `account` as a name, `token`
     /// as the key paire of the desired token using an establisehd redis connection
     ///
     /// # Note:
@@ -645,7 +645,7 @@ impl RedisConnection {
         serde_json::from_str(&token).unwrap()
     }
 
-    /// Get's the [AccountId32] from a hashset with `account` as a name, `wallet_id`
+    /// Get the [AccountId32] from a hashset with `account` as a name, `wallet_id`
     /// as the key paire of the desired wallet id using an establisehd redis connection
     ///
     /// # Note:
@@ -658,7 +658,7 @@ impl RedisConnection {
         serde_json::from_str(&account).unwrap()
     }
 
-    /// Get's the status [VerifStatus] from a hashset with `account` as a name, `status`
+    /// Get the status [VerifStatus] from a hashset with `account` as a name, `status`
     /// as the key paire of the desired status using an establisehd redis connection
     ///
     /// # Note:
@@ -668,7 +668,7 @@ impl RedisConnection {
         serde_json::from_str::<VerifStatus>(&status).unwrap()
     }
 
-    /// Set's the `status` value of an hashset of name `account` to the `status` param
+    /// Set the `status` value of an hashset of name `account` to the `status` param
     ///
     /// # Note:
     /// The `account` should be in the "[Account]:[AccountId32]" format
@@ -690,7 +690,7 @@ impl RedisConnection {
         Ok(metadata.len() == 0)
     }
 
-    /// Set's the status field of a hashset with `id` as a name to [VerifStatus::Done]
+    /// Set the status field of a hashset with `id` as a name to [VerifStatus::Done]
     /// using an establisehd redis connection
     ///
     /// # Note:
@@ -704,7 +704,7 @@ impl RedisConnection {
         Ok(())
     }
 
-    /// Removes the `account` from the list of the pending account on the hashset
+    /// Remove the `account` from the list of the pending account on the hashset
     /// with `id` as a key
     pub fn remove_acc(&mut self, id: &AccountId32, account: &Account) -> anyhow::Result<()> {
         let metadata: String = self
