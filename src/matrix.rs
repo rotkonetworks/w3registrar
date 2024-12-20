@@ -1,12 +1,7 @@
 #![allow(dead_code)]
 
 use matrix_sdk::{
-    config::{RequestConfig, StoreConfig, SyncSettings},
-    deserialized_responses::RawSyncOrStrippedState,
-    encryption::{identities::Device, BackupDownloadStrategy, EncryptionSettings},
-    matrix_auth::MatrixSession,
-    room::Room,
-    ruma::{
+    config::{RequestConfig, StoreConfig, SyncSettings}, deserialized_responses::RawSyncOrStrippedState, encryption::{identities::Device, BackupDownloadStrategy, EncryptionSettings}, event_handler::Ctx, matrix_auth::MatrixSession, room::Room, ruma::{
         self,
         events::room::{
             create::RoomCreateEventContent,
@@ -16,8 +11,7 @@ use matrix_sdk::{
                 TextMessageEventContent,
             },
         },
-    },
-    Client,
+    }, Client
 };
 use redis::{self};
 use serde::{Deserialize, Serialize};
@@ -30,6 +24,7 @@ use std::path::Path;
 use crate::api::RedisConnection;
 use crate::{
     api::{Account, VerifStatus},
+    config::{MatrixConfig, RedisConfig},
     token::AuthToken,
 };
 
@@ -46,19 +41,6 @@ pub struct RegistrationResponse {
     status: RegistrationStatus,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct Config {
-    pub homeserver: String,
-    pub username: String,
-    pub password: String,
-    pub security_key: String,
-    pub admins: Vec<Nickname>,
-    pub state_dir: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Nickname(String);
-
 /// Verifies a [Device] with the `.verify` method
 async fn verify_device(device: &Device) -> anyhow::Result<()> {
     match device.verify().await {
@@ -70,7 +52,7 @@ async fn verify_device(device: &Device) -> anyhow::Result<()> {
 /// Preform the login to the matrix account specified in the [Config], while
 /// checking for previous sessions info in from the `<state_dir>/session.json`
 /// and if found, it will attempt to use it.
-async fn login(cfg: Config) -> anyhow::Result<Client> {
+async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
     let state_dir = Path::new(&cfg.state_dir);
     let session_path = state_dir.join("session.json");
 
@@ -161,9 +143,10 @@ struct MatrixBot {
 /// bridged messages
 /// Sender: Sends registration request to the matrix bot
 /// Receiver: Receives registration status from the matrix bot
-pub async fn start_bot(cfg: Config) -> anyhow::Result<()> {
-    let client = login(cfg).await?;
+pub async fn start_bot(matrix_cfg: MatrixConfig, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
+    let client = login(matrix_cfg).await?;
 
+    client.add_event_handler_context(redis_cfg.to_owned());
     client.add_event_handler(on_stripped_state_member);
     client.add_event_handler(on_room_message);
     // create and add context here
@@ -220,7 +203,7 @@ async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client
     });
 }
 
-async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
+async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room, ctx: Ctx<RedisConfig>) {
     let MessageType::Text(text_content) = ev.content.msgtype else {
         return;
     };
@@ -249,7 +232,7 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
                                 // creating an account from the extracted sender
                                 match Account::from_string(sender.clone()) {
                                     Some(acc) => {
-                                        handle_incoming(acc, &text_content, &_room).await.unwrap()
+                                        handle_incoming(acc, &text_content, &_room, &ctx.0).await.unwrap()
                                     }
                                     None => info!("Couldn't create Acc object from {:?}", sender),
                                 }
@@ -269,9 +252,10 @@ async fn handle_incoming(
     acc: Account,
     text_content: &TextMessageEventContent,
     _room: &Room,
+    redis_cfg: &RedisConfig
 ) -> anyhow::Result<()> {
     info!("\nAcc: {:#?}\nContent: {:#?}", acc, text_content);
-    let mut redis_connection = RedisConnection::create_conn("redis://127.0.0.1/")?;
+    let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
     let accs = redis_connection.search(format!("{}:*", serde_json::to_string(&acc)?));
     if accs.len() > 0 {
         if text_content.body.eq("Send challenge") {

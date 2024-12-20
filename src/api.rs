@@ -20,6 +20,7 @@ use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 use tracing::{error, info};
 
 use crate::{
+    config::{RedisConfig, WatcherConfig, WebsocketConfig},
     matrix::{self, RegistrationResponse},
     node::{
         self,
@@ -33,24 +34,8 @@ use crate::{
     },
     token::AuthToken,
     token::Token,
-    watcher::Config as WatcherConfig,
     Config,
 };
-
-#[derive(Debug, Deserialize)]
-pub struct WebsocketConfig {
-    ip: [u8; 4],
-    port: u16,
-}
-
-impl Default for WebsocketConfig {
-    fn default() -> Self {
-        Self {
-            ip: [127, 0, 0, 1],
-            port: 8080,
-        }
-    }
-}
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub enum VerifStatus {
@@ -196,9 +181,9 @@ struct Conn {
 // - ...
 /// Spawns the HTTP server, and the Matrix client
 pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
-    matrix::start_bot(cfg.matrix).await?;
-    spawn_node_listiner(cfg.watcher).await?;
-    spawn_ws_serv(cfg.websocket).await
+    matrix::start_bot(cfg.matrix, &cfg.redis).await?;
+    spawn_node_listiner(cfg.watcher, &cfg.redis).await?;
+    spawn_ws_serv(cfg.websocket, &cfg.redis).await
 }
 
 /// Converts the inner of [IdentityData] to a [String]
@@ -246,11 +231,16 @@ fn identity_data_tostring(data: &IdentityData) -> Option<String> {
 struct Listiner {
     ip: [u8; 4],
     port: u16,
+    redis_cfg: RedisConfig,
 }
 
 impl Listiner {
-    pub async fn new(ip: [u8; 4], port: u16) -> Self {
-        Self { ip, port }
+    pub async fn new(websocket_cfg: WebsocketConfig, redis_cfg: RedisConfig) -> Self {
+        Self {
+            ip: websocket_cfg.ip,
+            port: websocket_cfg.port,
+            redis_cfg,
+        }
     }
 
     // TODO: check if Judgement is requested (JudgementRequested)
@@ -353,7 +343,7 @@ impl Listiner {
     }
 
     /// Handels WS incomming connections
-    pub async fn _handle_incoming<'a>(
+    pub async fn handle_incoming<'a>(
         &self,
         message: Message,
         out: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
@@ -365,7 +355,8 @@ impl Listiner {
                     Ok(reg_req) => {
                         match Self::check_node(reg_req.id.clone(), reg_req.accounts.clone()).await {
                             Ok(()) => {
-                                let mut conn = RedisConnection::create_conn("redis://127.0.0.1/")?;
+                                let mut conn =
+                                    RedisConnection::create_conn(&self.redis_cfg)?;
 
                                 redis::pipe()
                                     .cmd("HSET")
@@ -421,7 +412,8 @@ impl Listiner {
                                 match tokio::time::timeout(
                                     Duration::from_secs(reg_req.timeout),
                                     Self::monitor_hash_changes(
-                                        RedisClient::open("redis://127.0.0.1/").unwrap(),
+                                        RedisClient::open(self.redis_cfg.to_full_domain().as_str())
+                                            .unwrap(),
                                         serde_json::to_string(&reg_req.id.to_owned()).unwrap(),
                                     ),
                                 )
@@ -453,7 +445,7 @@ impl Listiner {
         let out = Arc::new(Mutex::new(outgoing));
         while let Some(Ok(message)) = incoming.next().await {
             let _out = Arc::clone(&out);
-            match self._handle_incoming(message, _out).await {
+            match self.handle_incoming(message, _out).await {
                 Ok(v) => {
                     info!("{}", format!(r#"{{"status": "{:?}""}}"#, v));
                     out.lock()
@@ -496,23 +488,34 @@ impl Listiner {
 }
 
 /// Spawns a websocket server to listen for incoming registration requests
-pub async fn spawn_ws_serv(cfg: WebsocketConfig) -> anyhow::Result<()> {
-    Listiner::new(cfg.ip, cfg.port).await.listen().await
+pub async fn spawn_ws_serv(
+    websocket_cfg: WebsocketConfig,
+    redis_cfg: &RedisConfig,
+) -> anyhow::Result<()> {
+    Listiner::new(websocket_cfg, redis_cfg.to_owned())
+        .await
+        .listen()
+        .await
 }
 
 /// Spanws a new client (substrate) to listen for incoming events, in particular
 /// `requestJudgement` requests
 pub async fn spawn_node_listiner(
-    cfg: WatcherConfig,
+    watcher_cfg: WatcherConfig,
+    redis_cfg: &RedisConfig,
     // TODO: add redis db url
 ) -> anyhow::Result<()> {
-    NodeListiner::new(cfg.endpoint).await.listen().await
+    NodeListiner::new(watcher_cfg.endpoint, redis_cfg.to_owned())
+        .await
+        .listen()
+        .await
 }
 
 /// Used to listen/interact with BC events on the substrate node
 #[derive(Debug, Clone)]
 struct NodeListiner {
     client: NodeClient,
+    redis_cfg: RedisConfig,
 }
 
 impl NodeListiner {
@@ -522,9 +525,10 @@ impl NodeListiner {
     /// # Panics
     /// This function will fail if the _redis_url_ is an invalid url to a redis DB
     /// or if _node_url_ is not a valid url for a substrate BC node
-    pub async fn new(node_url: String) -> Self {
+    pub async fn new(node_url: String, redis_cfg: RedisConfig) -> Self {
         Self {
             client: NodeClient::from_url(&node_url).await.unwrap(),
+            redis_cfg,
         }
     }
 
@@ -556,8 +560,10 @@ impl NodeListiner {
         match registration {
             Ok(reg) => {
                 Listiner::has_paid_fee(reg.judgements.0)?;
-                // TODO: abstract all redis opperations away
-                let mut conn = RedisConnection::create_conn("redis://127.0.0.1/")?;
+                let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
+
+                // TODO: make all commands chained together and then executed
+                // all at once!
                 redis::pipe()
                     .cmd("HSET")
                     .arg(serde_json::to_string(who).unwrap())
@@ -576,8 +582,6 @@ impl NodeListiner {
                     .exec(&mut conn.conn)
                     .unwrap();
 
-                // TODO: make all commands chained together and then executed 
-                // all at once!
                 for account in Account::into_accounts(&reg.info) {
                     // acc stuff
                     redis::pipe()
@@ -601,14 +605,15 @@ impl NodeListiner {
         }
     }
 }
+
 pub struct RedisConnection {
     conn: redis::Connection,
 }
 
 impl RedisConnection {
     /// TODO
-    pub fn create_conn(addr: &str) -> anyhow::Result<Self> {
-        let client = RedisClient::open(addr)?;
+    pub fn create_conn(addr: &RedisConfig) -> anyhow::Result<Self> {
+        let client = RedisClient::open(addr.to_full_domain())?;
         let mut conn = client.get_connection()?;
 
         let _: () = redis::cmd("CONFIG")
@@ -680,7 +685,7 @@ impl RedisConnection {
         Ok(())
     }
 
-    /// Removes the `account` from the list of the pending account on the hashset 
+    /// Removes the `account` from the list of the pending account on the hashset
     /// with `id` as a key
     pub fn remove_acc(&mut self, id: &AccountId32, account: &Account) -> anyhow::Result<()> {
         let metadata: String = self
