@@ -64,7 +64,7 @@ pub async fn register_identity<'a>(who: AccountId32, reg_index: u32) -> anyhow::
 
     let conf = subxt::config::substrate::SubstrateExtrinsicParamsBuilder::new().build();
     match client.tx().sign_and_submit(&judgement, &singer, conf).await {
-        Ok(_) => return Ok("Judged with "),
+        Ok(_) => return Ok("Judged with reasonable"),
         Err(_) => return Err(anyhow!("unable to submit judgement")),
     }
 }
