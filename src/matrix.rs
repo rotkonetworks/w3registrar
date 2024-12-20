@@ -138,11 +138,7 @@ struct MatrixBot {
     redis_conn: redis::Connection,
 }
 
-/// Starts the matrix bot, this function should be used to
-/// login to the specified matrix account in the config, and start monitor
-/// bridged messages
-/// Sender: Sends registration request to the matrix bot
-/// Receiver: Receives registration status from the matrix bot
+/// Spanws a Matrix client to handle incoming messages from beeper
 pub async fn start_bot(matrix_cfg: MatrixConfig, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
     let client = login(matrix_cfg).await?;
 

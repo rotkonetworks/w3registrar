@@ -174,12 +174,7 @@ struct Conn {
     receiver: Receiver<RegistrationResponse>,
 }
 
-// TODO: refacor the address, port, size limit, and number of concurent connections
-// TODO: return something that the watcher can use to commmunicate with the two services
-// this thing will be used to:
-// - check if a verification is already done for an acc of an owner(id)
-// - ...
-/// Spawns the HTTP server, and the Matrix client
+/// Spawns the Websocket client, Matrix client and the Node(substrate) listiner
 pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
     matrix::start_bot(cfg.matrix, &cfg.redis).await?;
     spawn_node_listiner(cfg.watcher, &cfg.redis).await?;
@@ -342,7 +337,16 @@ impl Listiner {
         return None;
     }
 
-    /// Handels WS incomming connections
+    /// Handels WS incomming connections as a [RegistrationRequest]
+    ///
+    /// # Returns
+    /// * `Ok("Judged with reasonable")` if the registration process is completed successfully
+    /// * `Err("...")` if:
+    ///     - request body cannot be deserialize to a [RegistrationRequest]
+    ///     - unable to establish a redis connection
+    ///     - unable to submit data to the redis server
+    ///     - registration has expired (check timeout field in the [RegistrationRequest])
+    ///     - serialization error of [VerifStatus], [AccountId32], ...
     pub async fn handle_incoming<'a>(
         &self,
         message: Message,
@@ -353,6 +357,7 @@ impl Listiner {
                 // TODO: handle the unwrap
                 match serde_json::from_str::<RegistrationRequest>(&t) {
                     Ok(reg_req) => {
+                        // TODO:check if a verification is already done for an acc of an owner(id)
                         match Self::check_node(reg_req.id.clone(), reg_req.accounts.clone()).await {
                             Ok(()) => {
                                 let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
@@ -430,7 +435,7 @@ impl Listiner {
         }
     }
 
-    // TODO: change return type to Result
+    /// Handles incoming websocket connection
     pub async fn handle_connection(&self, stream: TcpStream) {
         let ws_stream = tokio_tungstenite::accept_async(stream)
             .await
@@ -492,7 +497,7 @@ pub async fn spawn_ws_serv(
         .await
 }
 
-/// Spanws a new client (substrate) to listen for incoming events, in particular
+/// Spanws a new node (substrate) listiner to listen for incoming events, in particular
 /// `requestJudgement` requests
 pub async fn spawn_node_listiner(
     watcher_cfg: WatcherConfig,
@@ -517,7 +522,7 @@ impl NodeListiner {
     /// Creates a new [NodeListiner]
     ///
     /// # Panics
-    /// This function will fail if the _redis_url_ is an invalid url to a redis DB
+    /// This function will fail if the _redis_url_ is an invalid url to a redis server
     /// or if _node_url_ is not a valid url for a substrate BC node
     pub async fn new(node_url: String, redis_cfg: RedisConfig) -> Self {
         Self {
@@ -526,7 +531,8 @@ impl NodeListiner {
         }
     }
 
-    /// Listens for incoming BC events on the substrate node
+    /// Listens for incoming events on the substrate node, in particular
+    /// the `requestJudgement` event
     pub async fn listen(self) -> anyhow::Result<()> {
         tokio::spawn(async move {
             let mut block_stream = self.client.blocks().subscribe_finalized().await.unwrap();
@@ -605,7 +611,7 @@ pub struct RedisConnection {
 }
 
 impl RedisConnection {
-    /// TODO
+    /// Connects to running redis server given [RedisConfig]
     pub fn create_conn(addr: &RedisConfig) -> anyhow::Result<Self> {
         let client = RedisClient::open(addr.to_full_domain())?;
         let mut conn = client.get_connection()?;
@@ -629,13 +635,21 @@ impl RedisConnection {
         return keys;
     }
 
-    /// TODO
+    /// Get's the chalange [Token] from a hashset with `account` as a name, `token`
+    /// as the key paire of the desired token using an establisehd redis connection
+    ///
+    /// # Note:
+    /// The `account` should be in the "[Account]:[AccountId32]" format
     pub fn get_challange_token(&mut self, account: &str) -> Token {
         let token: String = self.conn.hget(account, "token").unwrap();
         serde_json::from_str(&token).unwrap()
     }
 
-    /// Gets the wallet_id of an account in the format of "[Account]:[AccountId32]"
+    /// Get's the [AccountId32] from a hashset with `account` as a name, `wallet_id`
+    /// as the key paire of the desired wallet id using an establisehd redis connection
+    ///
+    /// # Note:
+    /// The `account` should be in the "[Account]:[AccountId32]" format
     pub fn get_wallet_id(&mut self, account: &str) -> AccountId32 {
         let account = self
             .conn
@@ -644,13 +658,20 @@ impl RedisConnection {
         serde_json::from_str(&account).unwrap()
     }
 
-    /// TODO
+    /// Get's the status [VerifStatus] from a hashset with `account` as a name, `status`
+    /// as the key paire of the desired status using an establisehd redis connection
+    ///
+    /// # Note:
+    /// The `account` should be in the "[Account]:[AccountId32]" format
     pub fn get_status(&mut self, account: &str) -> VerifStatus {
         let status: String = self.conn.hget(account, "status").unwrap();
         serde_json::from_str::<VerifStatus>(&status).unwrap()
     }
 
-    /// TODO
+    /// Set's the `status` value of an hashset of name `account` to the `status` param
+    ///
+    /// # Note:
+    /// The `account` should be in the "[Account]:[AccountId32]" format
     pub fn set_status(&mut self, account: &str, status: VerifStatus) -> anyhow::Result<()> {
         self.conn.hset::<&str, &str, String, ()>(
             account,
@@ -669,7 +690,11 @@ impl RedisConnection {
         Ok(metadata.len() == 0)
     }
 
-    /// Sets the _status_ field of the hashset of `id` to [VerifStatus::Done]
+    /// Set's the status field of a hashset with `id` as a name to [VerifStatus::Done]
+    /// using an establisehd redis connection
+    ///
+    /// # Note:
+    /// The `account` should be in the "[Account]:[AccountId32]" format
     pub fn signal_done(&mut self, id: &AccountId32) -> anyhow::Result<()> {
         self.conn.hset::<String, &str, String, ()>(
             serde_json::to_string(&id)?,
