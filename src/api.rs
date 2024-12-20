@@ -355,26 +355,21 @@ impl Listiner {
                     Ok(reg_req) => {
                         match Self::check_node(reg_req.id.clone(), reg_req.accounts.clone()).await {
                             Ok(()) => {
-                                let mut conn =
-                                    RedisConnection::create_conn(&self.redis_cfg)?;
+                                let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
 
                                 redis::pipe()
                                     .cmd("HSET")
-                                    .arg(serde_json::to_string(&reg_req.id.to_owned()).unwrap())
+                                    .arg(serde_json::to_string(&reg_req.id.to_owned())?)
                                     .arg("accounts")
-                                    .arg(
-                                        serde_json::to_string::<HashSet<&Account>>(
-                                            &HashSet::from_iter(reg_req.accounts.iter()),
-                                        )
-                                        .unwrap(),
-                                    )
+                                    .arg(serde_json::to_string::<HashSet<&Account>>(
+                                        &HashSet::from_iter(reg_req.accounts.iter()),
+                                    )?)
                                     .arg("status")
-                                    .arg(serde_json::to_string(&VerifStatus::Pending).unwrap())
+                                    .arg(serde_json::to_string(&VerifStatus::Pending)?)
                                     .cmd("EXPIRE") // expire time
-                                    .arg(serde_json::to_string(&reg_req.id.to_owned()).unwrap())
+                                    .arg(serde_json::to_string(&reg_req.id.to_owned())?)
                                     .arg(reg_req.timeout)
-                                    .exec(&mut conn.conn)
-                                    .unwrap();
+                                    .exec(&mut conn.conn)?;
 
                                 for account in reg_req.accounts {
                                     let token = Token::generate().await;
@@ -385,25 +380,24 @@ impl Listiner {
                                             account,
                                             token.show()
                                         )))
-                                        .await
-                                        .unwrap();
+                                        .await?;
 
                                     // acc stuff
                                     redis::pipe()
                                         .cmd("HSET") // create a set
                                         .arg(format!(
                                             "{}:{}",
-                                            serde_json::to_string(&account).unwrap(),
-                                            serde_json::to_string(&reg_req.id.clone()).unwrap()
+                                            serde_json::to_string(&account)?,
+                                            serde_json::to_string(&reg_req.id.clone())?
                                         ))
                                         .arg("status")
-                                        .arg(serde_json::to_string(&VerifStatus::Pending).unwrap())
+                                        .arg(serde_json::to_string(&VerifStatus::Pending)?)
                                         .arg("wallet_id")
-                                        .arg(serde_json::to_string(&reg_req.id.clone()).unwrap())
+                                        .arg(serde_json::to_string(&reg_req.id.clone())?)
                                         .arg("token")
-                                        .arg(serde_json::to_string(&token).unwrap())
+                                        .arg(serde_json::to_string(&token)?)
                                         .cmd("EXPIRE") // expire time
-                                        .arg(serde_json::to_string(&account).unwrap())
+                                        .arg(serde_json::to_string(&account)?)
                                         .arg(reg_req.timeout)
                                         .exec(&mut conn.conn)
                                         .unwrap();
@@ -414,7 +408,7 @@ impl Listiner {
                                     Self::monitor_hash_changes(
                                         RedisClient::open(self.redis_cfg.to_full_domain().as_str())
                                             .unwrap(),
-                                        serde_json::to_string(&reg_req.id.to_owned()).unwrap(),
+                                        serde_json::to_string(&reg_req.id.to_owned())?,
                                     ),
                                 )
                                 .await
