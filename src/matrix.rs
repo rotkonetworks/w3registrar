@@ -1,7 +1,13 @@
 #![allow(dead_code)]
 
 use matrix_sdk::{
-    config::{RequestConfig, StoreConfig, SyncSettings}, deserialized_responses::RawSyncOrStrippedState, encryption::{identities::Device, BackupDownloadStrategy, EncryptionSettings}, event_handler::Ctx, matrix_auth::MatrixSession, room::Room, ruma::{
+    config::{RequestConfig, StoreConfig, SyncSettings},
+    deserialized_responses::RawSyncOrStrippedState,
+    encryption::{identities::Device, BackupDownloadStrategy, EncryptionSettings},
+    event_handler::Ctx,
+    matrix_auth::MatrixSession,
+    room::Room,
+    ruma::{
         self,
         events::room::{
             create::RoomCreateEventContent,
@@ -11,7 +17,8 @@ use matrix_sdk::{
                 TextMessageEventContent,
             },
         },
-    }, Client
+    },
+    Client,
 };
 use redis::{self};
 use serde::{Deserialize, Serialize};
@@ -72,8 +79,7 @@ async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
             backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
         })
         .build()
-        .await
-        .unwrap();
+        .await?;
 
     if session_path.exists() {
         info!("Restoring session in {}", session_path.display());
@@ -106,8 +112,7 @@ async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
     let device = client
         .encryption()
         .get_device(client.user_id().unwrap(), client.device_id().unwrap())
-        .await
-        .unwrap();
+        .await?;
     match device {
         Some(d) => {
             if d.is_verified() {
@@ -228,7 +233,9 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room, ctx: Ctx
                                 // creating an account from the extracted sender
                                 match Account::from_string(sender.clone()) {
                                     Some(acc) => {
-                                        handle_incoming(acc, &text_content, &_room, &ctx.0).await.unwrap()
+                                        handle_incoming(acc, &text_content, &_room, &ctx.0)
+                                            .await
+                                            .unwrap()
                                     }
                                     None => info!("Couldn't create Acc object from {:?}", sender),
                                 }
@@ -248,7 +255,7 @@ async fn handle_incoming(
     acc: Account,
     text_content: &TextMessageEventContent,
     _room: &Room,
-    redis_cfg: &RedisConfig
+    redis_cfg: &RedisConfig,
 ) -> anyhow::Result<()> {
     info!("\nAcc: {:#?}\nContent: {:#?}", acc, text_content);
     let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;

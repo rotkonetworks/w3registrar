@@ -17,6 +17,6 @@ async fn main() -> anyhow::Result<()> {
         .with_span_events(FmtSpan::CLOSE)
         .init();
 
-    let config = Config::load_from("config.toml").unwrap();
+    let config = Config::load_from("config.toml")?;
     api::spawn_services(config).await
 }

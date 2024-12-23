@@ -354,7 +354,6 @@ impl Listiner {
     ) -> anyhow::Result<&'a str> {
         match message {
             Message::Text(t) => {
-                // TODO: handle the unwrap
                 match serde_json::from_str::<RegistrationRequest>(&t) {
                     Ok(reg_req) => {
                         // TODO:check if a verification is already done for an acc of an owner(id)
@@ -404,15 +403,15 @@ impl Listiner {
                                         .cmd("EXPIRE") // expire time
                                         .arg(serde_json::to_string(&account)?)
                                         .arg(reg_req.timeout)
-                                        .exec(&mut conn.conn)
-                                        .unwrap();
+                                        .exec(&mut conn.conn)?;
                                 }
 
                                 match tokio::time::timeout(
                                     Duration::from_secs(reg_req.timeout),
                                     Self::monitor_hash_changes(
-                                        RedisClient::open(self.redis_cfg.to_full_domain().as_str())
-                                            .unwrap(),
+                                        RedisClient::open(
+                                            self.redis_cfg.to_full_domain().as_str(),
+                                        )?,
                                         serde_json::to_string(&reg_req.id.to_owned())?,
                                     ),
                                 )
@@ -534,8 +533,8 @@ impl NodeListiner {
     /// Listens for incoming events on the substrate node, in particular
     /// the `requestJudgement` event
     pub async fn listen(self) -> anyhow::Result<()> {
+        let mut block_stream = self.client.blocks().subscribe_finalized().await?;
         tokio::spawn(async move {
-            let mut block_stream = self.client.blocks().subscribe_finalized().await.unwrap();
             while let Some(item) = block_stream.next().await {
                 let block = item.unwrap();
                 for event in block.events().await.unwrap().iter() {
@@ -566,38 +565,33 @@ impl NodeListiner {
                 // all at once!
                 redis::pipe()
                     .cmd("HSET")
-                    .arg(serde_json::to_string(who).unwrap())
+                    .arg(serde_json::to_string(who)?)
                     .arg("accounts")
-                    .arg(
-                        serde_json::to_string::<HashSet<&Account>>(&HashSet::from_iter(
-                            Account::into_accounts(&reg.info).iter(),
-                        ))
-                        .unwrap(),
-                    )
+                    .arg(serde_json::to_string::<HashSet<&Account>>(
+                        &HashSet::from_iter(Account::into_accounts(&reg.info).iter()),
+                    )?)
                     .arg("status")
-                    .arg(serde_json::to_string(&VerifStatus::Pending).unwrap())
+                    .arg(serde_json::to_string(&VerifStatus::Pending)?)
                     .cmd("EXPIRE") // expire time
-                    .arg(serde_json::to_string(who).unwrap())
+                    .arg(serde_json::to_string(who)?)
                     .arg(300)
-                    .exec(&mut conn.conn)
-                    .unwrap();
+                    .exec(&mut conn.conn)?;
 
                 for account in Account::into_accounts(&reg.info) {
                     // acc stuff
                     redis::pipe()
                         .cmd("HSET") // create a set
-                        .arg(serde_json::to_string(&account).unwrap())
+                        .arg(serde_json::to_string(&account)?)
                         .arg("status")
-                        .arg(serde_json::to_string(&VerifStatus::Pending).unwrap())
+                        .arg(serde_json::to_string(&VerifStatus::Pending)?)
                         .arg("wallet_id")
-                        .arg(serde_json::to_string(who).unwrap())
+                        .arg(serde_json::to_string(who)?)
                         .arg("token")
-                        .arg(serde_json::to_string(&Token::generate().await).unwrap())
+                        .arg(serde_json::to_string(&Token::generate().await)?)
                         .cmd("EXPIRE") // expire time
-                        .arg(serde_json::to_string(&account).unwrap())
+                        .arg(serde_json::to_string(&account)?)
                         .arg(300)
-                        .exec(&mut conn.conn)
-                        .unwrap();
+                        .exec(&mut conn.conn)?;
                 }
                 return Ok(());
             }
@@ -683,9 +677,7 @@ impl RedisConnection {
 
     /// Checks if all acccounts under the hashset of the `id` key is verified
     pub fn is_all_verified(&mut self, id: &AccountId32) -> anyhow::Result<bool> {
-        let metadata: String = self
-            .conn
-            .hget(&serde_json::to_string(id).unwrap(), "accounts")?;
+        let metadata: String = self.conn.hget(&serde_json::to_string(id)?, "accounts")?;
         let metadata: HashSet<Account> = serde_json::from_str(&metadata)?;
         Ok(metadata.len() == 0)
     }
@@ -707,9 +699,7 @@ impl RedisConnection {
     /// Remove the `account` from the list of the pending account on the hashset
     /// with `id` as a key
     pub fn remove_acc(&mut self, id: &AccountId32, account: &Account) -> anyhow::Result<()> {
-        let metadata: String = self
-            .conn
-            .hget(&serde_json::to_string(id).unwrap(), "accounts")?;
+        let metadata: String = self.conn.hget(&serde_json::to_string(id)?, "accounts")?;
         let mut metadata: HashSet<Account> = serde_json::from_str(&metadata)?;
 
         metadata.remove(account);
