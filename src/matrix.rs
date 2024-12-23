@@ -266,7 +266,7 @@ async fn handle_incoming(
                 let id = redis_connection.get_wallet_id(&v);
                 let token = redis_connection.get_challenge_token(&v);
                 let msg = RoomMessageEventContent::text_plain(format!(
-                    "wallet id: {}\nchallange: {}",
+                    "wallet id: {}\nchallenge: {}",
                     id.to_string(),
                     token.show()
                 ));
@@ -276,8 +276,8 @@ async fn handle_incoming(
             for _acc in accs {
                 match redis_connection.get_status(&_acc) {
                     VerifStatus::Pending => {
-                        let challange = redis_connection.get_challenge_token(&_acc);
-                        if text_content.body.eq(&challange.show()) {
+                        let challenge = redis_connection.get_challenge_token(&_acc);
+                        if text_content.body.eq(&challenge.show()) {
                             redis_connection.set_status(&_acc, VerifStatus::Done)?;
                             let id = redis_connection.get_wallet_id(&_acc);
                             redis_connection.remove_acc(&id, &acc)?;
