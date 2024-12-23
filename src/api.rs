@@ -120,6 +120,7 @@ impl Account {
             None => return None,
         }
     }
+
     pub fn into_accounts(value: &IdentityInfo) -> Vec<Account> {
         let mut result = vec![];
         if let Some(acc) = identity_data_tostring(&value.discord) {
