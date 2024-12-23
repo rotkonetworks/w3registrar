@@ -120,15 +120,16 @@ impl Account {
             None => return None,
         }
     }
+
     pub fn into_accounts(value: &IdentityInfo) -> Vec<Account> {
-        let mut toreturn = vec![];
+        let mut result = vec![];
         if let Some(acc) = identity_data_tostring(&value.discord) {
-            toreturn.push(Account::Discord(acc))
+            result.push(Account::Discord(acc))
         }
         if let Some(acc) = identity_data_tostring(&value.twitter) {
-            toreturn.push(Account::Twitter(acc))
+            result.push(Account::Twitter(acc))
         }
-        return toreturn;
+        return result;
     }
 
     pub fn inner(&self) -> String {
