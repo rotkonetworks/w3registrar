@@ -501,10 +501,9 @@ pub async fn spawn_ws_serv(
 pub async fn spawn_node_listener(
     watcher_cfg: WatcherConfig,
     redis_cfg: &RedisConfig,
-    // TODO: add redis db url
 ) -> anyhow::Result<()> {
     NodeListener::new(watcher_cfg.endpoint, redis_cfg.to_owned())
-        .await
+        .await?
         .listen()
         .await
 }
@@ -517,17 +516,16 @@ struct NodeListener {
 }
 
 impl NodeListener {
-    // TODO: change return from Self to Result<Self>
     /// Creates a new [NodeListener]
     ///
     /// # Panics
     /// This function will fail if the _redis_url_ is an invalid url to a redis server
     /// or if _node_url_ is not a valid url for a substrate BC node
-    pub async fn new(node_url: String, redis_cfg: RedisConfig) -> Self {
-        Self {
-            client: NodeClient::from_url(&node_url).await.unwrap(),
+    pub async fn new(node_url: String, redis_cfg: RedisConfig) -> anyhow::Result<Self> {
+        Ok(Self {
+            client: NodeClient::from_url(&node_url).await?,
             redis_cfg,
-        }
+        })
     }
 
     /// Listens for incoming events on the substrate node, in particular
