@@ -2,7 +2,6 @@ mod api;
 mod matrix;
 mod node;
 mod token;
-mod watcher;
 mod config;
 
 use tracing::Level;
