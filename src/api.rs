@@ -174,10 +174,10 @@ struct Conn {
     receiver: Receiver<RegistrationResponse>,
 }
 
-/// Spawns the Websocket client, Matrix client and the Node(substrate) listiner
+/// Spawns the Websocket client, Matrix client and the Node(substrate) listener
 pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
     matrix::start_bot(cfg.matrix, &cfg.redis).await?;
-    spawn_node_listiner(cfg.watcher, &cfg.redis).await?;
+    spawn_node_listener(cfg.watcher, &cfg.redis).await?;
     spawn_ws_serv(cfg.websocket, &cfg.redis).await
 }
 
@@ -223,13 +223,13 @@ fn identity_data_tostring(data: &IdentityData) -> Option<String> {
 }
 
 #[derive(Debug, Clone)]
-struct Listiner {
+struct Listener {
     ip: [u8; 4],
     port: u16,
     redis_cfg: RedisConfig,
 }
 
-impl Listiner {
+impl Listener {
     pub async fn new(websocket_cfg: WebsocketConfig, redis_cfg: RedisConfig) -> Self {
         Self {
             ip: websocket_cfg.ip,
@@ -490,20 +490,20 @@ pub async fn spawn_ws_serv(
     websocket_cfg: WebsocketConfig,
     redis_cfg: &RedisConfig,
 ) -> anyhow::Result<()> {
-    Listiner::new(websocket_cfg, redis_cfg.to_owned())
+    Listener::new(websocket_cfg, redis_cfg.to_owned())
         .await
         .listen()
         .await
 }
 
-/// Spanws a new node (substrate) listiner to listen for incoming events, in particular
+/// Spanws a new node (substrate) listener to listen for incoming events, in particular
 /// `requestJudgement` requests
-pub async fn spawn_node_listiner(
+pub async fn spawn_node_listener(
     watcher_cfg: WatcherConfig,
     redis_cfg: &RedisConfig,
     // TODO: add redis db url
 ) -> anyhow::Result<()> {
-    NodeListiner::new(watcher_cfg.endpoint, redis_cfg.to_owned())
+    NodeListener::new(watcher_cfg.endpoint, redis_cfg.to_owned())
         .await
         .listen()
         .await
@@ -511,14 +511,14 @@ pub async fn spawn_node_listiner(
 
 /// Used to listen/interact with BC events on the substrate node
 #[derive(Debug, Clone)]
-struct NodeListiner {
+struct NodeListener {
     client: NodeClient,
     redis_cfg: RedisConfig,
 }
 
-impl NodeListiner {
+impl NodeListener {
     // TODO: change return from Self to Result<Self>
-    /// Creates a new [NodeListiner]
+    /// Creates a new [NodeListener]
     ///
     /// # Panics
     /// This function will fail if the _redis_url_ is an invalid url to a redis server
@@ -558,7 +558,7 @@ impl NodeListiner {
         let registration = node::get_registration(&self.client, who).await;
         match registration {
             Ok(reg) => {
-                Listiner::has_paid_fee(reg.judgements.0)?;
+                Listener::has_paid_fee(reg.judgements.0)?;
                 let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
 
                 // TODO: make all commands chained together and then executed
