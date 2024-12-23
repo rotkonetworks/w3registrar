@@ -275,7 +275,7 @@ impl Listener {
     }
 
     /// Compares between the accounts on the idendtity object on the check_node
-    /// and the recived requests
+    /// and the received requests
     /// TODO: migrate this to a common module
     pub fn is_complete<'a>(
         registration: &Registration<u128, IdentityInfo>,
@@ -628,8 +628,8 @@ impl RedisConnection {
         return keys;
     }
 
-    /// Get the chalange [Token] from a hashset with `account` as a name, `token`
-    /// as the key paire of the desired token using an establisehd redis connection
+    /// Get the challenge [Token] from a hashset with `account` as a name, `token`
+    /// as the key paire of the desired token using an established redis connection
     ///
     /// # Note:
     /// The `account` should be in the "[Account]:[AccountId32]" format
@@ -639,7 +639,7 @@ impl RedisConnection {
     }
 
     /// Get the [AccountId32] from a hashset with `account` as a name, `wallet_id`
-    /// as the key paire of the desired wallet id using an establisehd redis connection
+    /// as the key paire of the desired wallet id using an established redis connection
     ///
     /// # Note:
     /// The `account` should be in the "[Account]:[AccountId32]" format
@@ -652,7 +652,7 @@ impl RedisConnection {
     }
 
     /// Get the status [VerifStatus] from a hashset with `account` as a name, `status`
-    /// as the key paire of the desired status using an establisehd redis connection
+    /// as the key paire of the desired status using an established redis connection
     ///
     /// # Note:
     /// The `account` should be in the "[Account]:[AccountId32]" format
@@ -682,7 +682,7 @@ impl RedisConnection {
     }
 
     /// Set the status field of a hashset with `id` as a name to [VerifStatus::Done]
-    /// using an establisehd redis connection
+    /// using an established redis connection
     ///
     /// # Note:
     /// The `account` should be in the "[Account]:[AccountId32]" format

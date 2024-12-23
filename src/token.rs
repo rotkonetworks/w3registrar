@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 pub trait AuthToken: PartialEq + Eq {
     /// Generates a token that constitutes of the account and
-    /// the expected message to recive from the account
+    /// the expected message to receive from the account
     async fn generate() -> Token;
     fn show(&self) -> String;
 }
