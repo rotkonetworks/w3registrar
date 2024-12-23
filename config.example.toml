@@ -8,7 +8,7 @@ ip = [127,0,0,1]
 port = 8080
 
 [redis]
-domain = [127,0,0,1]
+ip = [127,0,0,1]
 port = 1234
 # leave them emtpy if you don't wish to an account
 username = "asdf"

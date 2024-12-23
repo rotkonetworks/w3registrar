@@ -37,7 +37,7 @@ pub struct MatrixConfig {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct RedisConfig {
-    pub domain: [u8; 4],
+    pub ip: [u8; 4],
     pub port: u16,
     pub username: String,
     pub password: String,
@@ -46,7 +46,7 @@ pub struct RedisConfig {
 impl Default for RedisConfig {
     fn default() -> Self {
         Self {
-            domain: [127, 0, 0, 1],
+            ip: [127, 0, 0, 1],
             port: 6379,
             username: String::new(),
             password: String::new(),
@@ -61,16 +61,16 @@ impl RedisConfig {
                 "redis://{}:{}@{}.{}.{}.{}:{}/",
                 self.username,
                 self.password,
-                self.domain[0],
-                self.domain[1],
-                self.domain[2],
-                self.domain[3],
+                self.ip[0],
+                self.ip[1],
+                self.ip[2],
+                self.ip[3],
                 self.port
             );
         } else {
             return format!(
                 "redis://{}.{}.{}.{}:{}/",
-                self.domain[0], self.domain[1], self.domain[2], self.domain[3], self.port
+                self.ip[0], self.ip[1], self.ip[2], self.ip[3], self.port
             );
         }
     }
