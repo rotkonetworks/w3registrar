@@ -121,14 +121,14 @@ impl Account {
         }
     }
     pub fn into_accounts(value: &IdentityInfo) -> Vec<Account> {
-        let mut toreturn = vec![];
+        let mut result = vec![];
         if let Some(acc) = identity_data_tostring(&value.discord) {
-            toreturn.push(Account::Discord(acc))
+            result.push(Account::Discord(acc))
         }
         if let Some(acc) = identity_data_tostring(&value.twitter) {
-            toreturn.push(Account::Twitter(acc))
+            result.push(Account::Twitter(acc))
         }
-        return toreturn;
+        return result;
     }
 
     pub fn inner(&self) -> String {
@@ -423,7 +423,7 @@ impl Listener {
                                     _ => return Err(anyhow!("expired")),
                                 }
                             }
-                            Err(e) => return Err(anyhow!("not registred, error: {}", e)),
+                            Err(e) => return Err(anyhow!("not registered, error: {}", e)),
                         }
                     }
                     Err(e) => return Err(anyhow!("unrecognize request, error: {}", e)),
@@ -632,7 +632,7 @@ impl RedisConnection {
     ///
     /// # Note:
     /// The `account` should be in the "[Account]:[AccountId32]" format
-    pub fn get_challange_token(&mut self, account: &str) -> Token {
+    pub fn get_challenge_token(&mut self, account: &str) -> Token {
         let token: String = self.conn.hget(account, "token").unwrap();
         serde_json::from_str(&token).unwrap()
     }
