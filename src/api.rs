@@ -169,11 +169,6 @@ impl RegistrationElement {
         }
     }
 }
-// TODO: make register_user and wait_for_response methods
-struct Conn {
-    sender: Sender<RegistrationRequest>,
-    receiver: Receiver<RegistrationResponse>,
-}
 
 /// Spawns the Websocket client, Matrix client and the Node(substrate) listener
 pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
