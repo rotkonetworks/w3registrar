@@ -414,7 +414,12 @@ impl Listener {
                                 .await
                                 {
                                     Ok(Some(_source)) => {
-                                        node::register_identity(reg_req.id, reg_req.reg_index).await
+                                        node::register_identity(
+                                            &client,
+                                            reg_req.id, 
+                                            reg_req.reg_index,
+                                            config.watcher.registrar_index
+                                        ).await
                                     }
                                     _ => return Err(anyhow!("expired")),
                                 }
