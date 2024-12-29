@@ -400,17 +400,15 @@ pub fn identity_data_tostring(data: &IdentityData) -> Option<String> {
 
 #[derive(Debug, Clone)]
 struct Listener {
-    ip: [u8; 4],
-    port: u16,
     redis_cfg: RedisConfig,
+    socket_addr: SocketAddr,
 }
 
 impl Listener {
     pub async fn new(websocket_cfg: WebsocketConfig, redis_cfg: RedisConfig) -> Self {
         Self {
-            ip: websocket_cfg.ip,
-            port: websocket_cfg.port,
             redis_cfg,
+            socket_addr: websocket_cfg.socket_addrs().unwrap(),
         }
     }
 
@@ -651,8 +649,7 @@ impl Listener {
     }
 
     pub async fn listen(self) -> anyhow::Result<()> {
-        let addr = SocketAddr::from((self.ip, self.port));
-        let listener = TcpListener::bind(&addr).await?;
+        let listener = TcpListener::bind(self.socket_addr).await?;
         loop {
             match listener.accept().await {
                 Ok((stream, addr)) => {
@@ -865,7 +862,7 @@ pub struct RedisConnection {
 impl RedisConnection {
     /// Connect to running redis server given [RedisConfig]
     pub fn create_conn(addr: &RedisConfig) -> anyhow::Result<Self> {
-        let client = RedisClient::open(addr.to_full_domain())?;
+        let client = RedisClient::open(addr.url()?)?;
         let mut conn = client.get_connection()?;
 
         let _: () = redis::cmd("CONFIG")

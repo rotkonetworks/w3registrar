@@ -2,7 +2,8 @@
 use crate::node::identity::events::judgement_requested::RegistrarIndex;
 use anyhow::anyhow;
 use std::fs;
-use url::Url;
+use std::net::{SocketAddr, ToSocketAddrs};
+use url::{ParseError, Url};
 
 use serde::Deserialize;
 
@@ -39,8 +40,8 @@ pub struct MatrixConfig {
 pub struct RedisConfig {
     pub host: String,
     pub port: u16,
-    pub username: String,
-    pub password: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
 }
 
 impl Default for RedisConfig {
@@ -48,21 +49,24 @@ impl Default for RedisConfig {
         Self {
             host: "127.0.0.1".to_string(),
             port: 6379,
-            username: String::new(),
-            password: String::new(),
+            username: None,
+            password: None,
         }
     }
 }
 
 impl RedisConfig {
-    pub fn to_url(&self) -> Result<Url, url::ParseError> {
-        let mut url = Url::parse(&format!("redis://{}:{}/", self.host, self.port))?;
-
-        if !self.username.is_empty() || !self.password.is_empty() {
-            url.set_username(&self.username)
-                .map_err(|()| url::ParseError::IdnaError)?;
-            url.set_password(Some(&self.password))
-                .map_err(|()| url::ParseError::IdnaError)?;
+    // TODO: handle the `unwrap` calls
+    /// Returns a [Url] from the parsed config
+    pub fn url(&self) -> anyhow::Result<Url, ParseError> {
+        let mut url = Url::parse(&format!("redis://{}:{}", self.host, self.port))?;
+        match &self.username {
+            Some(username) => url.set_username(&username).unwrap(),
+            _ => {}
+        }
+        match &self.password {
+            Some(password) => url.set_password(Some(&password)).unwrap(),
+            _ => {}
         }
         Ok(url)
     }
@@ -87,5 +91,14 @@ impl Default for WebsocketConfig {
             host: "127.0.0.1".to_string(),
             port: 8080,
         }
+    }
+}
+
+impl WebsocketConfig {
+    pub fn socket_addrs(&self) -> Option<SocketAddr> {
+        format!("{}:{}", self.host, self.port)
+            .to_socket_addrs()
+            .unwrap()
+            .next()
     }
 }
