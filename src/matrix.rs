@@ -12,10 +12,7 @@ use matrix_sdk::{
         events::room::{
             create::RoomCreateEventContent,
             member::StrippedRoomMemberEvent,
-            message::{
-                MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent,
-                TextMessageEventContent,
-            },
+            message::{MessageType, OriginalSyncRoomMessageEvent, TextMessageEventContent},
         },
     },
     Client,
@@ -28,7 +25,7 @@ use tracing::info;
 
 use std::path::Path;
 
-use crate::api::RedisConnection;
+use crate::{api::RedisConnection, node::register_identity};
 use crate::{
     api::{Account, VerifStatus},
     config::{MatrixConfig, RedisConfig},
@@ -259,36 +256,31 @@ async fn handle_incoming(
 ) -> anyhow::Result<()> {
     info!("\nAcc: {:#?}\nContent: {:#?}", acc, text_content);
     let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
-    let accs = redis_connection.search(format!("{}:*", serde_json::to_string(&acc)?));
-    if accs.len() > 0 {
-        if text_content.body.eq("Send challenge") {
-            for v in accs {
-                let id = redis_connection.get_wallet_id(&v);
-                let token = redis_connection.get_challenge_token(&v);
-                let msg = RoomMessageEventContent::text_plain(format!(
-                    "wallet id: {}\nchallenge: {}",
-                    id.to_string(),
-                    token.show()
-                ));
-                _room.send(msg).await?;
-            }
-        } else {
-            for _acc in accs {
-                match redis_connection.get_status(&_acc) {
-                    VerifStatus::Pending => {
-                        let challenge = redis_connection.get_challenge_token(&_acc);
-                        if text_content.body.eq(&challenge.show()) {
-                            redis_connection.set_status(&_acc, VerifStatus::Done)?;
-                            let id = redis_connection.get_wallet_id(&_acc);
-                            redis_connection.remove_acc(&id, &acc)?;
-                            if redis_connection.is_all_verified(&id)? {
-                                redis_connection.signal_done(&id)?;
-                            }
-                            break;
+    // since an account could be registred by more than wallet, we need to poll each
+    // instance of that account
+    let accounts = redis_connection.search(format!("{}:*", serde_json::to_string(&acc)?));
+    // TODO: handle the account VerifStatus in the HahsMap of accounts under the wallet_id
+    if accounts.len() > 0 {
+        for _acc in accounts {
+            info!("Account: {}", _acc);
+            match redis_connection.get_status(&_acc) {
+                VerifStatus::Pending => {
+                    // TODO: handle this unwrap!
+                    let challenge = redis_connection
+                        .get_challenge_token_from_account_info(&_acc)
+                        .unwrap();
+                    if text_content.body.eq(&challenge.show()) {
+                        redis_connection.set_status(&_acc, VerifStatus::Done)?;
+                        let id = redis_connection.get_wallet_id(&_acc);
+                        if redis_connection.is_all_verified(&id)? {
+                            redis_connection.signal_done(&id)?;
+                            register_identity(&id, 0).await?;
+                            info!("All requested accounts of {:?} are now verified", id);
                         }
+                        break;
                     }
-                    VerifStatus::Done => {}
                 }
+                VerifStatus::Done => {}
             }
         }
     }

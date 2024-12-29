@@ -6,15 +6,19 @@ pub mod api {}
 use anyhow::{anyhow, Result};
 use sp_core::blake2_256;
 use sp_core::Encode;
+use std::collections::HashMap;
 use std::str::FromStr;
 use subxt::ext::sp_core::sr25519::Pair as Sr25519Pair;
 use subxt::ext::sp_core::Pair;
+use subxt::utils::AccountId32;
 use subxt::SubstrateConfig;
 use tracing::info;
 
+use super::api::{identity_data_tostring, Account, VerifStatus};
+use api::identity::calls::types::provide_judgement::Identity;
+use api::runtime_types::pallet_identity::types::Judgement;
 use api::runtime_types::pallet_identity::types::Registration;
 use api::runtime_types::people_rococo_runtime::people::IdentityInfo;
-use subxt::utils::AccountId32;
 
 pub use api::*;
 
@@ -39,7 +43,11 @@ pub async fn get_registration(
     }
 }
 
-pub async fn register_identity<'a>(who: AccountId32, reg_index: u32) -> anyhow::Result<&'a str> {
+pub async fn provide_judgement<'a>(
+    who: &AccountId32,
+    reg_index: u32,
+    judgement: Judgement<u128>,
+) -> anyhow::Result<&'a str> {
     let client = Client::from_url("wss://dev.rotko.net/people-rococo")
         .await
         .map_err(|e| {
@@ -50,11 +58,78 @@ pub async fn register_identity<'a>(who: AccountId32, reg_index: u32) -> anyhow::
         })?;
     let registration = get_registration(&client, &who).await?;
     let hash = hex::encode(blake2_256(&registration.info.encode()));
+
     let judgement = api::tx().identity().provide_judgement(
         reg_index,
         subxt::utils::MultiAddress::Address32(who.to_owned().0),
-        runtime_types::pallet_identity::types::Judgement::Reasonable,
-        api::identity::calls::types::provide_judgement::Identity::from_str(&hash)?,
+        judgement,
+        Identity::from_str(&hash)?,
+    );
+
+    let singer: subxt::tx::signer::PairSigner<SubstrateConfig, subxt::ext::sp_core::sr25519::Pair> = {
+        let acc = subxt::ext::sp_core::sr25519::Pair::from_string("//ALICE", None)?;
+        subxt::tx::PairSigner::new(acc)
+    };
+
+    let conf = subxt::config::substrate::SubstrateExtrinsicParamsBuilder::new().build();
+    match client.tx().sign_and_submit(&judgement, &singer, conf).await {
+        Ok(_) => return Ok("Judged with reasonable"),
+        Err(_) => return Err(anyhow!("unable to submit judgement")),
+    }
+}
+
+// TODO: change the fn signature to include the accounts that we can handle
+/// Filters all requested accounts to inlcude only those that we can handle, and default
+/// the judgement of other accounts to `Erroneous`, and the judgement for empty identity
+/// objects to `Unkown`
+///
+/// # Note
+/// For now, we only handle registration requests from `Matrix`, `Twitter` and `Discord`
+pub async fn filter_accounts(
+    info: &IdentityInfo,
+    who: &AccountId32,
+) -> anyhow::Result<HashMap<Account, VerifStatus>> {
+    if identity_data_tostring(&info.web).is_some()
+        || identity_data_tostring(&info.legal).is_some()
+        || identity_data_tostring(&info.github).is_some()
+        || identity_data_tostring(&info.image).is_some()
+        || identity_data_tostring(&info.email).is_some()
+        || info.pgp_fingerprint.is_some()
+    {
+        provide_judgement(who, 0, Judgement::Erroneous).await?;
+
+        let accounts = Account::into_accounts(&info);
+        if accounts.len() == 0 {
+            provide_judgement(who, 0, Judgement::Unknown).await?;
+        }
+        return Ok(Account::into_hashmap(accounts, VerifStatus::Done));
+    }
+
+    Ok(Account::into_hashmap(
+        Account::into_accounts(&info),
+        VerifStatus::Pending,
+    ))
+}
+
+/// This will provide a [Reasonable] judgement for the account id `who` from the registrar with
+/// index `regi_index`
+pub async fn register_identity<'a>(who: &AccountId32, reg_index: u32) -> anyhow::Result<&'a str> {
+    let client = Client::from_url("wss://dev.rotko.net/people-rococo")
+        .await
+        .map_err(|e| {
+            anyhow!(
+                "unable to connect to people-rococo network because of {}",
+                e.to_string()
+            )
+        })?;
+    let registration = get_registration(&client, who).await?;
+    let hash = hex::encode(blake2_256(&registration.info.encode()));
+
+    let judgement = api::tx().identity().provide_judgement(
+        reg_index,
+        subxt::utils::MultiAddress::Address32(who.to_owned().0),
+        Judgement::Reasonable,
+        Identity::from_str(&hash)?,
     );
 
     let singer: subxt::tx::signer::PairSigner<SubstrateConfig, subxt::ext::sp_core::sr25519::Pair> = {
