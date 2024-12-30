@@ -546,8 +546,8 @@ impl Listener {
 
                         match conn.get_challenge_token_from_account_type(
                             &request.payload.wallet_id,
-                            acc_type,
-                        ) {
+                            &acc_type,
+                        )? {
                             Some(token) => {
                                 return Ok(serde_json::json!({
                                     "type": "ok",
@@ -572,8 +572,8 @@ impl Listener {
                         let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
                         match conn.get_challenge_token_from_account_type(
                             &request.payload.account,
-                            request.payload.field,
-                        ) {
+                            &request.payload.field,
+                        )? {
                             Some(challenge) => {
                                 if request.payload.challenge.eq(&challenge.show()) {
                                     return Ok(serde_json::json!({
@@ -961,39 +961,35 @@ impl RedisConnection {
     pub fn get_challenge_token_from_account_type(
         &mut self,
         wallet_id: &AccountId32,
-        acc_type: AccountType,
-    ) -> Option<Token> {
-        match acc_type {
-            AccountType::Discord => {
-                for account in self.get_accounts(wallet_id) {
-                    match account {
-                        Account::Discord(acc_name) => {
-                            return self.get_challenge_token_from_account_info(&format!(
-                                "{}:{}",
-                                serde_json::to_string(&Account::Discord(acc_name)).unwrap(),
-                                serde_json::to_string(wallet_id).unwrap(),
-                            ))
-                        }
-                        _ => {}
-                    }
-                }
+        acc_type: &AccountType,
+    ) -> anyhow::Result<Option<Token>> {
+        // Helper closure to create account key
+        let make_info = |account: &Account| -> anyhow::Result<String> {
+            Ok(format!(
+                "{}:{}",
+                serde_json::to_string(account)?,
+                serde_json::to_string(wallet_id)?
+            ))
+        };
+
+        let accounts = self.get_accounts(wallet_id);
+
+        let matching_account = accounts.into_iter().find(move |account| {
+            matches!(
+                (acc_type, account),
+                (AccountType::Discord, Account::Discord(_))
+                    | (AccountType::Twitter, Account::Twitter(_))
+            )
+        });
+
+        // If we found a matching account, get its token
+        match matching_account {
+            Some(account) => {
+                let info = make_info(&account)?;
+                Ok(self.get_challenge_token_from_account_info(&info))
             }
-            AccountType::Twitter => {
-                for account in self.get_accounts(wallet_id) {
-                    match account {
-                        Account::Twitter(acc_name) => {
-                            return self.get_challenge_token_from_account_info(&format!(
-                                "{}:{}",
-                                serde_json::to_string(&Account::Twitter(acc_name)).unwrap(),
-                                serde_json::to_string(wallet_id).unwrap(),
-                            ))
-                        }
-                        _ => {}
-                    }
-                }
-            }
+            None => Ok(None),
         }
-        None
     }
 
     /// Get the challenge [Token] from a hashset with `account` as a name, `token`
