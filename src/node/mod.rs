@@ -65,14 +65,14 @@ pub async fn provide_judgement<'a>(
         Identity::from_str(&hash)?,
     );
 
-    let singer: subxt::tx::signer::PairSigner<SubstrateConfig, subxt::ext::sp_core::sr25519::Pair> = {
+    let signer: subxt::tx::signer::PairSigner<SubstrateConfig, subxt::ext::sp_core::sr25519::Pair> = {
         // TODO: config the "//Alice" part?
         let acc = subxt::ext::sp_core::sr25519::Pair::from_string("//FERDIE", None)?;
         subxt::tx::PairSigner::new(acc)
     };
 
     let conf = subxt::config::substrate::SubstrateExtrinsicParamsBuilder::new().build();
-    match client.tx().sign_and_submit(&judgement, &singer, conf).await {
+    match client.tx().sign_and_submit(&judgement, &signer, conf).await {
         Ok(_) => return Ok("Judged with reasonable"),
         Err(_) => return Err(anyhow!("unable to submit judgement")),
     }
@@ -137,13 +137,13 @@ pub async fn register_identity<'a>(
         Identity::from_str(&hash)?,
     );
 
-    let singer: subxt::tx::signer::PairSigner<SubstrateConfig, subxt::ext::sp_core::sr25519::Pair> = {
+    let signer: subxt::tx::signer::PairSigner<SubstrateConfig, subxt::ext::sp_core::sr25519::Pair> = {
         let acc = subxt::ext::sp_core::sr25519::Pair::from_string("//ALICE", None)?;
         subxt::tx::PairSigner::new(acc)
     };
 
     let conf = subxt::config::substrate::SubstrateExtrinsicParamsBuilder::new().build();
-    match client.tx().sign_and_submit(&judgement, &singer, conf).await {
+    match client.tx().sign_and_submit(&judgement, &signer, conf).await {
         Ok(_) => return Ok("Judged with reasonable"),
         Err(e) => return Err(anyhow!("unable to submit judgement\nError: {:?}", e)),
     }
