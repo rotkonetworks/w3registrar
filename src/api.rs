@@ -529,7 +529,7 @@ impl Listener {
                             "message": serde_json::json!({
                                 "info": conn.extract_info(&request.payload)?,
                                 "hash": "TODO",
-                                "pending_challenges": conn.get_challanges(&request.payload),
+                                "pending_challenges": conn.get_challenges(&request.payload),
                                 "account": request.payload,
                             }),
                         }));
@@ -892,7 +892,7 @@ impl RedisConnection {
     /// Get all pending challenges of `wallet_id` as a [Vec<Vec<String>>]
     /// The return type may look something like this (using double `[` for display purposes):
     /// [[["Discord", "asdf123"]], [["Twitter", "abcd123"]], ...]]
-    pub fn get_challanges(&mut self, wallet_id: &AccountId32) -> Vec<Vec<String>> {
+    pub fn get_challenges(&mut self, wallet_id: &AccountId32) -> Vec<Vec<String>> {
         let mut result = vec![];
         for account in self.get_accounts_from_status(wallet_id, VerifStatus::Pending) {
             match self.get_challenge_token_from_account_info(&format!(
