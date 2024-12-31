@@ -25,7 +25,7 @@ use tracing::info;
 
 use std::path::Path;
 
-use crate::{api::RedisConnection, node::register_identity};
+use crate::{api::RedisConnection, config::WatcherConfig, node::register_identity};
 use crate::{
     api::{Account, VerifStatus},
     config::{MatrixConfig, RedisConfig},
@@ -141,10 +141,14 @@ struct MatrixBot {
 }
 
 /// Spanws a Matrix client to handle incoming messages from beeper
-pub async fn start_bot(matrix_cfg: MatrixConfig, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
+pub async fn start_bot(
+    matrix_cfg: MatrixConfig,
+    redis_cfg: &RedisConfig,
+    watcher_config: &WatcherConfig,
+) -> anyhow::Result<()> {
     let client = login(matrix_cfg).await?;
 
-    client.add_event_handler_context(redis_cfg.to_owned());
+    client.add_event_handler_context((redis_cfg.to_owned(), watcher_config.to_owned()));
     client.add_event_handler(on_stripped_state_member);
     client.add_event_handler(on_room_message);
     // create and add context here
@@ -201,7 +205,11 @@ async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client
     });
 }
 
-async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room, ctx: Ctx<RedisConfig>) {
+async fn on_room_message(
+    ev: OriginalSyncRoomMessageEvent,
+    _room: Room,
+    ctx: Ctx<(RedisConfig, WatcherConfig)>,
+) {
     let MessageType::Text(text_content) = ev.content.msgtype else {
         return;
     };
@@ -229,11 +237,17 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room, ctx: Ctx
                                 let sender = arr.get(0).unwrap().to_string();
                                 // creating an account from the extracted sender
                                 match Account::from_string(sender.clone()) {
-                                    Some(acc) => {
-                                        handle_incoming(acc, &text_content, &_room, &ctx.0)
-                                            .await
-                                            .unwrap()
-                                    }
+                                    // TODO: this looks sooo ugly
+                                    Some(acc) => handle_incoming(
+                                        acc,
+                                        &text_content,
+                                        &_room,
+                                        &ctx.0 .0,
+                                        ctx.0 .1.registrar_index,
+                                        &ctx.0 .1.endpoint,
+                                    )
+                                    .await
+                                    .unwrap(),
                                     None => info!("Couldn't create Acc object from {:?}", sender),
                                 }
                             }
@@ -248,11 +262,14 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room, ctx: Ctx
     }
 }
 
+// TODO: this signature looks ugly
 async fn handle_incoming(
     acc: Account,
     text_content: &TextMessageEventContent,
     _room: &Room,
     redis_cfg: &RedisConfig,
+    reg_index: u32,
+    endpoint: &str,
 ) -> anyhow::Result<()> {
     info!("\nAcc: {:#?}\nContent: {:#?}", acc, text_content);
     let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
@@ -266,6 +283,10 @@ async fn handle_incoming(
             match redis_connection.get_status(&_acc) {
                 VerifStatus::Pending => {
                     // TODO: handle this unwrap!
+                    // TODO: changee status iff we make sure that we don't panic on the rest
+                    // of the verification process (cuz imagine we change the account status 
+                    // of the account, and then we want to `signal_done`, but that panics for
+                    // some reason :p)
                     let challenge = redis_connection
                         .get_challenge_token_from_account_info(&_acc)
                         .unwrap();
@@ -273,9 +294,9 @@ async fn handle_incoming(
                         redis_connection.set_status(&_acc, VerifStatus::Done)?;
                         let id = redis_connection.get_wallet_id(&_acc);
                         if redis_connection.is_all_verified(&id)? {
+                            register_identity(&id, reg_index, endpoint).await?;
                             redis_connection.signal_done(&id)?;
-                            register_identity(&id, 0).await?;
-                            info!("All requested accounts of {:?} are now verified", id);
+                            info!("All requested accounts from {:?} are now verified", id);
                         }
                         break;
                     }

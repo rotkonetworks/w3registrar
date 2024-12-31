@@ -352,7 +352,7 @@ impl RegistrationElement {
 
 /// Spawns the Websocket client, Matrix client and the Node(substrate) listener
 pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
-    matrix::start_bot(cfg.matrix, &cfg.redis).await?;
+    matrix::start_bot(cfg.matrix, &cfg.redis, &cfg.watcher).await?;
     spawn_node_listener(cfg.watcher, &cfg.redis).await?;
     spawn_ws_serv(cfg.websocket, &cfg.redis).await
 }
@@ -685,7 +685,7 @@ pub async fn spawn_node_listener(
     watcher_cfg: WatcherConfig,
     redis_cfg: &RedisConfig,
 ) -> anyhow::Result<()> {
-    NodeListener::new(watcher_cfg.endpoint, redis_cfg.to_owned())
+    NodeListener::new(watcher_cfg, redis_cfg.to_owned())
         .await?
         .listen()
         .await
@@ -696,6 +696,8 @@ pub async fn spawn_node_listener(
 struct NodeListener {
     client: NodeClient,
     redis_cfg: RedisConfig,
+    reg_index: u32,
+    endpoint: String,
 }
 
 impl NodeListener {
@@ -704,10 +706,12 @@ impl NodeListener {
     /// # Panics
     /// This function will fail if the _redis_url_ is an invalid url to a redis server
     /// or if _node_url_ is not a valid url for a substrate BC node
-    pub async fn new(node_url: String, redis_cfg: RedisConfig) -> anyhow::Result<Self> {
+    pub async fn new(cfg: WatcherConfig, redis_cfg: RedisConfig) -> anyhow::Result<Self> {
         Ok(Self {
-            client: NodeClient::from_url(&node_url).await?,
+            client: NodeClient::from_url(&cfg.endpoint).await?,
             redis_cfg,
+            reg_index: cfg.registrar_index,
+            endpoint: cfg.endpoint,
         })
     }
 
@@ -763,7 +767,8 @@ impl NodeListener {
                 Listener::has_paid_fee(reg.judgements.0)?;
                 let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
                 conn.clear_all_related_to(who).await?;
-                let accounts = filter_accounts(&reg.info, who).await?;
+                let accounts =
+                    filter_accounts(&reg.info, who, self.reg_index, &self.endpoint).await?;
 
                 // TODO: make all commands chained together and then executed
                 // all at once!

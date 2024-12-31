@@ -47,15 +47,14 @@ pub async fn provide_judgement<'a>(
     who: &AccountId32,
     reg_index: u32,
     judgement: Judgement<u128>,
+    endpoint: &str,
 ) -> anyhow::Result<&'a str> {
-    let client = Client::from_url("wss://dev.rotko.net/people-rococo")
-        .await
-        .map_err(|e| {
-            anyhow!(
-                "unable to connect to people-rococo network because of {}",
-                e.to_string()
-            )
-        })?;
+    let client = Client::from_url(endpoint).await.map_err(|e| {
+        anyhow!(
+            "unable to connect to people-rococo network because of {}",
+            e.to_string()
+        )
+    })?;
     let registration = get_registration(&client, &who).await?;
     let hash = hex::encode(blake2_256(&registration.info.encode()));
 
@@ -67,7 +66,8 @@ pub async fn provide_judgement<'a>(
     );
 
     let singer: subxt::tx::signer::PairSigner<SubstrateConfig, subxt::ext::sp_core::sr25519::Pair> = {
-        let acc = subxt::ext::sp_core::sr25519::Pair::from_string("//ALICE", None)?;
+        // TODO: config the "//Alice" part?
+        let acc = subxt::ext::sp_core::sr25519::Pair::from_string("//FERDIE", None)?;
         subxt::tx::PairSigner::new(acc)
     };
 
@@ -88,6 +88,8 @@ pub async fn provide_judgement<'a>(
 pub async fn filter_accounts(
     info: &IdentityInfo,
     who: &AccountId32,
+    reg_index: u32,
+    endpoint: &str,
 ) -> anyhow::Result<HashMap<Account, VerifStatus>> {
     if identity_data_tostring(&info.web).is_some()
         || identity_data_tostring(&info.legal).is_some()
@@ -96,11 +98,11 @@ pub async fn filter_accounts(
         || identity_data_tostring(&info.email).is_some()
         || info.pgp_fingerprint.is_some()
     {
-        provide_judgement(who, 0, Judgement::Erroneous).await?;
+        provide_judgement(who, reg_index, Judgement::Erroneous, endpoint).await?;
 
         let accounts = Account::into_accounts(&info);
-        if accounts.len() == 0 {
-            provide_judgement(who, 0, Judgement::Unknown).await?;
+        if accounts.is_empty() {
+            provide_judgement(who, reg_index, Judgement::Unknown, endpoint).await?;
         }
         return Ok(Account::into_hashmap(accounts, VerifStatus::Done));
     }
@@ -113,15 +115,18 @@ pub async fn filter_accounts(
 
 /// This will provide a [Reasonable] judgement for the account id `who` from the registrar with
 /// index `regi_index`
-pub async fn register_identity<'a>(who: &AccountId32, reg_index: u32) -> anyhow::Result<&'a str> {
-    let client = Client::from_url("wss://dev.rotko.net/people-rococo")
-        .await
-        .map_err(|e| {
-            anyhow!(
-                "unable to connect to people-rococo network because of {}",
-                e.to_string()
-            )
-        })?;
+pub async fn register_identity<'a>(
+    who: &AccountId32,
+    reg_index: u32,
+    endpoint: &str,
+) -> anyhow::Result<&'a str> {
+    let client = Client::from_url(endpoint).await.map_err(|e| {
+        anyhow!(
+            "unable to connect to {} network because of {}",
+            endpoint,
+            e.to_string(),
+        )
+    })?;
     let registration = get_registration(&client, who).await?;
     let hash = hex::encode(blake2_256(&registration.info.encode()));
 
@@ -140,6 +145,6 @@ pub async fn register_identity<'a>(who: &AccountId32, reg_index: u32) -> anyhow:
     let conf = subxt::config::substrate::SubstrateExtrinsicParamsBuilder::new().build();
     match client.tx().sign_and_submit(&judgement, &singer, conf).await {
         Ok(_) => return Ok("Judged with reasonable"),
-        Err(_) => return Err(anyhow!("unable to submit judgement")),
+        Err(e) => return Err(anyhow!("unable to submit judgement\nError: {:?}", e)),
     }
 }

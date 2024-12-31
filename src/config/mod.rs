@@ -72,7 +72,7 @@ impl RedisConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct WatcherConfig {
     pub endpoint: String,
     pub registrar_index: RegistrarIndex,
