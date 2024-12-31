@@ -51,7 +51,8 @@ pub async fn provide_judgement<'a>(
 ) -> anyhow::Result<&'a str> {
     let client = Client::from_url(endpoint).await.map_err(|e| {
         anyhow!(
-            "unable to connect to people-rococo network because of {}",
+            "unable to connect to {} because of {}",
+            endpoint,
             e.to_string()
         )
     })?;
