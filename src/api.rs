@@ -1197,4 +1197,44 @@ impl RedisConnection {
         }
         Ok(())
     }
+
+    /// Check if the `account` is verified, this is done only through checking
+    /// the `status` field of the hashset of name `account`
+    ///
+    /// # Note:
+    /// The `account` param should be in the "[Account]:[AccountId32]" format
+    ///
+    /// # Return
+    /// `Ok(Some(true))` - Account exist and is verified
+    /// `Ok(Some(false))` - Account exist and is not verified
+    /// `Ok(None)` - Account does not exist
+    /// `Err(e)` - Error occured
+    pub fn is_verified(&mut self, account: &str) -> anyhow::Result<Option<bool>> {
+        match self.get_status(account)? {
+            Some(VerifStatus::Done) => Ok(Some(true)),
+            Some(VerifStatus::Pending) => Ok(Some(false)),
+            None => Ok(None),
+        }
+    }
+
+    /// checks if the hashshet of name `account` is in consistent with it's corresponding
+    /// hashset of name `wallet_id` where as the `account` is consistent of both [Account] and
+    /// [AccountId32]
+    //
+    /// # Note:
+    /// The `account` param should be in the "[Account]:[AccountId32]" format
+    pub fn is_consistent(&mut self, account: &str) -> anyhow::Result<Option<bool>> {
+        if let Some((acc, wallet_id)) = account.rsplit_once(':') {
+            let acc = serde_json::from_str::<Account>(acc)?;
+            if let Some(lstatus) = self
+                .get_accounts(&serde_json::from_str(wallet_id)?)?
+                .get(&acc)
+            {
+                let rstatus: String = self.conn.hget(account, "status")?;
+                let rstatus: VerifStatus = serde_json::from_str(&rstatus)?;
+                return Ok(Some(matches!(rstatus, lstatus)));
+            }
+        }
+        Ok(None)
+    }
 }
