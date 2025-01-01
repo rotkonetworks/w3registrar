@@ -20,6 +20,7 @@ use matrix_sdk::{
 use redis::{self};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use subxt::utils::AccountId32;
 use tokio::time::{sleep, Duration};
 use tracing::info;
 
@@ -277,33 +278,65 @@ async fn handle_incoming(
     // instance of that account
     let accounts = redis_connection.search(format!("{}:*", serde_json::to_string(&acc)?));
     // TODO: handle the account VerifStatus in the HahsMap of accounts under the wallet_id
-    if accounts.len() > 0 {
-        for _acc in accounts {
-            info!("Account: {}", _acc);
-            match redis_connection.get_status(&_acc) {
-                VerifStatus::Pending => {
-                    // TODO: handle this unwrap!
-                    // TODO: changee status iff we make sure that we don't panic on the rest
-                    // of the verification process (cuz imagine we change the account status 
-                    // of the account, and then we want to `signal_done`, but that panics for
-                    // some reason :p)
-                    let challenge = redis_connection
-                        .get_challenge_token_from_account_info(&_acc)
-                        .unwrap();
-                    if text_content.body.eq(&challenge.show()) {
-                        redis_connection.set_status(&_acc, VerifStatus::Done)?;
-                        let id = redis_connection.get_wallet_id(&_acc);
-                        if redis_connection.is_all_verified(&id)? {
-                            register_identity(&id, reg_index, endpoint).await?;
-                            redis_connection.signal_done(&id)?;
-                            info!("All requested accounts from {:?} are now verified", id);
-                        }
-                        break;
-                    }
-                }
-                VerifStatus::Done => {}
-            }
+    if accounts.is_empty() {
+        return Ok(());
+    }
+
+    for acc in accounts {
+        info!("Account: {}", acc);
+        if handle_content(
+            text_content,
+            &mut redis_connection,
+            &acc,
+            reg_index,
+            endpoint,
+        )
+        .await?
+        {
+            break;
         }
+    }
+    Ok(())
+}
+
+/// Handles the incoming message as `text_content`, as it checks it agains the expected
+/// challenge, and if matched it changes the status of `account` to [VerifStatus::Done], this
+/// also checks if all acconts under a given `wallet_id` are registred, if so, it changes
+/// the `status` of the `wallet_id` (given in concatination with the account identifier)
+/// to [VerifStatus::Done]
+async fn handle_content(
+    text_content: &TextMessageEventContent,
+    redis_connection: &mut RedisConnection,
+    account: &str,
+    reg_index: u32,
+    endpoint: &str,
+) -> anyhow::Result<bool> {
+    // NOTE: this will change after this is merged (if-let chaining)
+    // https://github.com/rust-lang/rust/pull/132833
+    if let Ok(Some(false)) = redis_connection.is_verified(&account) {
+        let challenge = redis_connection
+            .get_challenge_token_from_account_info(&account)
+            .unwrap();
+        if text_content.body.eq(&challenge.show()) {
+            redis_connection.set_status(&account, VerifStatus::Done)?;
+            let id = redis_connection.get_wallet_id(&account);
+            signal_done_if_needed(redis_connection, id, reg_index, endpoint).await?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+async fn signal_done_if_needed(
+    redis_connection: &mut RedisConnection,
+    id: AccountId32,
+    reg_index: u32,
+    endpoint: &str,
+) -> anyhow::Result<()> {
+    if redis_connection.is_all_verified(&id)? {
+        register_identity(&id, reg_index, endpoint).await?;
+        redis_connection.signal_done(&id)?;
+        info!("All requested accounts from {:?} are now verified", id);
     }
     Ok(())
 }
