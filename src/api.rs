@@ -890,23 +890,27 @@ impl RedisConnection {
     }
 
     /// Get all pending challenges of `wallet_id` as a [Vec<Vec<String>>]
-    /// The return type may look something like this (using double `[` for display purposes):
-    /// [[["Discord", "asdf123"]], [["Twitter", "abcd123"]], ...]]
-    pub fn get_challenges(&mut self, wallet_id: &AccountId32) -> Vec<Vec<String>> {
-        let mut result = vec![];
-        for account in self.get_accounts_from_status(wallet_id, VerifStatus::Pending) {
-            match self.get_challenge_token_from_account_info(&format!(
-                "{}:{}",
-                &serde_json::to_string(&account).unwrap(),
-                serde_json::to_string(wallet_id).unwrap()
-            )) {
-                Some(token) => {
-                    result.push(vec![account.account_type().to_owned(), token.show()]);
-                }
-                None => {}
-            }
-        }
-        return result;
+    /// Returns pairs of [account_type, challenge_token]
+    pub fn get_challenges(
+        &mut self,
+        wallet_id: &AccountId32,
+    ) -> anyhow::Result<Vec<Vec<String>>> {
+        let wallet_id_str = serde_json::to_string(wallet_id)?;
+
+        Ok(self
+            .get_accounts_from_status(wallet_id, VerifStatus::Pending)
+            .into_iter()
+            .filter_map(|account| {
+                let info = format!(
+                    "{}:{}",
+                    serde_json::to_string(&account).ok()?,
+                    wallet_id_str
+                );
+
+                self.get_challenge_token_from_account_info(&info)
+                    .map(|token| vec![account.account_type().to_owned(), token.show()])
+            })
+            .collect::<Vec<Vec<String>>>())
     }
 
     /// constructing [VerificationFields] object from the registration status of all the accounts
