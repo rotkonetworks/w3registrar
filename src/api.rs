@@ -1041,9 +1041,24 @@ impl RedisConnection {
     ///
     /// # Note:
     /// The `account` should be in the "[Account]:[AccountId32]" format
-    pub fn get_status(&mut self, account: &str) -> VerifStatus {
-        let status: String = self.conn.hget(account, "status").unwrap();
-        serde_json::from_str::<VerifStatus>(&status).unwrap()
+    ///
+    /// # Return
+    /// `Ok(Some(VerifStatus))` - Account exist and no error occured
+    /// `Ok(None)` - Account does not exist exist and no error occured
+    /// `Err(e)` - Error occured
+    pub fn get_status(&mut self, account: &str) -> anyhow::Result<Option<VerifStatus>> {
+        match self
+            .conn
+            .hget::<&str, &str, Option<String>>(account, "status")
+        {
+            Ok(Some(status)) => Ok(Some(serde_json::from_str::<VerifStatus>(&status)?)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(anyhow!(
+                "Error getting status for {}\nError: {:?}",
+                account,
+                e
+            )),
+        }
     }
 
     /// Set the `status` value of a redis hashset of name `account` to the value of
