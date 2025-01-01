@@ -880,13 +880,11 @@ impl RedisConnection {
     }
 
     /// Search through the redis for keys that are similar to the `pattern`
-    pub fn search(&mut self, pattern: String) -> Vec<String> {
-        let mut keys = vec![];
-        let mut res = self.conn.scan_match::<&str, String>(&pattern).unwrap();
-        while let Some(item) = res.next() {
-            keys.push(item);
-        }
-        return keys;
+    pub fn search(&mut self, pattern: String) -> anyhow::Result<Vec<String>> {
+        Ok(self
+            .conn
+            .scan_match::<&str, String>(&pattern)?
+            .collect::<Vec<String>>())
     }
 
     /// Get all pending challenges of `wallet_id` as a [Vec<Vec<String>>]
@@ -1192,7 +1190,7 @@ impl RedisConnection {
             .arg(&serde_json::to_string(who)?)
             .exec(&mut self.conn)?;
 
-        let accounts = self.search(format!("*:{}", serde_json::to_string(&who)?));
+        let accounts = self.search(format!("*:{}", serde_json::to_string(&who)?))?;
         for account in accounts {
             redis::pipe()
                 .cmd("DEL")

@@ -276,7 +276,7 @@ async fn handle_incoming(
     let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
     // since an account could be registred by more than wallet, we need to poll each
     // instance of that account
-    let accounts = redis_connection.search(format!("{}:*", serde_json::to_string(&acc)?));
+    let accounts = redis_connection.search(format!("{}:*", serde_json::to_string(&acc)?))?;
     // TODO: handle the account VerifStatus in the HahsMap of accounts under the wallet_id
     if accounts.is_empty() {
         return Ok(());
