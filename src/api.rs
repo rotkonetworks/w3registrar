@@ -55,31 +55,6 @@ pub struct AcctMetadata {
     pub token: Token,
 }
 
-pub struct RequestTracker {
-    pub req: HashMap<Account, VerifStatus>,
-    pub acc_id: AccountId32,
-}
-
-impl RequestTracker {
-    fn new(req: HashMap<Account, VerifStatus>, acc_id: AccountId32) -> Self {
-        Self { req, acc_id }
-    }
-
-    fn all_done(&self) -> bool {
-        self.req.values().all(|acc| matches!(acc, VerifStatus::Done))
-    }
-
-    fn is_done(&self, acc: &Account) -> bool {
-        match self.req.get(acc) {
-            Some(v) => match v {
-                VerifStatus::Done => return true,
-                VerifStatus::Pending => return false,
-            },
-            None => return false,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Account {
     Twitter(String),
