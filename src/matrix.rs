@@ -315,7 +315,7 @@ async fn handle_content(
     // https://github.com/rust-lang/rust/pull/132833
     if let Ok(Some(false)) = redis_connection.is_verified(&account) {
         let challenge = redis_connection
-            .get_challenge_token_from_account_info(&account)
+            .get_challenge_token_from_account_info(&account)?
             .unwrap();
         if text_content.body.eq(&challenge.show()) {
             redis_connection.set_status(&account, VerifStatus::Done)?;

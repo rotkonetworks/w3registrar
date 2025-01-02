@@ -529,7 +529,7 @@ impl Listener {
                             "message": serde_json::json!({
                                 "info": conn.extract_info(&request.payload)?,
                                 "hash": "TODO",
-                                "pending_challenges": conn.get_challenges(&request.payload),
+                                "pending_challenges": conn.get_challenges(&request.payload)?,
                                 "account": request.payload,
                             }),
                         }));
@@ -794,6 +794,8 @@ impl NodeListener {
                                 .arg(serde_json::to_string(&status)?)
                                 .arg("wallet_id")
                                 .arg(serde_json::to_string(who)?)
+                                .arg("token")
+                                .arg::<Option<String>>(None)
                                 .exec(&mut conn.conn)?;
                         }
                         VerifStatus::Pending => {
@@ -808,7 +810,7 @@ impl NodeListener {
                                 .arg("wallet_id")
                                 .arg(serde_json::to_string(who)?)
                                 .arg("token")
-                                .arg(Token::generate().await.show())
+                                .arg(Some(Token::generate().await.show()))
                                 .exec(&mut conn.conn)?;
                         }
                     }
@@ -889,10 +891,7 @@ impl RedisConnection {
 
     /// Get all pending challenges of `wallet_id` as a [Vec<Vec<String>>]
     /// Returns pairs of [account_type, challenge_token]
-    pub fn get_challenges(
-        &mut self,
-        wallet_id: &AccountId32,
-    ) -> anyhow::Result<Vec<Vec<String>>> {
+    pub fn get_challenges(&mut self, wallet_id: &AccountId32) -> anyhow::Result<Vec<Vec<String>>> {
         let wallet_id_str = serde_json::to_string(wallet_id)?;
 
         Ok(self
@@ -905,8 +904,10 @@ impl RedisConnection {
                     wallet_id_str
                 );
 
-                self.get_challenge_token_from_account_info(&info)
-                    .map(|token| vec![account.account_type().to_owned(), token.show()])
+                match self.get_challenge_token_from_account_info(&info).unwrap() {
+                    Some(token) => Some(vec![account.account_type().to_owned(), token.show()]),
+                    None => None,
+                }
             })
             .collect::<Vec<Vec<String>>>())
     }
@@ -993,7 +994,7 @@ impl RedisConnection {
         match matching_account {
             Some(account) => {
                 let info = make_info(&account)?;
-                Ok(self.get_challenge_token_from_account_info(&info))
+                Ok(self.get_challenge_token_from_account_info(&info)?)
             }
             None => Ok(None),
         }
@@ -1018,10 +1019,21 @@ impl RedisConnection {
     ///     );
     /// )
     /// ```
-    pub fn get_challenge_token_from_account_info(&mut self, account: &str) -> Option<Token> {
-        match self.conn.hget::<&str, &str, String>(account, "token") {
-            Ok(token) => Some(Token::new(token)),
-            Err(_) => None,
+    pub fn get_challenge_token_from_account_info(
+        &mut self,
+        account: &str,
+    ) -> anyhow::Result<Option<Token>> {
+        match self
+            .conn
+            .hget::<&str, &str, Option<String>>(account, "token")
+        {
+            Ok(Some(token)) => Ok(Some(Token::new(token))),
+            Ok(None) => Ok(None),
+            Err(e) => Err(anyhow!(
+                "Couldn't retrive challenge for {}\nError {:?}",
+                account,
+                e
+            )),
         }
     }
 
