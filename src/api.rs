@@ -460,94 +460,103 @@ impl Listener {
         return None;
     }
 
+    pub async fn handle_verification_request(
+        &self,
+        request: VerificationRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
+        let challenge_identifier =
+            format!("{:?}:{}", request.payload.field, request.payload.wallet_id);
+        let acc_type = request.payload.field;
+
+        match conn.get_challenge_token_from_account_type(&request.payload.wallet_id, &acc_type)? {
+            Some(token) => {
+                return Ok(serde_json::json!({
+                    "type": "ok",
+                    "challenge": token.show(),
+                }));
+            }
+            None => {
+                return Ok(serde_json::json!({
+                    "type": "error",
+                    "reason": format!("could not find challenge for {}", challenge_identifier),
+                }));
+            }
+        }
+    }
+
+    pub async fn handle_identity_verification_request(
+        &self,
+        request: VerifyIdentityRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        let challenge_identifier =
+            format!("{:?}:{:?}", request.payload.account, request.payload.field);
+        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
+        match conn.get_challenge_token_from_account_type(
+            &request.payload.account,
+            &request.payload.field,
+        )? {
+            Some(challenge) => {
+                if request.payload.challenge.eq(&challenge.show()) {
+                    return Ok(serde_json::json!({
+                        "type": "ok",
+                        "message": true,
+                    }));
+                } else {
+                    return Ok(serde_json::json!({
+                        "type": "error",
+                        "reason": format!(
+                            "{} is not equal to the challenge of {}",
+                            challenge.show(),
+                            challenge_identifier
+                        ),
+                    }));
+                }
+            }
+            None => {
+                return Ok(serde_json::json!({
+                    "type": "error",
+                    "reason": format!("could not find challenge for {}", challenge_identifier),
+                }));
+            }
+        }
+    }
+
+    pub async fn handle_subscription_request(
+        &self,
+        request: SubscribeAccountStateRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
+        if !conn.contains(&serde_json::to_string(&request.payload.to_owned())?) {
+            return Ok(serde_json::json!({
+                "type": "error",
+                "message": format!("account {} is not registred", request.payload),
+            }));
+        }
+        return Ok(serde_json::json!({
+            "type": "ok",
+            "message": serde_json::json!({
+                "info": conn.extract_info(&request.payload)?,
+                "hash": "TODO",
+                "pending_challenges": conn.get_challenges(&request.payload)?,
+                "account": request.payload,
+            }),
+        }));
+    }
+
     pub async fn handle_incoming<'a>(&self, message: Message) -> anyhow::Result<serde_json::Value> {
         match message {
             Message::Text(text) => {
-                match serde_json::from_str::<SubscribeAccountStateRequest>(&text) {
-                    Ok(request) => {
-                        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
-                        if !conn.contains(&serde_json::to_string(&request.payload.to_owned())?) {
-                            return Ok(serde_json::json!({
-                                "type": "error",
-                                "message": format!("account {} is not registred", request.payload),
-                            }));
-                        }
-                        return Ok(serde_json::json!({
-                            "type": "ok",
-                            "message": serde_json::json!({
-                                "info": conn.extract_info(&request.payload)?,
-                                "hash": "TODO",
-                                "pending_challenges": conn.get_challenges(&request.payload)?,
-                                "account": request.payload,
-                            }),
-                        }));
-                    }
-                    Err(_) => {}
+                if let Ok(request) = serde_json::from_str::<SubscribeAccountStateRequest>(&text) {
+                    return self.handle_subscription_request(request).await;
                 }
 
-                match serde_json::from_str::<VerificationRequest>(&text) {
-                    Ok(request) => {
-                        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
-                        let challenge_identifier =
-                            format!("{:?}:{}", request.payload.field, request.payload.wallet_id);
-                        let acc_type = request.payload.field;
-
-                        match conn.get_challenge_token_from_account_type(
-                            &request.payload.wallet_id,
-                            &acc_type,
-                        )? {
-                            Some(token) => {
-                                return Ok(serde_json::json!({
-                                    "type": "ok",
-                                    "challenge": token.show(),
-                                }));
-                            }
-                            None => {
-                                return Ok(serde_json::json!({
-                                    "type": "error",
-                                    "reason": format!("could not find challenge for {}", challenge_identifier),
-                                }));
-                            }
-                        }
-                    }
-                    Err(_) => {}
+                if let Ok(request) = serde_json::from_str::<VerificationRequest>(&text) {
+                    return self.handle_verification_request(request).await;
                 }
 
-                match serde_json::from_str::<VerifyIdentityRequest>(&text) {
-                    Ok(request) => {
-                        let challenge_identifier =
-                            format!("{:?}:{:?}", request.payload.account, request.payload.field);
-                        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
-                        match conn.get_challenge_token_from_account_type(
-                            &request.payload.account,
-                            &request.payload.field,
-                        )? {
-                            Some(challenge) => {
-                                if request.payload.challenge.eq(&challenge.show()) {
-                                    return Ok(serde_json::json!({
-                                        "type": "ok",
-                                        "message": true,
-                                    }));
-                                } else {
-                                    return Ok(serde_json::json!({
-                                        "type": "error",
-                                        "reason": format!(
-                                            "{} is not equal to the challenge of {}",
-                                            challenge.show(),
-                                            challenge_identifier
-                                        ),
-                                    }));
-                                }
-                            }
-                            None => {
-                                return Ok(serde_json::json!({
-                                    "type": "error",
-                                    "reason": format!("could not find challenge for {}", challenge_identifier),
-                                }));
-                            }
-                        }
-                    }
-                    Err(_) => {}
+                if let Ok(request) = serde_json::from_str::<VerifyIdentityRequest>(&text) {
+                    return self.handle_identity_verification_request(request).await;
                 }
 
                 return Ok(serde_json::json!({
