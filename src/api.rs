@@ -3,7 +3,7 @@
 use anyhow::anyhow;
 use futures::StreamExt;
 use futures_util::SinkExt;
-use redis;
+use redis::{self, RedisError};
 use redis::{Client as RedisClient, Commands};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json;
@@ -937,7 +937,12 @@ impl RedisConnection {
             ))
         };
 
-        let accounts: Vec<Account> = self.get_accounts(&wallet_id)?.keys().cloned().collect();
+        let accounts: Vec<Account> = self
+            .get_accounts(&wallet_id)?
+            .unwrap_or(HashMap::default())
+            .keys()
+            .cloned()
+            .collect();
 
         let matching_account = accounts.into_iter().find(move |account| {
             matches!(
@@ -1109,18 +1114,13 @@ impl RedisConnection {
     pub fn get_accounts(
         &mut self,
         wallet_id: &AccountId32,
-    ) -> anyhow::Result<HashMap<Account, VerifStatus>> {
-        match self
-            .conn
-            .hget::<&str, &str, String>(&serde_json::to_string(wallet_id).unwrap(), "accounts")
-        {
-            Ok(metadata) => Ok(serde_json::from_str(&metadata)?),
-            Err(e) => Err(anyhow!(
-                "Could not get accounts for {}\nError: {}",
-                wallet_id,
-                e
-            )),
-        }
+    ) -> anyhow::Result<Option<HashMap<Account, VerifStatus>>, RedisError> {
+        self.conn
+            .hget::<&str, &str, String>(&serde_json::to_string(wallet_id)?, "accounts")
+            .map(|metadata| {
+                serde_json::from_str::<Option<HashMap<Account, VerifStatus>>>(&metadata)
+                    .unwrap_or(None)
+            })
     }
 
     /// Get all known accounts linked to the `wallet_id` with a rgistration status equal to `status`
@@ -1197,6 +1197,7 @@ impl RedisConnection {
             let acc = serde_json::from_str::<Account>(acc)?;
             if let Some(lstatus) = self
                 .get_accounts(&serde_json::from_str(wallet_id)?)?
+                .unwrap_or(HashMap::default())
                 .get(&acc)
             {
                 let rstatus: String = self.conn.hget(account, "status")?;
