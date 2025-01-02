@@ -980,7 +980,7 @@ impl RedisConnection {
             ))
         };
 
-        let accounts = self.get_accounts(wallet_id);
+        let accounts: Vec<Account> = self.get_accounts(&wallet_id)?.keys().cloned().collect();
 
         let matching_account = accounts.into_iter().find(move |account| {
             matches!(
@@ -1147,21 +1147,22 @@ impl RedisConnection {
     /// Get all known accounts linked to the `wallet_id` without regard to its registration  status
     ///
     /// # Note
-    /// This DOES NOT querry anything from the peoples network, rather it gets its info from the
+    /// This DOES NOT query anything from the peoples network, rather it gets its info from the
     /// `redis` server
-    pub fn get_accounts(&mut self, wallet_id: &AccountId32) -> Vec<Account> {
+    pub fn get_accounts(
+        &mut self,
+        wallet_id: &AccountId32,
+    ) -> anyhow::Result<HashMap<Account, VerifStatus>> {
         match self
             .conn
             .hget::<&str, &str, String>(&serde_json::to_string(wallet_id).unwrap(), "accounts")
         {
-            Ok(metadata) => {
-                let metadata: HashMap<Account, VerifStatus> =
-                    serde_json::from_str(&metadata).unwrap();
-                metadata.keys().cloned().collect()
-            }
-            _ => {
-                vec![]
-            }
+            Ok(metadata) => Ok(serde_json::from_str(&metadata)?),
+            Err(e) => Err(anyhow!(
+                "Could not get accounts for {}\nError: {}",
+                wallet_id,
+                e
+            )),
         }
     }
 
