@@ -1223,13 +1223,10 @@ impl RedisConnection {
     /// `Ok(Some(true))` - Account exist and is verified
     /// `Ok(Some(false))` - Account exist and is not verified
     /// `Ok(None)` - Account does not exist
-    /// `Err(e)` - Error occured
+    /// `Err(e)` - Error occurred
     pub fn is_verified(&mut self, account: &str) -> anyhow::Result<Option<bool>> {
-        match self.get_status(account)? {
-            Some(VerifStatus::Done) => Ok(Some(true)),
-            Some(VerifStatus::Pending) => Ok(Some(false)),
-            None => Ok(None),
-        }
+        Ok(self.get_status(account)?
+            .map(|status| matches!(status, VerifStatus::Done)))
     }
 
     /// checks if the hashshet of name `account` is in consistent with it's corresponding
