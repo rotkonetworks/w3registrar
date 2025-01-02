@@ -66,13 +66,7 @@ impl RequestTracker {
     }
 
     fn all_done(&self) -> bool {
-        for acc in self.req.values() {
-            match acc {
-                VerifStatus::Done => {}
-                VerifStatus::Pending => return false,
-            }
-        }
-        return true;
+        self.req.values().all(|acc| matches!(acc, VerifStatus::Done))
     }
 
     fn is_done(&self, acc: &Account) -> bool {
