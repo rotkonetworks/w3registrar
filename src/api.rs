@@ -298,27 +298,6 @@ enum NotifyAccountState {
 }
 // --------------------------------------
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RegistrationElement {
-    accounts: Vec<(Account, VerifStatus)>,
-    request_status: VerifStatus,
-}
-
-impl RegistrationElement {
-    pub fn new(accounts: Vec<(Account, VerifStatus)>, request_status: VerifStatus) -> Self {
-        Self {
-            accounts,
-            request_status,
-        }
-    }
-
-    pub fn extend(&mut self, accounts: Vec<Account>) {
-        for account in accounts {
-            self.accounts.push((account, VerifStatus::Pending));
-        }
-    }
-}
-
 /// Spawns the Websocket client, Matrix client and the Node(substrate) listener
 pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
     matrix::start_bot(cfg.matrix, &cfg.redis, &cfg.watcher).await?;
