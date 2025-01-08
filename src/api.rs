@@ -774,7 +774,7 @@ impl Listener {
         //     }
         // }
         let feedback: Option<serde_json::Value> = None;
-        let (mut sender, mut reciver) = mpsc::channel::<serde_json::Value>(100);
+        let (sender, mut reciver) = mpsc::channel::<serde_json::Value>(100);
 
         loop {
             if let Ok(Some(v)) = reciver.try_next() {
@@ -809,9 +809,11 @@ impl Listener {
                         info!("reived a subscriber!");
                         info!("subscriber changed to {:?}", id);
 
-        tokio::spawn(async move{
-                        self.spawn_redis_listener(sender.clone(), id).await.unwrap();
-        });
+                        let mut cloned_self = self.clone();
+                        let sender2 = sender.clone();
+                        tokio::spawn(async move {
+                            cloned_self.spawn_redis_listener(sender2, id).await.unwrap();
+                        });
                         info!("Listiner started!");
                         subscriber = None;
                     }
@@ -853,7 +855,7 @@ impl Listener {
             let mut conn = RedisConnection::create_conn(&redis_cfg).unwrap();
             let mut pubsub = conn.conn.as_pubsub();
             pubsub
-                .psubscribe(format!(
+                .subscribe(format!(
                         "__keyspace@0__:{}",
                         serde_json::to_string(&account).unwrap()
                 ))
