@@ -1,12 +1,21 @@
 #![allow(dead_code)]
 
 use anyhow::anyhow;
-use futures::StreamExt;
+use async_stream::stream;
+use futures::channel::mpsc::{self, Sender};
+use futures::stream::SplitSink;
+use futures::task::noop_waker_ref;
+use futures::{Stream, StreamExt};
+use futures_util::pin_mut;
 use futures_util::SinkExt;
 use redis::{self, RedisError};
 use redis::{Client as RedisClient, Commands};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json;
+use std::io::prelude::*;
+use std::io::{BufReader, BufWriter};
+use std::sync::RwLock;
+use std::task::Context;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use subxt::utils::AccountId32;
 use tokio::{
@@ -14,7 +23,9 @@ use tokio::{
     sync::Mutex,
 };
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
 use tracing::{error, info};
+use tungstenite::WebSocket;
 
 use crate::{
     config::{RedisConfig, WatcherConfig, WebsocketConfig},
@@ -523,16 +534,32 @@ impl Listener {
     }
 
     pub async fn handle_subscription_request(
-        &self,
+        &mut self,
         request: SubscribeAccountStateRequest,
+        subscriber: &mut Option<AccountId32>,
     ) -> anyhow::Result<serde_json::Value> {
+        *subscriber = Some(request.payload.clone());
+        // ) -> impl Stream<Item = anyhow::Result<serde_json::Value>> + use<'_> {
+        // self.scheduled = Some(request.payload);
+
+        // stream! {
+        //     let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
+        //     if !conn.contains(&serde_json::to_string(&request.payload.to_owned())?) {
+        //         yield Ok(serde_json::json!({
+        //             "type": "error",
+        //             "message": format!("account {} is not registred", request.payload),
+        //         }));
+        //     }
+        //     let mut pubsub = conn.conn.as_pubsub();
+        //     pubsub.psubscribe(&format!("__keyspace@0__:{}", serde_json::to_string(&request.payload).unwrap())).unwrap();
+        //     for msg in pubsub.get_message() {
+        //         let mut conn = RedisConnection::create_conn(&self.redis_cfg).unwrap();
+        //         if let Some((acc_id, obj)) = morph_msg(msg, conn).await {
+        //             yield Ok(obj)
+        //         }
+        //     }
+        // }
         let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
-        if !conn.contains(&serde_json::to_string(&request.payload.to_owned())?) {
-            return Ok(serde_json::json!({
-                "type": "error",
-                "message": format!("account {} is not registred", request.payload),
-            }));
-        }
         return Ok(serde_json::json!({
             "type": "ok",
             "message": serde_json::json!({
@@ -544,11 +571,11 @@ impl Listener {
         }));
     }
 
-    pub async fn handle_incoming<'a>(&self, message: Message) -> anyhow::Result<serde_json::Value> {
+    pub async fn handle_incoming(&mut self, message: Message) -> anyhow::Result<serde_json::Value> {
         match message {
             Message::Text(text) => {
                 if let Ok(request) = serde_json::from_str::<SubscribeAccountStateRequest>(&text) {
-                    return self.handle_subscription_request(request).await;
+                    // return self.handle_subscription_request(request).await;
                 }
 
                 if let Ok(request) = serde_json::from_str::<VerificationRequest>(&text) {
@@ -569,49 +596,241 @@ impl Listener {
         }
     }
 
-    /// Handles incoming websocket connection
-    pub async fn handle_connection(&self, stream: TcpStream) {
-        let ws_stream = tokio_tungstenite::accept_async(stream)
-            .await
-            .expect("Error during the websocket handshake occurred");
-        let (outgoing, mut incoming) = ws_stream.split();
-        let out = Arc::new(Mutex::new(outgoing));
-        while let Some(Ok(message)) = incoming.next().await {
-            // TODO: makte this return a serde_json::Value
-            match self.handle_incoming(message).await {
-                Ok(v) => {
-                    info!("{}", format!(r#"{{"status": "{:?}""}}"#, v));
-                    out.lock()
-                        .await
-                        .send(Message::Text(format!(
-                            r#"{{"version": "1.0", "payload"": {}}}"#,
-                            v.to_string(),
-                        )))
-                        .await
-                        .unwrap();
-                }
-                Err(e) => {
-                    info!("{}", format!(r#"{{"status": "{:?}"}}"#, e));
-                    out.lock()
-                        .await
-                        .send(Message::Text(format!(
-                            r#"{{"version": "1.0", "payload"": {}}}"#,
-                            e
-                        )))
-                        .await
-                        .unwrap();
+    pub async fn _handle_incoming(
+        &mut self,
+        message: tungstenite::Message,
+        subscriber: &mut Option<AccountId32>,
+    ) -> anyhow::Result<serde_json::Value> {
+        match message {
+            tungstenite::Message::Text(text) => {
+                if let Ok(request) = serde_json::from_str::<SubscribeAccountStateRequest>(&text) {
+                    return self.handle_subscription_request(request, subscriber).await;
+                } else if let Ok(request) = serde_json::from_str::<VerificationRequest>(&text) {
+                    return self.handle_verification_request(request).await;
+                } else if let Ok(request) = serde_json::from_str::<VerifyIdentityRequest>(&text) {
+                    return self.handle_identity_verification_request(request).await;
+                } else {
+                    return Ok(serde_json::json!({
+                        "type": "error",
+                        "message": "unrecognized request format!",
+                    }));
                 }
             }
+            tungstenite::Message::Close(_) => return Err(anyhow!("closing self.connection")),
+            _ => return Err(anyhow!("unrecognized message format!")),
         }
     }
 
-    pub async fn listen(self) -> anyhow::Result<()> {
-        let listener = TcpListener::bind(self.socket_addr).await?;
+    // pub async fn _handle_incoming(
+    //     &mut self,
+    //     message: Message,
+    // ) -> impl Stream<Item = anyhow::Result<serde_json::Value>> + use<'_> {
+    //     stream! {
+    //         match message {
+    //             Message::Text(text) => {
+    //                 // if let Ok(request) = serde_json::from_str::<SubscribeAccountStateRequest>(&text) {
+    //                 //     let responses = self.handle_subscription_request(request).await;
+    //                 //      pin_mut!(responses);
+    //                 //      info!("SubscribeAccountStateRequest");
+    //                 //     while let Some(value) = responses.next().await {
+    //                 //         println!("Value: {:#?}", value);
+    //                 //         yield value;
+    //                 //     }
+    //                 // }else if let Ok(request) = serde_json::from_str::<VerificationRequest>(&text) {
+    //                 //     yield self.handle_verification_request(request).await;
+    //                 // } else if let Ok(request) = serde_json::from_str::<VerifyIdentityRequest>(&text) {
+    //                 //     yield self.handle_identity_verification_request(request).await;
+    //                 // }else {
+    //                 //     yield Ok(serde_json::json!({
+    //                 //         "type": "error",
+    //                 //         "message": "unrecognized request format!",
+    //                 //     }));
+    //                 // }
+    //                 yield Err(anyhow!("todo"))
+    //             }
+    //             Message::Close(_) => yield Err(anyhow!("closing self.connection")),
+    //             _ => yield Err(anyhow!("unrecognized message format!")),
+    //         }
+    //     }
+    // }
+
+    // pub async fn _handle_incoming(
+    //     &self,
+    //     message: Message,
+    // ) -> impl Stream<Item = anyhow::Result<serde_json::Value>> {
+    //     stream! {
+    //         match message {
+    //             Message::Text(text) => {
+    //                 if let Ok(request) = serde_json::from_str::<SubscribeAccountStateRequest>(&text) {
+    //                     yield self.handle_subscription_request(request).await;
+    //                 }
+    //
+    //                 if let Ok(request) = serde_json::from_str::<VerificationRequest>(&text) {
+    //                     yield self.handle_verification_request(request).await;
+    //                 }
+    //
+    //                 if let Ok(request) = serde_json::from_str::<VerifyIdentityRequest>(&text) {
+    //                     yield self.handle_identity_verification_request(request).await;
+    //                 }
+    //
+    //                 yield Ok(serde_json::json!({
+    //                     "type": "error",
+    //                     "message": "unrecognized request format!",
+    //                 }));
+    //             }
+    //             Message::Close(_) => yield Err(anyhow!("closing self.connection")),
+    //             _ => yield Err(anyhow!("unrecognized message format!")),
+    //         }
+    //     }
+    // }
+
+    pub async fn filter_message(message: &Message) -> Option<AccountId32> {
+        match message {
+            Message::Text(text) => {
+                if let Ok(request) = serde_json::from_str::<SubscribeAccountStateRequest>(&text) {
+                    return Some(request.payload);
+                }
+
+                if let Ok(request) = serde_json::from_str::<VerificationRequest>(&text) {
+                    return Some(request.payload.wallet_id);
+                }
+
+                if let Ok(request) = serde_json::from_str::<VerifyIdentityRequest>(&text) {
+                    return Some(request.payload.account);
+                }
+                return None;
+            }
+            _ => return None,
+        }
+    }
+
+    // async fn poll_for_events(
+    //     message: &Message,
+    //     redis_cfg: &RedisConfig,
+    // ) -> anyhow::Result<serde_json::Value> {
+    //     if let Some(acc_id) = Self::filter_message(message).await {
+    //         let mut redis_conn = RedisConnection::create_conn(redis_cfg)?;
+    //         let mut pubsub = redis_conn.conn.as_pubsub();
+    //         pubsub
+    //             .psubscribe(format!("__keyspace@0__:*{}*", acc_id))
+    //             .unwrap();
+    //         for msg in pubsub.get_message() {
+    //             if let Some((id, value)) = morph_msg(msg).await {
+    //                 todo!()
+    //             }
+    //         }
+    //     }
+    //     Err(anyhow!("error occured in redis event polling"))
+    // }
+
+    async fn save_conns(
+        &mut self,
+        message: &Message,
+        out: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+    ) {
+        todo!()
+    }
+
+    /// Handles incoming websocket connection
+    // make this -> ! so we can have a local variable to store if we recived a subscription or not
+    pub async fn handle_connection(&mut self, stream: std::net::TcpStream) {
+        // let mut std_stream = stream.into_std().unwrap();
+        // let write_stream = stream.into_std().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let mut handler = tungstenite::accept(stream).unwrap();
+        // let stream = tokio::net::TcpStream::from_std(stream).unwrap();
+        // let ws_stream = tokio::net::TcpStream::from_std(stream).unwrap();
+        // let ws_stream = tokio_tungstenite::accept_async(ws_stream)
+        //     .await
+        //     .expect("Error during the websocket handshake occurred");
+        //  let (mut outgoing, mut incoming) = ws_stream.split();
+        // // incoming.poll_next_unpin()
+        // let out = Arc::new(Mutex::new(outgoing));
+        let mut subscriber: Option<AccountId32> = None;
+        // let mut socket = WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Server, None);
+        // socket.read();
+        // match self.handle_incoming(message).await {
+        //     Ok(v) => {
+        //         info!("{}", format!(r#"{{"status": "{:?}""}}"#, v));
+        //         out.lock()
+        //             .await
+        //             .send(Message::Text(format!(
+        //                 r#"{{"version": "1.0", "payload"": {}}}"#,
+        //                 v.to_string(),
+        //             )))
+        //             .await
+        //             .unwrap();
+        //     }
+        //     Err(e) => {
+        //         info!("{}", format!(r#"{{"status": "{:?}"}}"#, e));
+        //         out.lock()
+        //             .await
+        //             .send(Message::Text(format!(
+        //                 r#"{{"version": "1.0", "payload"": {}}}"#,
+        //                 e
+        //             )))
+        //             .await
+        //             .unwrap();
+        //     }
+        // }
+        let feedback: Option<serde_json::Value> = None;
+        let (mut sender, mut reciver) = mpsc::channel::<serde_json::Value>(100);
+
         loop {
-            match listener.accept().await {
+            if let Ok(Some(v)) = reciver.try_next() {
+                handler
+                    .send(tungstenite::Message::Text(
+                            format!(r#"{{"version": "1.0", "payload"": {}}}"#, v.to_string(),).into(),
+                    ))
+                    .unwrap();
+                } else if let Ok(message) = handler.read() {
+                    match self._handle_incoming(message, &mut subscriber).await {
+                        Ok(v) => {
+                            info!("{}", format!(r#"{{"status": "{:?}""}}"#, v));
+                        handler
+                            .send(tungstenite::Message::Text(
+                                    format!(r#"{{"version": "1.0", "payload"": {}}}"#, v.to_string(),)
+                                    .into(),
+                            ))
+                            .unwrap();
+                            }
+                        Err(e) => {
+                            info!("{}", format!(r#"{{"status": "{:?}"}}"#, e));
+                            handler
+                                .send(tungstenite::Message::Text(
+                                        format!(r#"{{"version": "1.0", "payload"": {}}}"#, e.to_string(),)
+                                        .into(),
+                                ))
+                                .unwrap();
+                            }
+                    }
+                } else {
+                    if let Some(id) = subscriber {
+                        info!("reived a subscriber!");
+                        info!("subscriber changed to {:?}", id);
+
+        tokio::spawn(async move{
+                        self.spawn_redis_listener(sender.clone(), id).await.unwrap();
+        });
+                        info!("Listiner started!");
+                        subscriber = None;
+                    }
+                }
+        }
+    }
+    pub async fn thing(&mut self, handler: &mut WebSocket<std::net::TcpStream>) {
+        tokio::spawn(async move {
+            // handler.send(tungstenite::Message::Close(None)).unwrap();
+        });
+    }
+
+    pub async fn listen(&mut self) -> ! {
+        let std_listener = std::net::TcpListener::bind(self.socket_addr).unwrap();
+        loop {
+            match std_listener.accept() {
                 Ok((stream, addr)) => {
                     info!("incoming connection from {:?}...", addr);
-                    let clone = self.clone();
+                    let mut clone = self.clone();
                     tokio::spawn(async move {
                         clone.handle_connection(stream).await;
                     });
@@ -623,6 +842,32 @@ impl Listener {
             }
         }
     }
+
+    async fn spawn_redis_listener(
+        &mut self,
+        mut sernder: Sender<serde_json::Value>,
+        account: AccountId32,
+    ) -> anyhow::Result<()> {
+        let redis_cfg = Box::new(self.redis_cfg.clone());
+        info!("starting a task!");
+            let mut conn = RedisConnection::create_conn(&redis_cfg).unwrap();
+            let mut pubsub = conn.conn.as_pubsub();
+            pubsub
+                .psubscribe(format!(
+                        "__keyspace@0__:{}",
+                        serde_json::to_string(&account).unwrap()
+                ))
+                .unwrap();
+            info!("Listening to {:?}", account);
+            for msg in pubsub.get_message() {
+                info!("redis event!");
+                if let Some((acc_id, obj)) = morph_msg(&redis_cfg, msg).await {
+                    info!("OBJ: {:?}", obj);
+                    sernder.send(obj).await.unwrap();
+                }
+            }
+        Ok(())
+    }
 }
 
 /// Spawns a websocket server to listen for incoming registration requests
@@ -633,7 +878,8 @@ pub async fn spawn_ws_serv(
     Listener::new(websocket_cfg, redis_cfg.to_owned())
         .await
         .listen()
-        .await
+        .await;
+    Ok(())
 }
 
 /// Spanws a new node (substrate) listener to listen for incoming events, in particular
@@ -1182,7 +1428,8 @@ impl RedisConnection {
     /// `Ok(None)` - Account does not exist
     /// `Err(e)` - Error occurred
     pub fn is_verified(&mut self, account: &str) -> anyhow::Result<Option<bool>> {
-        Ok(self.get_status(account)?
+        Ok(self
+            .get_status(account)?
             .map(|status| matches!(status, VerifStatus::Done)))
     }
 
@@ -1207,4 +1454,63 @@ impl RedisConnection {
         }
         Ok(None)
     }
+}
+
+// NOTE: shouldn't this return a hashmap of the ws_connections we are interested in?
+pub async fn spawn_redis_listener(
+    redis_cfg: &RedisConfig,
+) -> anyhow::Result<Arc<Mutex<HashMap<[u8; 32], Arc<Mutex<WebSocketStream<TcpStream>>>>>>> {
+    todo!();
+    // RedisListner::new(redis_cfg)?.listen().await
+}
+
+pub struct RedisListner {
+    redis_conn: RedisConnection,
+    ws_conns: HashMap<[u8; 32], Arc<Mutex<WebSocketStream<TcpStream>>>>,
+}
+
+async fn morph_msg(
+    redis_cfg: &RedisConfig,
+    msg: redis::Msg,
+) -> Option<(AccountId32, serde_json::Value)> {
+    // return Ok(serde_json::json!({
+    //     "type": "ok",
+    //     "message": serde_json::json!({
+    //         "info": conn.extract_info(&request.payload)?,
+    //         "hash": "TODO",
+    //         "pending_challenges": conn.get_challenges(&request.payload)?,
+    //         "account": request.payload,
+    //     }),
+    // }));
+    let mut conn = RedisConnection::create_conn(redis_cfg).unwrap();
+    let payload: String = msg.get_payload().unwrap();
+    info!("Got: {:?}", payload);
+    if payload.eq("hset") {
+        let channel_name = msg.get_channel_name();
+        if let Some((_, hname)) = channel_name.split_once(':') {
+            if let Ok(id) = serde_json::from_str::<AccountId32>(hname) {
+                let accounts: String = conn
+                    .conn
+                    .hget(serde_json::to_string(&id).unwrap(), "accounts")
+                    .unwrap();
+                let accounts =
+                    serde_json::from_str::<HashMap<Account, VerifStatus>>(&accounts).unwrap();
+
+                let status: String = conn
+                    .conn
+                    .hget(serde_json::to_string(&id).unwrap(), "status")
+                    .unwrap();
+                let status = serde_json::from_str::<VerifStatus>(&status).unwrap();
+                return Some((
+                    id,
+                    serde_json::json!({
+                        "accounts": accounts,
+                        "status": status
+                    }),
+                ));
+            }
+        }
+    }
+    // let channel = msg.get_channel();
+    None
 }
