@@ -13,7 +13,9 @@ use sp_core::blake2_256;
 use sp_core::Encode;
 use std::str::FromStr;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use subxt::events::EventDetails;
 use subxt::utils::AccountId32;
+use subxt::SubstrateConfig;
 use tokio::{net::TcpStream, sync::Mutex};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
@@ -351,8 +353,7 @@ pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
 }
 
 pub async fn spawn_node_listener() -> anyhow::Result<()> {
-    //    TODO:  work
-    Ok(())
+    NodeListener::new().await?.listen().await
 }
 
 /// Converts the inner of [IdentityData] to a [String]
@@ -1040,13 +1041,25 @@ impl NodeListener {
     /// # Panics
     /// This function will fail if the _redis_url_ is an invalid url to a redis server
     /// or if _node_url_ is not a valid url for a substrate BC node
-    pub async fn new(cfg: WatcherConfig, redis_cfg: RedisConfig) -> anyhow::Result<Self> {
+    pub async fn new() -> anyhow::Result<Self> {
+        let cfg = GLOBAL_CONFIG.lock().await;
         Ok(Self {
-            client: NodeClient::from_url(&cfg.endpoint).await?,
-            redis_cfg,
-            reg_index: cfg.registrar_index,
-            endpoint: cfg.endpoint,
+            client: NodeClient::from_url(&cfg.watcher.endpoint).await?,
+            redis_cfg: cfg.redis.clone(),
+            reg_index: cfg.watcher.registrar_index.clone(),
+            endpoint: cfg.watcher.endpoint.clone(),
         })
+    }
+
+    pub async fn handle_node_events(&mut self, event: EventDetails<SubstrateConfig>) {
+        if let Ok(Some(req)) = event.as_event::<JudgementRequested>() {
+            // TODO: check the registrar index
+            info!("Judgement requested by {}", req.who);
+            info!("status: {:?}", self.handle_registration(&req.who).await);
+        } else if let Ok(Some(req)) = event.as_event::<JudgementUnrequested>() {
+            info!("Judgement unrequested by {}", req.who);
+            info!("status: {:?}", self.cancel_registration(&req.who).await);
+        }
     }
 
     /// Listens for incoming events on the substrate node, in particular
@@ -1059,28 +1072,8 @@ impl NodeListener {
                 for event in block.events().await.unwrap().iter() {
                     let event = event.unwrap();
                     // TODO: check for cancleRequest calls
-                    match event.as_event::<JudgementRequested>() {
-                        Ok(Some(req)) => {
-                            // TODO: check the registrar index
-                            let clone = self.clone();
-                            tokio::spawn(async move {
-                                info!("Judgement requested by {}", req.who);
-                                info!("status: {:?}", clone.handle_registration(&req.who).await);
-                            });
-                        }
-                        _ => {}
-                    }
-
-                    match event.as_event::<JudgementUnrequested>() {
-                        Ok(Some(req)) => {
-                            let clone = self.clone();
-                            tokio::spawn(async move {
-                                info!("Judgement unrequested by {}", req.who);
-                                info!("status: {:?}", clone.cancel_registration(&req.who).await);
-                            });
-                        }
-                        _ => {}
-                    }
+                    let mut self_clone = self.clone();
+                    self_clone.handle_node_events(event).await;
                 }
             }
         });
