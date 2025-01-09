@@ -25,6 +25,7 @@ use crate::config::GLOBAL_CONFIG;
 
 use crate::{
     config::{RedisConfig, WatcherConfig},
+    matrix,
     node::{
         self,
         api::runtime_types::{
@@ -340,15 +341,15 @@ pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
     spawn_node_listener().await?;
     info!("Node listener spawned successfully");
 
+    info!("Spawning matrix bot...");
+    matrix::start_bot().await?;
+    info!("Matrix bot spawned successfully");
+
     // Spawn websocket server
     info!("Spawning websocket server...");
     spawn_ws_serv().await?;
-    info!("Websocket server spawned successfully");
 
-    // Matrix bot is currently disabled
-    // matrix::start_bot(cfg.matrix, &cfg.redis, &cfg.watcher).await?;
-
-    info!("All services started successfully");
+    info!("Services closed!");
     Ok(())
 }
 

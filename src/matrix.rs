@@ -29,7 +29,7 @@ use std::path::Path;
 use crate::{api::RedisConnection, config::WatcherConfig, node::register_identity};
 use crate::{
     api::{Account, VerifStatus},
-    config::{MatrixConfig, RedisConfig},
+    config::{MatrixConfig, RedisConfig, GLOBAL_CONFIG},
     token::AuthToken,
 };
 
@@ -143,14 +143,18 @@ struct MatrixBot {
 }
 
 /// Spanws a Matrix client to handle incoming messages from beeper
-pub async fn start_bot(
-    matrix_cfg: MatrixConfig,
-    redis_cfg: &RedisConfig,
-    watcher_config: &WatcherConfig,
-) -> anyhow::Result<()> {
+pub async fn start_bot() -> anyhow::Result<()> {
+
+  let cfg = GLOBAL_CONFIG.lock().await;
+  let redis_cfg = cfg.redis.clone();
+  let matrix_cfg = cfg.matrix.clone();
+  let watcher_cfg = cfg.watcher.clone();
+
+  // cfg.matrix, &cfg.redis, &cfg.watcher
+
     let client = login(matrix_cfg).await?;
 
-    client.add_event_handler_context((redis_cfg.to_owned(), watcher_config.to_owned()));
+    client.add_event_handler_context((redis_cfg.to_owned(), watcher_cfg.to_owned()));
     client.add_event_handler(on_stripped_state_member);
     client.add_event_handler(on_room_message);
     // create and add context here
