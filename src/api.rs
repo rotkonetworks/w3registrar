@@ -273,6 +273,23 @@ pub struct VerifyIdentityRequest {
     pub payload: ChallengedAccount,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(tag = "type", content = "payload")]
+pub enum WebSocketMessage {
+    SubscribeAccountState(SubscribeAccountStateRequest),
+    RequestVerificationChallenge(VerificationRequest),
+    VerifyIdentity(VerifyIdentityRequest),
+    NotifyAccountState(NotifyAccountState),
+    JsonResult(JsonResult),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct VersionedMessage {
+    pub version: String, // e.g., "1.0"
+    #[serde(flatten)]
+    pub message: WebSocketMessage,
+}
+
 // ------------------
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum SubscribeAccountState {
@@ -359,6 +376,22 @@ impl Listener {
         Self {
             redis_cfg,
             socket_addr: websocket_cfg.socket_addrs().unwrap(),
+        }
+    }
+    
+    async fn process_v1(
+        &mut self,
+        message: WebSocketMessage,
+        subscriber: &mut Option<AccountId32>,
+    ) -> anyhow::Result<serde_json::Value> {
+        match message {
+            WebSocketMessage::SubscribeAccountState(mut req) => {
+                self.handle_subscription_request(req, subscriber).await
+            }
+            WebSocketMessage::VerifyIdentity(mut req) => {
+                self.handle_identity_verification_request(req).await
+            }
+            _ => Err(anyhow!("Unsupported message type for v1")),
         }
     }
 
@@ -546,67 +579,30 @@ impl Listener {
         Ok(response)
     }
 
-    pub async fn _handle_incoming(
+    async fn _handle_incoming(
         &mut self,
         message: tokio_tungstenite::tungstenite::Message,
         subscriber: &mut Option<AccountId32>,
     ) -> anyhow::Result<serde_json::Value> {
-        match message {
-            tokio_tungstenite::tungstenite::Message::Text(text) => {
-                info!("Received text message: {}", text);
-
-                // First try to parse as a generic Value to debug the structure
-                match serde_json::from_str::<serde_json::Value>(&text) {
-                    Ok(val) => info!("Message parsed as JSON: {}", val),
-                    Err(e) => info!("Failed to parse as JSON: {}", e),
-                }
-
-                // Try each request type with detailed error logging
-                match serde_json::from_str::<SubscribeAccountStateRequest>(&text) {
-                    Ok(request) => {
-                        info!("Successfully parsed SubscribeAccountStateRequest: {:?}", request);
-                        let response = self.handle_subscription_request(request, subscriber).await?;
-                        info!("Got subscription response: {:?}", response);
-                        return Ok(response);
+        if let Message::Text(text) = message {
+            match serde_json::from_str::<VersionedMessage>(&text) {
+                Ok(versioned_msg) => {
+                    match versioned_msg.version.as_str() {
+                        "1.0" => self.process_v1(versioned_msg.message, subscriber).await,
+                        _ => Err(anyhow!("Unsupported version: {}", versioned_msg.version)),
                     }
-                    Err(e) => info!("Failed to parse as SubscribeAccountStateRequest: {}", e),
                 }
-
-                match serde_json::from_str::<VerificationRequest>(&text) {
-                    Ok(request) => {
-                        info!("Successfully parsed VerificationRequest: {:?}", request);
-                        return self.handle_verification_request(request).await;
-                    }
-                    Err(e) => info!("Failed to parse as VerificationRequest: {}", e),
+                Err(e) => {
+                    return Err(anyhow!(
+                            "Failed to parse incoming message as VersionedMessage: {}",
+                            e
+                    ));
                 }
-
-                match serde_json::from_str::<VerifyIdentityRequest>(&text) {
-                    Ok(request) => {
-                        info!("Successfully parsed VerifyIdentityRequest: {:?}", request);
-                        return self.handle_identity_verification_request(request).await;
-                    }
-                    Err(e) => info!("Failed to parse as VerifyIdentityRequest: {}", e),
-                }
-
-                info!("Failed to parse as any known request type");
-                Ok(serde_json::json!({
-                    "type": "error",
-                    "message": "unrecognized request format!",
-                    "details": "Could not parse message as any known request type"
-                }))
             }
-            tokio_tungstenite::tungstenite::Message::Close(_) => {
-                Ok(serde_json::json!({
-                    "type": "error",
-                    "message": "connection closed"
-                }))
-            }
-            _ => {
-                Ok(serde_json::json!({
-                    "type": "error",
-                    "message": "unrecognized message format"
-                }))
-            }
+        } else {
+            Ok(serde_json::json!({
+                "error": "Unsupported message format"
+            }))
         }
     }
 
@@ -1489,7 +1485,7 @@ impl RedisConnection {
                 .cmd("DEL")
                 .arg(format!("{}", account))
                 .exec(&mut self.conn)?;
-        }
+            }
         Ok(())
     }
 
@@ -1523,11 +1519,11 @@ impl RedisConnection {
                 .get_accounts(&serde_json::from_str(wallet_id)?)?
                     .unwrap_or(HashMap::default())
                     .get(&acc)
-                    {
-                        let rstatus: String = self.conn.hget(account, "status")?;
-                        let rstatus: VerifStatus = serde_json::from_str(&rstatus)?;
-                        return Ok(Some(matches!(rstatus, lstatus)));
-                    }
+            {
+                let rstatus: String = self.conn.hget(account, "status")?;
+                let rstatus: VerifStatus = serde_json::from_str(&rstatus)?;
+                return Ok(Some(matches!(rstatus, lstatus)));
+            }
         }
         Ok(None)
     }
