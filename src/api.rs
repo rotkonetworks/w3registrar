@@ -749,28 +749,6 @@ impl Listener {
         None
     }
 
-    async fn save_conns(
-        &mut self,
-        message: &Message,
-        out: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
-    ) {
-        todo!()
-    }
-
-    pub async fn spawn_node_listener() -> anyhow::Result<()> {
-        let cfg = GLOBAL_CONFIG.lock().await;
-
-        let listener = NodeListener::new(cfg.watcher.clone(), cfg.redis.clone()).await?;
-
-        tokio::spawn(async move {
-            if let Err(e) = listener.listen().await {
-                tracing::error!("Error in node listener: {:?}", e);
-            }
-        });
-
-        Ok(())
-    }
-
     async fn send_message(
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         msg: String,
@@ -1160,6 +1138,7 @@ pub struct RedisConnection {
     conn: redis::Connection,
 }
 
+// TODO: move this to another file?
 impl RedisConnection {
     pub fn create_conn(addr: &RedisConfig) -> anyhow::Result<Self> {
         let client = RedisClient::open(addr.url()?)
