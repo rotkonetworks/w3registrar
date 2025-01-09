@@ -460,66 +460,23 @@ impl Listener {
                 continue;
             }
 
-            let account_key = match account {
+            match account {
                 Account::Display(name) => {
-                    // Just store the name without any challenge token
-                    let key = format!("Display:{}:{}", name, request.payload);
-                    redis::pipe()
-                        .cmd("HSET")
-                        .arg(&key)
-                        .arg("status")
-                        .arg(serde_json::to_string(&status)?)
-                        .arg("wallet_id")
-                        .arg(request.payload.to_string())
-                        .exec(&mut conn.conn)?;
-                    key
+                    conn.save_account(&request.payload, account, None, VerifStatus::Done)
+                        .await?;
                 }
-                Account::Discord(name) => format!("Discord:{}:{}", name, request.payload),
-                Account::Twitter(name) => format!("Twitter:{}:{}", name, request.payload),
-                Account::Matrix(address) => format!("Matrix:{}:{}", address, request.payload),
-                // TODO:email inbound verified(string input to us)
-                Account::Email(address) => format!("Email:{}:{}", address, request.payload),
-                // Account::Github(name) => format!("Github:{}:{}", name, request.payload),
-                // Account::Web(name) => format!("Web:{}:{}", name, request.payload),
-                // Account::PGPFingerPrint(key) => format!("PGPFingerPrint:{}:{}", key, request.payload),
-                Account::Github(_) => continue,
-                Account::Legal(_) => continue, // not supported
-                Account::Web(_) => continue,
-                Account::PGPFingerPrint(_) => continue,
-            };
-
-            // Only generate and store token for non-Display accounts
-            if !matches!(account, Account::Display(_)) {
-                let token = Token::generate().await;
-                redis::pipe()
-                    .cmd("HSET")
-                    .arg(&account_key)
-                    .arg("status")
-                    .arg(serde_json::to_string(&status)?)
-                    .arg("wallet_id")
-                    .arg(request.payload.to_string())
-                    .arg("token")
-                    .arg(token.show())
-                    .exec(&mut conn.conn)?;
-
-                info!(
-                    "Saved challenge token {} for account {}",
-                    token.show(),
-                    account_key
-                );
+                _ => {
+                    conn.save_account(
+                        &request.payload,
+                        account,
+                        Some(Token::generate().await),
+                        VerifStatus::Pending,
+                    )
+                    .await?;
+                }
             }
         }
-
-        // Store overall account status
-        redis::pipe()
-            .cmd("HSET")
-            .arg(serde_json::to_string(&request.payload)?)
-            .arg("accounts")
-            .arg(serde_json::to_string(&accounts)?)
-            .arg("status")
-            .arg(serde_json::to_string(&VerifStatus::Pending)?)
-            .exec(&mut conn.conn)?;
-
+        conn.save_owner(&request.payload, &accounts).await?;
         Ok(serde_json::json!({
             "type": "ok",
             "message": {
@@ -1085,8 +1042,8 @@ impl NodeListener {
 
                 // TODO: make all commands chained together and then executed
                 // all at once!
-                conn.save_owner(&who, &accounts).await?;
-                conn.save_accounts(&who, accounts).await?;
+                conn.save_owner(who, &accounts).await?;
+                conn.save_accounts(who, accounts).await?;
 
                 return Ok(());
             }
@@ -1573,45 +1530,53 @@ impl RedisConnection {
         accounts: HashMap<Account, VerifStatus>,
     ) -> anyhow::Result<()> {
         for (account, status) in accounts {
-            match status {
-                VerifStatus::Done => {
-                    redis::cmd("HSET")
-                        .arg(format!(
-                            "{}:{}",
-                            serde_json::to_string(&account)?,
-                            serde_json::to_string(who)?
-                        ))
-                        .arg("status")
-                        .arg(serde_json::to_string(&status)?)
-                        .arg("wallet_id")
-                        .arg(serde_json::to_string(who)?)
-                        .arg("token")
-                        .arg::<Option<String>>(None)
-                        .exec(&mut self.conn)?;
-                }
-                VerifStatus::Pending => {
-                    redis::cmd("HSET")
-                        .arg(format!(
-                            "{}:{}",
-                            serde_json::to_string(&account)?,
-                            serde_json::to_string(who)?
-                        ))
-                        .arg("status")
-                        .arg(serde_json::to_string(&status)?)
-                        .arg("wallet_id")
-                        .arg(serde_json::to_string(who)?)
-                        .arg("token")
-                        .arg(Some(Token::generate().await.show()))
-                        .exec(&mut self.conn)?;
+            // we don't save a token for display fields, and we don't
+            // create tokens/challenges for them
+            if let Account::Discord(_) = account {
+                self.save_account(who, &account, None, VerifStatus::Done)
+                    .await?
+            } else {
+                match status {
+                    VerifStatus::Done => self.save_account(who, &account, None, status).await?,
+                    VerifStatus::Pending => {
+                        self.save_account(who, &account, Some(Token::generate().await), status)
+                            .await?;
+                    }
                 }
             }
         }
         Ok(())
     }
 
+    async fn save_account(
+        &mut self,
+        who: &AccountId32,
+        account: &Account,
+        token: Option<Token>,
+        status: VerifStatus,
+    ) -> anyhow::Result<(), RedisError> {
+        info!(
+            "Saving challenge token {:?} for account {:?}",
+            token, account
+        );
+        redis::cmd("HSET")
+            .arg(format!(
+                "{}:{}",
+                serde_json::to_string(&account)?,
+                serde_json::to_string(who)?
+            ))
+            .arg("status")
+            .arg(serde_json::to_string(&status)?)
+            .arg("wallet_id")
+            .arg(serde_json::to_string(who)?)
+            .arg("token")
+            .arg(token.map(|t| t.show()))
+            .exec(&mut self.conn)
+    }
+
     async fn save_owner(
         &mut self,
-        who: &&AccountId32,
+        who: &AccountId32,
         accounts: &HashMap<Account, VerifStatus>,
     ) -> anyhow::Result<(), RedisError> {
         redis::pipe()
