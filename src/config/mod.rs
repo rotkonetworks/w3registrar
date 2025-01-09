@@ -4,7 +4,8 @@ use anyhow::anyhow;
 use std::fs;
 use std::net::{SocketAddr, ToSocketAddrs};
 use url::{ParseError, Url};
-
+use once_cell::sync::Lazy;
+use tokio::sync::Mutex;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -22,6 +23,13 @@ impl Config {
         toml::from_str(&content).map_err(|err| anyhow!("Failed to parse config: {:?}", err))
     }
 }
+
+pub static GLOBAL_CONFIG: Lazy<Mutex<Config>> = Lazy::new(|| {
+    let config_path = "config.toml";
+    let config = Config::load_from(config_path)
+        .expect("Failed to load configuration");
+    Mutex::new(config)
+});
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Nickname(String);

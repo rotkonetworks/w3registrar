@@ -4,13 +4,15 @@ use anyhow::anyhow;
 use futures::channel::mpsc::{self, Sender};
 use futures::stream::SplitSink;
 use futures::stream::SplitStream;
-use futures::{StreamExt};
+use futures::StreamExt;
 use futures_util::SinkExt;
 use redis::{self, RedisError};
 use redis::{Client as RedisClient, Commands};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use std::str::FromStr;
+use sp_core::blake2_256;
+use sp_core::Encode;
 use subxt::utils::AccountId32;
 use tokio::{
     net::TcpStream,
@@ -19,6 +21,9 @@ use tokio::{
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 use tracing::{error, info};
+
+use crate::config::GLOBAL_CONFIG;
+
 
 use crate::{
     config::{RedisConfig, WatcherConfig, WebsocketConfig},
@@ -310,12 +315,12 @@ pub enum VerifyIdentity {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-enum JsonResult {
+pub enum JsonResult {
     JsonResult,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-enum NotifyAccountState {
+pub enum NotifyAccountState {
     NotifyAccountState,
 }
 // --------------------------------------
@@ -323,8 +328,30 @@ enum NotifyAccountState {
 /// Spawns the Websocket client, Matrix client and the Node(substrate) listener
 pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
     //matrix::start_bot(cfg.matrix, &cfg.redis, &cfg.watcher).await?;
-    spawn_node_listener(cfg.watcher, &cfg.redis).await?;
+    spawn_node_listener().await?;
     spawn_ws_serv(cfg.websocket, &cfg.redis).await
+}
+
+
+/// spawns watcher for blockchain
+pub async fn spawn_node_listener() -> anyhow::Result<()> {
+    // Acquire the configuration for the watcher and Redis
+    let cfg = GLOBAL_CONFIG.lock().await;
+    let watcher_cfg = cfg.watcher.clone();
+    let redis_cfg = cfg.redis.clone();
+
+    // Initialize the NodeListener with the watcher configuration
+    let node_listener = NodeListener::new(watcher_cfg, redis_cfg).await?;
+
+    // Start listening for blockchain events
+    tokio::spawn(async move {
+        if let Err(e) = node_listener.listen().await {
+            tracing::error!("Node listener encountered an error: {:?}", e);
+        }
+    });
+
+    tracing::info!("Node listener successfully started.");
+    Ok(())
 }
 
 /// Converts the inner of [IdentityData] to a [String]
@@ -389,11 +416,90 @@ struct Listener {
 }
 
 impl Listener {
-    pub async fn new(websocket_cfg: WebsocketConfig, redis_cfg: RedisConfig) -> Self {
+    pub async fn new() -> Self {
+        let cfg = GLOBAL_CONFIG.lock().await;
         Self {
-            redis_cfg,
-            socket_addr: websocket_cfg.socket_addrs().unwrap(),
+            redis_cfg: cfg.redis.clone(),
+            socket_addr: cfg.websocket.socket_addrs().unwrap(),
         }
+    }
+
+    pub async fn handle_subscription_request(
+        &mut self,
+        request: SubscribeAccountStateRequest,
+        subscriber: &mut Option<AccountId32>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let redis_cfg = &self.redis_cfg;
+
+        // Connect to the node to get registration info
+        let client = NodeClient::from_url("wss://dev.rotko.net/people-rococo").await?;
+        let registration = node::get_registration(&client, &request.payload).await?;
+
+        // Connect to Redis
+        let mut conn = RedisConnection::create_conn(redis_cfg)?;
+
+        // Clear existing data for this account
+        conn.clear_all_related_to(&request.payload).await?;
+
+
+        let cfg = GLOBAL_CONFIG.lock().await;
+        let accounts = filter_accounts(
+            &registration.info,
+            &request.payload,
+            cfg.watcher.registrar_index,
+            &cfg.watcher.endpoint
+        ).await?;
+
+        // For each Pending account, generate and store a verification token
+        for (account, status) in &accounts {
+            if matches!(status, VerifStatus::Pending) {
+                let token = Token::generate().await;
+
+                let account_key = format!(
+                    "{}:{}",
+                    serde_json::to_string(&account)?,
+                    serde_json::to_string(&request.payload)?
+                );
+
+                redis::pipe()
+                    .cmd("HSET")
+                    .arg(&account_key)
+                    .arg("status")
+                    .arg(serde_json::to_string(&status)?)
+                    .arg("wallet_id")
+                    .arg(serde_json::to_string(&request.payload)?)
+                    .arg("token")
+                    .arg(token.show())
+                    .exec(&mut conn.conn)?;
+            }
+        }
+
+        // Store overall account status
+        redis::pipe()
+            .cmd("HSET")
+            .arg(serde_json::to_string(&request.payload)?)
+            .arg("accounts")
+            .arg(serde_json::to_string(&accounts)?)
+            .arg("status")
+            .arg(serde_json::to_string(&VerifStatus::Pending)?)
+            .exec(&mut conn.conn)?;
+
+        Ok(serde_json::json!({
+            "type": "ok",
+            "message": {
+                "info": conn.extract_info(&request.payload)?,
+                "hash": format!("0x{}", hex::encode(blake2_256(&registration.info.encode()))),
+                "pending_challenges": conn.get_challenges(&request.payload)?,
+                "account": request.payload.to_string()
+            }
+        }))
+    }
+
+    /// Generates a hex-encoded blake2 hash of the identity info with 0x prefix
+    fn hash_identity_info(&self, info: &IdentityInfo) -> String {
+        let encoded_info = info.encode();
+        let hash = blake2_256(&encoded_info);
+        format!("0x{}", hex::encode(hash))
     }
 
     async fn process_v1(
@@ -428,28 +534,6 @@ impl Listener {
             },
             _ => Err(anyhow!("Unsupported message type: {}", message.message_type)),
         }
-    }
-
-    pub async fn handle_subscription_request(
-        &mut self,
-        request: SubscribeAccountStateRequest,
-        subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<serde_json::Value> {
-        *subscriber = Some(request.payload.clone());
-        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
-
-        let info = conn.extract_info(&request.payload)?;
-        let pending_challenges = conn.get_challenges(&request.payload)?;
-
-        Ok(serde_json::json!({
-            "type": "ok",
-            "message": {
-                "info": info,
-                "hash": "TODO",
-                "pending_challenges": pending_challenges,
-                "account": request.payload.to_string()
-            }
-        }))
     }
 
     async fn _handle_incoming(
@@ -627,37 +711,13 @@ impl Listener {
     }
 
     pub async fn filter_message(message: &Message) -> Option<AccountId32> {
-        match message {
-            Message::Text(text) => {
-                if let Ok(parsed) = serde_json::from_str::<VersionedMessage>(text) {
-                    if let Some(account_str) = parsed.payload.as_str() {
-                        return AccountId32::from_str(account_str).ok();
-                    }
-                }
-                None
-            }
-            _ => None,
+        if let Message::Text(text) = message {
+            let parsed: VersionedMessage = serde_json::from_str(text).ok()?;
+            let account_str = parsed.payload.as_str()?;
+            return AccountId32::from_str(account_str).ok();
         }
+        None
     }
-
-    // async fn poll_for_events(
-    //     message: &Message,
-    //     redis_cfg: &RedisConfig,
-    // ) -> anyhow::Result<serde_json::Value> {
-    //     if let Some(acc_id) = Self::filter_message(message).await {
-    //         let mut redis_conn = RedisConnection::create_conn(redis_cfg)?;
-    //         let mut pubsub = redis_conn.conn.as_pubsub();
-    //         pubsub
-    //             .psubscribe(format!("__keyspace@0__:*{}*", acc_id))
-    //             .unwrap();
-    //         for msg in pubsub.get_message() {
-    //             if let Some((id, value)) = morph_msg(msg).await {
-    //                 todo!()
-    //             }
-    //         }
-    //     }
-    //     Err(anyhow!("error occured in redis event polling"))
-    // }
 
     async fn save_conns(
         &mut self,
@@ -665,35 +725,6 @@ impl Listener {
         out: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
     ) {
         todo!()
-    }
-
-    /// Handles incoming websocket message
-    async fn handle_websocket_message(
-        &mut self,
-        msg: tokio_tungstenite::tungstenite::Message,
-        subscriber: &mut Option<AccountId32>,
-        sender: &mpsc::Sender<serde_json::Value>,
-    ) -> Result<Option<String>, anyhow::Error> {
-        let response = self._handle_incoming(msg, subscriber).await?;
-
-        // Handle new subscriber if present
-        if let Some(id) = subscriber.take() {
-            info!("New subscriber: {:?}", id);
-            let mut cloned_self = self.clone();
-            let sender = sender.clone();
-            tokio::spawn(async move {
-                if let Err(e) = cloned_self.spawn_redis_listener(sender, id).await {
-                    error!("Redis listener error: {}", e);
-                }
-            });
-        }
-
-        let resp = serde_json::json!({
-            "version": "1.0",
-            "payload": response
-        }).to_string();
-
-        Ok(Some(resp))
     }
 
     async fn send_message(write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>, msg: String) -> Result<(), anyhow::Error> {
@@ -869,6 +900,7 @@ impl Listener {
             }
         }
     }
+
     async fn spawn_redis_listener(
         &mut self,
         mut sender: Sender<serde_json::Value>,
@@ -877,9 +909,7 @@ impl Listener {
         let redis_cfg = self.redis_cfg.clone();
         info!("Starting Redis listener task!");
 
-        // Create a separate task for Redis connection and message processing
         tokio::spawn(async move {
-            // Connect inside the task to ensure connection lives with the task
             let client = match RedisClient::open(redis_cfg.url().unwrap()) {
                 Ok(client) => client,
                 Err(e) => {
@@ -909,7 +939,6 @@ impl Listener {
                 return;
             }
 
-            // Send test message to confirm setup
             if let Err(e) = sender.send(serde_json::json!({
                 "status": "listener_started",
                 "channel": channel
@@ -923,16 +952,9 @@ impl Listener {
                 match pubsub.get_message() {
                     Ok(msg) => {
                         info!("Redis event received: {:?}", msg);
-
                         let result = morph_msg(&redis_cfg, msg).await;
-                        let (acc_id, obj) = match result {
-                            Some(val) => val,
-                            None => continue,
-                        };
-
-                        match sender.send(obj).await {
-                            Ok(_) => info!("Message sent successfully"),
-                            Err(e) => {
+                        if let Some((_, obj)) = result {
+                            if let Err(e) = sender.send(obj).await {
                                 error!("Failed to send message: {:?}", e);
                                 break;
                             }
@@ -957,23 +979,11 @@ pub async fn spawn_ws_serv(
     websocket_cfg: WebsocketConfig,
     redis_cfg: &RedisConfig,
 ) -> anyhow::Result<()> {
-    Listener::new(websocket_cfg, redis_cfg.to_owned())
+    Listener::new()
         .await
         .listen()
         .await;
     Ok(())
-}
-
-/// Spanws a new node (substrate) listener to listen for incoming events, in particular
-/// `requestJudgement` requests
-pub async fn spawn_node_listener(
-    watcher_cfg: WatcherConfig,
-    redis_cfg: &RedisConfig,
-) -> anyhow::Result<()> {
-    NodeListener::new(watcher_cfg, redis_cfg.to_owned())
-        .await?
-        .listen()
-        .await
 }
 
 /// Used to listen/interact with BC events on the substrate node
@@ -1052,8 +1062,14 @@ impl NodeListener {
                 Listener::has_paid_fee(reg.judgements.0)?;
                 let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
                 conn.clear_all_related_to(who).await?;
+
+                let cfg = GLOBAL_CONFIG.lock().await;
                 let accounts =
-                    filter_accounts(&reg.info, who, self.reg_index, &self.endpoint).await?;
+                    filter_accounts(&reg.info,
+                        who,
+                        cfg.watcher.registrar_index,
+                        &cfg.watcher.endpoint
+                    ).await?;
 
                 // TODO: make all commands chained together and then executed
                 // all at once!
