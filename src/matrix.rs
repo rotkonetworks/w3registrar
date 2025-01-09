@@ -61,9 +61,9 @@ async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
     let state_dir = Path::new(&cfg.state_dir);
     let session_path = state_dir.join("session.json");
 
-    info!("Creating client");
+    info!("Creating matrix client");
     let client = Client::builder()
-        .homeserver_url(cfg.homeserver.to_owned())
+        .homeserver_url(cfg.homeserver)
         .store_config(StoreConfig::new())
         .request_config(
             RequestConfig::new()
@@ -96,6 +96,7 @@ async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
         info!("Writing session to {}", session_path.display());
         let session = client.matrix_auth().session().expect("Session missing");
         let session = serde_json::to_string(&session)?;
+        info!("Session content before save: {}", session);
         tokio::fs::write(session_path, session).await?;
     }
 
