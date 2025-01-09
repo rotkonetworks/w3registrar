@@ -26,7 +26,7 @@ use crate::config::GLOBAL_CONFIG;
 
 
 use crate::{
-    config::{RedisConfig, WatcherConfig, WebsocketConfig},
+    config::{RedisConfig, WatcherConfig},
     matrix::{self},
     node::{
         self,
@@ -156,10 +156,13 @@ impl Account {
     pub fn from_string(value: String) -> Option<Self> {
         match value.split_once(":") {
             Some((l, r)) => {
-                info!("\nPlatform: {}\nName: {}", l, r);
+                info!("\nPlatform: {}\nNick: {}", l, r);
                 match &l[1..] {
-                    "discord" => return Some(Self::Discord(String::from(&r[..r.len() - 1]))),
-                    "twitter" => return Some(Self::Twitter(String::from(&r[..r.len() - 1]))),
+                    "discord" => Some(Self::Discord(String::from(&r[..r.len() - 1]))),
+                    "display_name" => Some(Self::Display(String::from(&r[..r.len() - 1]))),
+                    "email" => Some(Self::Email(String::from(&r[..r.len() - 1]))),
+                    "matrix" => Some(Self::Matrix(String::from(&r[..r.len() - 1]))),
+                    "twitter" => Some(Self::Twitter(String::from(&r[..r.len() - 1]))),
                     _ => return None,
                 }
             }
@@ -333,14 +336,14 @@ pub enum NotifyAccountState {
 // --------------------------------------
 
 /// Spawns the Websocket client, Matrix client and the Node(substrate) listener
-pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
-    //matrix::start_bot(cfg.matrix, &cfg.redis, &cfg.watcher).await?;
+pub async fn spawn_services(_cfg: Config) -> anyhow::Result<()> {
+    // NOTE:  disabled due to err500
+    //    matrix::start_bot(cfg.matrix, &cfg.redis, &cfg.watcher).await?;
     spawn_node_listener().await?;
     spawn_ws_serv().await
 }
 
-
-/// spawns watcher for blockchain
+/// Spawns watcher for blockchain
 pub async fn spawn_node_listener() -> anyhow::Result<()> {
     // Acquire the configuration for the watcher and Redis
     let cfg = GLOBAL_CONFIG.lock().await;
@@ -437,9 +440,10 @@ impl Listener {
         subscriber: &mut Option<AccountId32>,
     ) -> anyhow::Result<serde_json::Value> {
         let redis_cfg = &self.redis_cfg;
+        let cfg = GLOBAL_CONFIG.lock().await;
 
         // Connect to the node to get registration info
-        let client = NodeClient::from_url("wss://dev.rotko.net/people-rococo").await?;
+        let client = NodeClient::from_url(&cfg.watcher.endpoint).await?;
         let registration = node::get_registration(&client, &request.payload).await?;
 
         // Connect to Redis
@@ -448,8 +452,6 @@ impl Listener {
         // Clear existing data for this account
         conn.clear_all_related_to(&request.payload).await?;
 
-
-        let cfg = GLOBAL_CONFIG.lock().await;
         let accounts = filter_accounts(
             &registration.info,
             &request.payload,
@@ -457,27 +459,55 @@ impl Listener {
             &cfg.watcher.endpoint
         ).await?;
 
-        // For each Pending account, generate and store a verification token
+        // Process accounts and store in Redis
         for (account, status) in &accounts {
-            if matches!(status, VerifStatus::Pending) {
+            if !matches!(status, VerifStatus::Pending) {
+                continue;
+            }
+
+            let account_key = match account {
+                Account::Display(name) => {
+                    // Just store the name without any challenge token
+                    let key = format!("Display:{}:{}", name, request.payload);
+                    redis::pipe()
+                        .cmd("HSET")
+                        .arg(&key)
+                        .arg("status")
+                        .arg(serde_json::to_string(&status)?)
+                        .arg("wallet_id") 
+                        .arg(request.payload.to_string())
+                        .exec(&mut conn.conn)?;
+                    key
+                },
+                Account::Discord(name) => format!("Discord:{}:{}", name, request.payload),
+                Account::Twitter(name) => format!("Twitter:{}:{}", name, request.payload),
+                Account::Matrix(address) => format!("Matrix:{}:{}", address, request.payload),
+                // TODO:email inbound verified(string input to us)
+                Account::Email(address) => format!("Email:{}:{}", address, request.payload),
+                // Account::Github(name) => format!("Github:{}:{}", name, request.payload),
+                // Account::Web(name) => format!("Web:{}:{}", name, request.payload),
+                // Account::PGPFingerPrint(key) => format!("PGPFingerPrint:{}:{}", key, request.payload),
+                Account::Github(_) => continue,
+                Account::Legal(_) => continue, // not supported
+                Account::Web(_) => continue,
+                Account::PGPFingerPrint(_) => continue,
+            };
+
+            // Only generate and store token for non-Display accounts
+            if !matches!(account, Account::Display(_)) {
                 let token = Token::generate().await;
-
-                let account_key = format!(
-                    "{}:{}",
-                    serde_json::to_string(&account)?,
-                    serde_json::to_string(&request.payload)?
-                );
-
                 redis::pipe()
                     .cmd("HSET")
                     .arg(&account_key)
                     .arg("status")
                     .arg(serde_json::to_string(&status)?)
-                    .arg("wallet_id")
-                    .arg(serde_json::to_string(&request.payload)?)
+                    .arg("wallet_id") 
+                    .arg(request.payload.to_string())
                     .arg("token")
                     .arg(token.show())
                     .exec(&mut conn.conn)?;
+
+                info!("Saved challenge token {} for account {}", token.show(), account_key);
             }
         }
 
@@ -679,7 +709,11 @@ impl Listener {
         request: VerifyIdentityRequest,
     ) -> anyhow::Result<serde_json::Value> {
         let account_id = string_to_account_id(&request.payload.account)?;
-        let challenge_identifier = format!("{:?}:{:?}", account_id, request.payload.field);
+        // TODO: Add networks polkadot/kusama/paseo/rococo
+        let challenge_identifier = format!("{}:{:?}", 
+            request.payload.account,
+            request.payload.field
+        );
         let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
 
         match conn.get_challenge_token_from_account_type(&account_id, &request.payload.field)? {
@@ -979,7 +1013,6 @@ pub async fn spawn_ws_serv() -> anyhow::Result<()> {
         .await
         .listen()
         .await;
-    Ok(())
 }
 
 /// Used to listen/interact with BC events on the substrate node
@@ -1182,7 +1215,6 @@ impl RedisConnection {
         Ok(Self { conn })
     }
 
-
     /// Search through the redis for keys that are similar to the `pattern`
     pub fn search(&mut self, pattern: String) -> anyhow::Result<Vec<String>> {
         Ok(self
@@ -1231,6 +1263,12 @@ impl RedisConnection {
                 match account {
                     Account::Discord(_) => {
                         verif_state.discord = true;
+                    }
+                    Account::Display(_) => {
+                        verif_state.display = true;
+                    }
+                    Account::Email(_) => {
+                        verif_state.email = true;
                     }
                     Account::Twitter(_) => {
                         verif_state.twitter = true;
@@ -1579,7 +1617,7 @@ async fn process_redis_account_change(
     // Extract the hash name from channel
     let channel_name = msg.get_channel_name();
     let (_, hname) = channel_name.split_once(':').or(None)?;
-    
+
     // Parse the account ID
     let id = serde_json::from_str::<AccountId32>(hname).ok()?;
 
@@ -1598,11 +1636,11 @@ async fn process_redis_account_change(
     let status = serde_json::from_str::<VerifStatus>(&status).unwrap();
 
     Some((
-        id,
-        serde_json::json!({
-            "accounts": accounts,
-            "status": status
-        }),
+            id,
+            serde_json::json!({
+                "accounts": accounts,
+                "status": status
+            }),
     ))
 }
 
