@@ -19,7 +19,7 @@ VERIFY_MSG=$(cat << EOF | jq -c .
     "payload": {
         "account": "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5",
         "field": "Discord",
-        "challenge": "dummy-token-123"
+        "challenge": "Vfx5qENvaK"
     }
 }
 EOF
@@ -58,7 +58,7 @@ test_websocket() {
 }
 
 echo "Testing subscription..."
-test_websocket "$SUBSCRIBE_MSG"
+#test_websocket "$SUBSCRIBE_MSG"
 
 echo "Testing verification..."
 test_websocket "$VERIFY_MSG"

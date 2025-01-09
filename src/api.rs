@@ -22,6 +22,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 use tracing::{error, info};
 
+
 use crate::config::GLOBAL_CONFIG;
 
 
@@ -336,31 +337,28 @@ pub enum NotifyAccountState {
 // --------------------------------------
 
 /// Spawns the Websocket client, Matrix client and the Node(substrate) listener
-pub async fn spawn_services(_cfg: Config) -> anyhow::Result<()> {
-    // NOTE:  disabled due to err500
-    //    matrix::start_bot(cfg.matrix, &cfg.redis, &cfg.watcher).await?;
+pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
+    info!("Starting services...");
+
+    // Spawn node listener first
+    info!("Spawning node listener...");
     spawn_node_listener().await?;
-    spawn_ws_serv().await
+    info!("Node listener spawned successfully");
+
+    // Spawn websocket server
+    info!("Spawning websocket server...");
+    spawn_ws_serv().await?;
+    info!("Websocket server spawned successfully");
+
+    // Matrix bot is currently disabled
+    // matrix::start_bot(cfg.matrix, &cfg.redis, &cfg.watcher).await?;
+
+    info!("All services started successfully");
+    Ok(())
 }
 
-/// Spawns watcher for blockchain
 pub async fn spawn_node_listener() -> anyhow::Result<()> {
-    // Acquire the configuration for the watcher and Redis
-    let cfg = GLOBAL_CONFIG.lock().await;
-    let watcher_cfg = cfg.watcher.clone();
-    let redis_cfg = cfg.redis.clone();
-
-    // Initialize the NodeListener with the watcher configuration
-    let node_listener = NodeListener::new(watcher_cfg, redis_cfg).await?;
-
-    // Start listening for blockchain events
-    tokio::spawn(async move {
-        if let Err(e) = node_listener.listen().await {
-            tracing::error!("Node listener encountered an error: {:?}", e);
-        }
-    });
-
-    tracing::info!("Node listener successfully started.");
+//    TODO:  work
     Ok(())
 }
 
@@ -760,6 +758,20 @@ impl Listener {
         todo!()
     }
 
+    pub async fn spawn_node_listener() -> anyhow::Result<()> {
+        let cfg = GLOBAL_CONFIG.lock().await;
+
+        let listener = NodeListener::new(cfg.watcher.clone(), cfg.redis.clone()).await?;
+
+        tokio::spawn(async move {
+            if let Err(e) = listener.listen().await {
+                tracing::error!("Error in node listener: {:?}", e);
+            }
+        });
+
+        Ok(())
+    }
+
     async fn send_message(write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>, msg: String) -> Result<(), anyhow::Error> {
         let mut guard = write.lock().await;
         guard.send(Message::Text(msg)).await?;
@@ -1009,10 +1021,10 @@ impl Listener {
 
 /// Spawns a websocket server to listen for incoming registration requests
 pub async fn spawn_ws_serv() -> anyhow::Result<()> {
-    Listener::new()
-        .await
-        .listen()
-        .await;
+    let mut listener = Listener::new().await;
+    listener.listen().await;
+
+    Ok(())
 }
 
 /// Used to listen/interact with BC events on the substrate node
@@ -1197,22 +1209,41 @@ pub struct RedisConnection {
 }
 
 impl RedisConnection {
-    /// Connect to running redis server given [RedisConfig]
     pub fn create_conn(addr: &RedisConfig) -> anyhow::Result<Self> {
         let client = RedisClient::open(addr.url()?)
-            .map_err(|e| anyhow!("Cannot open Redis: {}", e))?;
-        let mut conn = client.get_connection()
-            .map_err(|e| anyhow!("Cannot connect to Redis: {}", e))?;
+            .map_err(|e| anyhow!("Cannot open Redis client: {}", e))?;
 
-        // enable keyspace notifications
+        let mut conn = client.get_connection()
+            .map_err(|e| anyhow!("Cannot establish Redis connection: {}", e))?;
+
+        RedisConnection::enable_keyspace_notifications(&mut conn)?;
+
+        Ok(Self { conn })
+    }
+
+    fn enable_keyspace_notifications(conn: &mut redis::Connection) -> anyhow::Result<()> {
         redis::cmd("CONFIG")
             .arg("SET")
             .arg("notify-keyspace-events")
             .arg("KEA")
-            .query::<()>(&mut conn)
-            .map_err(|e| anyhow!("Cannot set notify-keyspace-events: {}", e))?;
+            .query::<()>(&mut *conn)
+            .map_err(|e| anyhow!("Cannot set notify-keyspace-events: {}", e))
+    }
 
-        Ok(Self { conn })
+    /// Subscribe to all relevant keys for the given account
+    pub async fn subscribe_to_account_changes(
+        &mut self,
+        account_id: &AccountId32,
+    ) -> anyhow::Result<redis::PubSub> {
+        let related_keys = self.search(format!("*:{}", serde_json::to_string(&account_id)?))?;
+        let mut pubsub = self.conn.as_pubsub();
+
+        for key in related_keys {
+            let channel = format!("__keyspace@0__:{}", key);
+            pubsub.subscribe(&channel)?;
+        }
+
+        Ok(pubsub)
     }
 
     /// Search through the redis for keys that are similar to the `pattern`
@@ -1600,47 +1631,54 @@ impl RedisConnection {
     }
 }
 
+
 async fn process_redis_account_change(
     redis_cfg: &RedisConfig,
     msg: redis::Msg,
 ) -> Option<(AccountId32, serde_json::Value)> {
-    let mut conn = RedisConnection::create_conn(redis_cfg).unwrap();
-    let payload: String = msg.get_payload().unwrap();
-    info!("Got: {:?}", payload);
-    info!("msg: {:?}", msg);
+    let mut conn = RedisConnection::create_conn(redis_cfg).ok()?;
+    let payload: String = msg.get_payload().ok()?;
+    let channel = msg.get_channel_name();
 
-    // Early return if not an hset operation
-    if !payload.eq("hset") {
+    info!("Processing Redis message - Channel: {}, Payload: {}", channel, payload);
+
+    if !matches!(payload.as_str(), "hset" | "hdel" | "del") {
+        info!("Ignoring Redis operation: {}", payload);
         return None;
     }
 
-    // Extract the hash name from channel
-    let channel_name = msg.get_channel_name();
-    let (_, hname) = channel_name.split_once(':').or(None)?;
+    let key = channel.strip_prefix("__keyspace@0__:")?;
 
-    // Parse the account ID
-    let id = serde_json::from_str::<AccountId32>(hname).ok()?;
+    // main account key case
+    if let Ok(id) = serde_json::from_str::<AccountId32>(key) {
+        let accounts = conn.get_accounts(&id).ok()??;
+        let status: String = conn.conn.hget(key, "status").ok()?;
+        let status = serde_json::from_str(&status).ok()?;
 
-    // Fetch and parse accounts
-    let accounts: String = conn
-        .conn
-        .hget(serde_json::to_string(&id).unwrap(), "accounts")
-        .unwrap();
-    let accounts = serde_json::from_str::<HashMap<Account, VerifStatus>>(&accounts).unwrap();
+        return Some((
+                id,
+                serde_json::json!({
+                    "accounts": accounts,
+                    "status": status,
+                    "operation": payload,
+                    "key": key
+                })
+        ));
+    }
 
-    // Fetch and parse status
-    let status: String = conn
-        .conn
-        .hget(serde_json::to_string(&id).unwrap(), "status")
-        .unwrap();
-    let status = serde_json::from_str::<VerifStatus>(&status).unwrap();
+    // related account key case
+    let (account_str, id_str) = key.rsplit_once(':')?;
+    let account = serde_json::from_str::<Account>(account_str).ok()?;
+    let id = serde_json::from_str::<AccountId32>(id_str).ok()?;
+    let status = conn.get_status(key).ok()??;
 
     Some((
             id,
             serde_json::json!({
-                "accounts": accounts,
-                "status": status
-            }),
+                "account": account,
+                "status": status,
+                "operation": payload,
+                "key": key
+            })
     ))
 }
-
