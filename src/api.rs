@@ -998,11 +998,17 @@ impl Listener {
                 match pubsub.get_message() {
                     Ok(msg) => {
                         info!("Redis event received: {:?}", msg);
-                        let result = process_redis_account_change(&redis_cfg, msg).await;
-                        if let Some((_, obj)) = result {
-                            if let Err(e) = sender.send(obj).await {
-                                error!("Failed to send message: {:?}", e);
-                                break;
+                        match process_redis_account_change(&redis_cfg, &msg).await {
+                            Ok(result) => {
+                                if let Some((_, obj)) = result {
+                                    if let Err(e) = sender.send(obj).await {
+                                        error!("Failed to send message: {:?}", e);
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                info!("coudln't process redis msg {:?} because of {:#?}", msg, e)
                             }
                         }
                     }
@@ -1632,54 +1638,56 @@ impl RedisConnection {
     }
 }
 
-
 async fn process_redis_account_change(
     redis_cfg: &RedisConfig,
-    msg: redis::Msg,
-) -> Option<(AccountId32, serde_json::Value)> {
-    let mut conn = RedisConnection::create_conn(redis_cfg).ok()?;
-    let payload: String = msg.get_payload().ok()?;
+    msg: &redis::Msg,
+) -> anyhow::Result<Option<(AccountId32, serde_json::Value)>> {
+    let mut conn = RedisConnection::create_conn(redis_cfg)?;
+    let payload: String = msg.get_payload()?;
     let channel = msg.get_channel_name();
 
-    info!("Processing Redis message - Channel: {}, Payload: {}", channel, payload);
+    info!(
+        "Processing Redis message - Channel: {}, Payload: {}",
+        channel, payload
+    );
 
     if !matches!(payload.as_str(), "hset" | "hdel" | "del") {
         info!("Ignoring Redis operation: {}", payload);
-        return None;
+        return Ok(None);
     }
 
-    let key = channel.strip_prefix("__keyspace@0__:")?;
+    let key = channel.strip_prefix("__keyspace@0__:").unwrap_or_default();
 
     // main account key case
     if let Ok(id) = serde_json::from_str::<AccountId32>(key) {
-        let accounts = conn.get_accounts(&id).ok()??;
-        let status: String = conn.conn.hget(key, "status").ok()?;
-        let status = serde_json::from_str(&status).ok()?;
+        let accounts = conn.get_accounts(&id)?.unwrap_or_default();
+        let status: String = conn.conn.hget(key, "status")?;
+        let status = serde_json::from_str::<VerifStatus>(&status)?;
 
-        return Some((
-                id,
-                serde_json::json!({
-                    "accounts": accounts,
-                    "status": status,
-                    "operation": payload,
-                    "key": key
-                })
-        ));
-    }
-
-    // related account key case
-    let (account_str, id_str) = key.rsplit_once(':')?;
-    let account = serde_json::from_str::<Account>(account_str).ok()?;
-    let id = serde_json::from_str::<AccountId32>(id_str).ok()?;
-    let status = conn.get_status(key).ok()??;
-
-    Some((
+        return Ok(Some((
             id,
             serde_json::json!({
-                "account": account,
+                "accounts": accounts,
                 "status": status,
                 "operation": payload,
                 "key": key
-            })
-    ))
+            }),
+        )));
+    }
+
+    // related account key case
+    let (account_str, id_str) = key.rsplit_once(':').unwrap_or_default();
+    let account = serde_json::from_str::<Account>(account_str)?;
+    let id = serde_json::from_str::<AccountId32>(id_str)?;
+    let status = conn.get_status(key)?.expect("Coudn't get status");
+
+    Ok(Some((
+        id,
+        serde_json::json!({
+            "account": account,
+            "status": status,
+            "operation": payload,
+            "key": key
+        }),
+    )))
 }
