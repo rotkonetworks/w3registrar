@@ -1113,49 +1113,9 @@ impl NodeListener {
 
                 // TODO: make all commands chained together and then executed
                 // all at once!
-                redis::pipe()
-                    .cmd("HSET")
-                    .arg(serde_json::to_string(who)?)
-                    .arg("accounts")
-                    .arg(serde_json::to_string(&accounts)?)
-                    .arg("status")
-                    .arg(serde_json::to_string(&VerifStatus::Pending)?)
-                    .exec(&mut conn.conn)?;
+                conn.save_owner(&who, &accounts).await?;
+                conn.save_accounts(&who, accounts).await?;
 
-                for (account, status) in accounts {
-                    match status {
-                        VerifStatus::Done => {
-                            redis::cmd("HSET")
-                                .arg(format!(
-                                    "{}:{}",
-                                    serde_json::to_string(&account)?,
-                                    serde_json::to_string(who)?
-                                ))
-                                .arg("status")
-                                .arg(serde_json::to_string(&status)?)
-                                .arg("wallet_id")
-                                .arg(serde_json::to_string(who)?)
-                                .arg("token")
-                                .arg::<Option<String>>(None)
-                                .exec(&mut conn.conn)?;
-                        }
-                        VerifStatus::Pending => {
-                            redis::cmd("HSET")
-                                .arg(format!(
-                                    "{}:{}",
-                                    serde_json::to_string(&account)?,
-                                    serde_json::to_string(who)?
-                                ))
-                                .arg("status")
-                                .arg(serde_json::to_string(&status)?)
-                                .arg("wallet_id")
-                                .arg(serde_json::to_string(who)?)
-                                .arg("token")
-                                .arg(Some(Token::generate().await.show()))
-                                .exec(&mut conn.conn)?;
-                        }
-                    }
-                }
                 return Ok(());
             }
             Err(_) => return Err(anyhow!("could not get registration for {}", who)),
@@ -1632,6 +1592,63 @@ impl RedisConnection {
             }
         }
         Ok(None)
+    }
+
+    async fn save_accounts(
+        &mut self,
+        who: &AccountId32,
+        accounts: HashMap<Account, VerifStatus>,
+    ) -> anyhow::Result<()> {
+        for (account, status) in accounts {
+            match status {
+                VerifStatus::Done => {
+                    redis::cmd("HSET")
+                        .arg(format!(
+                            "{}:{}",
+                            serde_json::to_string(&account)?,
+                            serde_json::to_string(who)?
+                        ))
+                        .arg("status")
+                        .arg(serde_json::to_string(&status)?)
+                        .arg("wallet_id")
+                        .arg(serde_json::to_string(who)?)
+                        .arg("token")
+                        .arg::<Option<String>>(None)
+                        .exec(&mut self.conn)?;
+                }
+                VerifStatus::Pending => {
+                    redis::cmd("HSET")
+                        .arg(format!(
+                            "{}:{}",
+                            serde_json::to_string(&account)?,
+                            serde_json::to_string(who)?
+                        ))
+                        .arg("status")
+                        .arg(serde_json::to_string(&status)?)
+                        .arg("wallet_id")
+                        .arg(serde_json::to_string(who)?)
+                        .arg("token")
+                        .arg(Some(Token::generate().await.show()))
+                        .exec(&mut self.conn)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn save_owner(
+        &mut self,
+        who: &&AccountId32,
+        accounts: &HashMap<Account, VerifStatus>,
+    ) -> anyhow::Result<(), RedisError> {
+        redis::pipe()
+            .cmd("HSET")
+            .arg(serde_json::to_string(who)?)
+            .arg("accounts")
+            .arg(serde_json::to_string(&accounts)?)
+            .arg("status")
+            .arg(serde_json::to_string(&VerifStatus::Pending)?)
+            .exec(&mut self.conn)
     }
 }
 
