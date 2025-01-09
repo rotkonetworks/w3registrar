@@ -10,6 +10,7 @@ use redis::{self, RedisError};
 use redis::{Client as RedisClient, Commands};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::str::FromStr;
 use subxt::utils::AccountId32;
 use tokio::{
     net::TcpStream,
@@ -74,6 +75,7 @@ pub enum Account {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum AccountType {
     Discord,
+    Display,
     Twitter,
 }
 
@@ -84,6 +86,7 @@ impl AccountType {
     fn from_str(field: &str) -> Option<Self> {
         match field.to_lowercase().as_str() {
             "discord" => Some(AccountType::Discord),
+            "display_name" => Some(AccountType::Display),
             "twitter" => Some(AccountType::Twitter),
             _ => None,
         }
@@ -230,22 +233,21 @@ impl Account {
 // --------------------------------------
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SubscribeAccountStateRequest {
-    pub version: String,
     #[serde(rename = "type")]
     pub _type: SubscribeAccountState,
+    #[serde(deserialize_with = "ss58_to_account_id32")]
     pub payload: AccountId32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChallengedAccount {
-    pub account: AccountId32,
+    pub account: String,
     pub field: AccountType,
     pub challenge: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VerificationRequest {
-    pub version: String,
     #[serde(rename = "type")]
     pub _type: RequestVerificationChallenge,
     pub payload: RequestedAccount,
@@ -267,9 +269,8 @@ pub struct VerificationResponse {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VerifyIdentityRequest {
-    pub version: String,
     #[serde(rename = "type")]
-    pub _type: VerifyIdentity,
+    pub _type: String,
     pub payload: ChallengedAccount,
 }
 
@@ -283,11 +284,13 @@ pub enum WebSocketMessage {
     JsonResult(JsonResult),
 }
 
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VersionedMessage {
-    pub version: String, // e.g., "1.0"
-    #[serde(flatten)]
-    pub message: WebSocketMessage,
+    pub version: String,
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub payload: serde_json::Value,
 }
 
 // ------------------
@@ -365,6 +368,20 @@ pub fn identity_data_tostring(data: &IdentityData) -> Option<String> {
     }
 }
 
+/// helper function to deserialize SS58 string into AccountId32
+fn ss58_to_account_id32<'de, D>(deserializer: D) -> Result<AccountId32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let ss58: String = Deserialize::deserialize(deserializer)?;
+    AccountId32::from_str(&ss58)
+        .map_err(|e| serde::de::Error::custom(format!("Invalid SS58: {e:?}")))
+}
+
+fn string_to_account_id(s: &str) -> anyhow::Result<AccountId32> {
+    AccountId32::from_str(s).map_err(|e| anyhow!("Invalid account ID: {}", e))
+}
+
 #[derive(Debug, Clone)]
 struct Listener {
     redis_cfg: RedisConfig,
@@ -378,20 +395,99 @@ impl Listener {
             socket_addr: websocket_cfg.socket_addrs().unwrap(),
         }
     }
-    
+
     async fn process_v1(
         &mut self,
-        message: WebSocketMessage,
+        message: VersionedMessage,
         subscriber: &mut Option<AccountId32>,
     ) -> anyhow::Result<serde_json::Value> {
-        match message {
-            WebSocketMessage::SubscribeAccountState(mut req) => {
+        match message.message_type.as_str() {
+            "SubscribeAccountState" => {
+                let payload = message.payload.as_str()
+                    .ok_or_else(|| anyhow!("Payload must be a string"))?;
+                let account_id = AccountId32::from_str(payload)
+                    .map_err(|e| anyhow!("Invalid account ID: {}", e))?;
+
+                let req = SubscribeAccountStateRequest {
+                    _type: SubscribeAccountState::SubscribeAccountState,
+                    payload: account_id,
+                };
+
                 self.handle_subscription_request(req, subscriber).await
+            },
+            "VerifyIdentity" => {
+                let verify_request: ChallengedAccount = serde_json::from_value(message.payload)
+                    .map_err(|e| anyhow!("Invalid VerifyIdentity payload: {}", e))?;
+
+                let internal_request = VerifyIdentityRequest {
+                    _type: "VerifyIdentity".to_string(),
+                    payload: verify_request,
+                };
+
+                self.handle_identity_verification_request(internal_request).await
+            },
+            _ => Err(anyhow!("Unsupported message type: {}", message.message_type)),
+        }
+    }
+
+    pub async fn handle_subscription_request(
+        &mut self,
+        request: SubscribeAccountStateRequest,
+        subscriber: &mut Option<AccountId32>,
+    ) -> anyhow::Result<serde_json::Value> {
+        *subscriber = Some(request.payload.clone());
+        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
+
+        let info = conn.extract_info(&request.payload)?;
+        let pending_challenges = conn.get_challenges(&request.payload)?;
+
+        Ok(serde_json::json!({
+            "type": "ok",
+            "message": {
+                "info": info,
+                "hash": "TODO",
+                "pending_challenges": pending_challenges,
+                "account": request.payload.to_string()
             }
-            WebSocketMessage::VerifyIdentity(mut req) => {
-                self.handle_identity_verification_request(req).await
+        }))
+    }
+
+    async fn _handle_incoming(
+        &mut self,
+        message: tokio_tungstenite::tungstenite::Message,
+        subscriber: &mut Option<AccountId32>,
+    ) -> anyhow::Result<serde_json::Value> {
+        if let Message::Text(text) = message {
+            match serde_json::from_str::<VersionedMessage>(&text) {
+                Ok(versioned_msg) => {
+                    match versioned_msg.version.as_str() {
+                        "1.0" => {
+                            match self.process_v1(versioned_msg, subscriber).await {
+                                Ok(response) => Ok(response),
+                                Err(e) => Ok(serde_json::json!({
+                                    "type": "error",
+                                    "message": e.to_string()
+                                }))
+                            }
+                        },
+                        _ => Ok(serde_json::json!({
+                            "type": "error",
+                            "message": format!("Unsupported version: {}", versioned_msg.version)
+                        }))
+                    }
+                }
+                Err(e) => {
+                    Ok(serde_json::json!({
+                        "type": "error",
+                        "message": format!("Failed to parse message: {}", e)
+                    }))
+                }
             }
-            _ => Err(anyhow!("Unsupported message type for v1")),
+        } else {
+            Ok(serde_json::json!({
+                "type": "error",
+                "message": "Unsupported message format"
+            }))
         }
     }
 
@@ -495,134 +591,52 @@ impl Listener {
         return None;
     }
 
-    pub async fn handle_verification_request(
-        &self,
-        request: VerificationRequest,
-    ) -> anyhow::Result<serde_json::Value> {
-        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
-        let challenge_identifier =
-            format!("{:?}:{}", request.payload.field, request.payload.wallet_id);
-        let acc_type = request.payload.field;
-
-        match conn.get_challenge_token_from_account_type(&request.payload.wallet_id, &acc_type)? {
-            Some(token) => {
-                return Ok(serde_json::json!({
-                    "type": "ok",
-                    "challenge": token.show(),
-                }));
-            }
-            None => {
-                return Ok(serde_json::json!({
-                    "type": "error",
-                    "reason": format!("could not find challenge for {}", challenge_identifier),
-                }));
-            }
-        }
-    }
-
     pub async fn handle_identity_verification_request(
         &self,
         request: VerifyIdentityRequest,
     ) -> anyhow::Result<serde_json::Value> {
-        let challenge_identifier =
-            format!("{:?}:{:?}", request.payload.account, request.payload.field);
+        let account_id = string_to_account_id(&request.payload.account)?;
+        let challenge_identifier = format!("{:?}:{:?}", account_id, request.payload.field);
         let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
-        match conn.get_challenge_token_from_account_type(
-            &request.payload.account,
-            &request.payload.field,
-        )? {
+
+        match conn.get_challenge_token_from_account_type(&account_id, &request.payload.field)? {
             Some(challenge) => {
                 if request.payload.challenge.eq(&challenge.show()) {
-                    return Ok(serde_json::json!({
+                    Ok(serde_json::json!({
                         "type": "ok",
                         "message": true,
-                    }));
+                    }))
                 } else {
-                    return Ok(serde_json::json!({
+                    Ok(serde_json::json!({
                         "type": "error",
                         "reason": format!(
                             "{} is not equal to the challenge of {}",
                             challenge.show(),
                             challenge_identifier
                         ),
-                    }));
+                    }))
                 }
             }
             None => {
-                return Ok(serde_json::json!({
+                Ok(serde_json::json!({
                     "type": "error",
                     "reason": format!("could not find challenge for {}", challenge_identifier),
-                }));
+                }))
             }
-        }
-    }
-
-    pub async fn handle_subscription_request(
-        &mut self,
-        request: SubscribeAccountStateRequest,
-        subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<serde_json::Value> {
-        *subscriber = Some(request.payload.clone());
-        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
-
-        let response = serde_json::json!({
-            "type": "ok",
-            "payload": {
-                "info": conn.extract_info(&request.payload)?,
-                "hash": "TODO",
-                "pending_challenges": conn.get_challenges(&request.payload)?,
-                "account": request.payload,
-            }
-        });
-
-        info!("Subscription response: {:?}", response);
-        Ok(response)
-    }
-
-    async fn _handle_incoming(
-        &mut self,
-        message: tokio_tungstenite::tungstenite::Message,
-        subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<serde_json::Value> {
-        if let Message::Text(text) = message {
-            match serde_json::from_str::<VersionedMessage>(&text) {
-                Ok(versioned_msg) => {
-                    match versioned_msg.version.as_str() {
-                        "1.0" => self.process_v1(versioned_msg.message, subscriber).await,
-                        _ => Err(anyhow!("Unsupported version: {}", versioned_msg.version)),
-                    }
-                }
-                Err(e) => {
-                    return Err(anyhow!(
-                            "Failed to parse incoming message as VersionedMessage: {}",
-                            e
-                    ));
-                }
-            }
-        } else {
-            Ok(serde_json::json!({
-                "error": "Unsupported message format"
-            }))
         }
     }
 
     pub async fn filter_message(message: &Message) -> Option<AccountId32> {
         match message {
             Message::Text(text) => {
-                if let Ok(request) = serde_json::from_str::<SubscribeAccountStateRequest>(&text) {
-                    return Some(request.payload);
+                if let Ok(parsed) = serde_json::from_str::<VersionedMessage>(text) {
+                    if let Some(account_str) = parsed.payload.as_str() {
+                        return AccountId32::from_str(account_str).ok();
+                    }
                 }
-
-                if let Ok(request) = serde_json::from_str::<VerificationRequest>(&text) {
-                    return Some(request.payload.wallet_id);
-                }
-
-                if let Ok(request) = serde_json::from_str::<VerifyIdentityRequest>(&text) {
-                    return Some(request.payload.account);
-                }
-                return None;
+                None
             }
-            _ => return None,
+            _ => None,
         }
     }
 
