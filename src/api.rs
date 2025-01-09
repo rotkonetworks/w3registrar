@@ -81,6 +81,8 @@ pub enum Account {
 pub enum AccountType {
     Discord,
     Display,
+    Email,
+    Matrix,
     Twitter,
 }
 
@@ -92,6 +94,8 @@ impl AccountType {
         match field.to_lowercase().as_str() {
             "discord" => Some(AccountType::Discord),
             "display_name" => Some(AccountType::Display),
+            "email" => Some(AccountType::Email),
+            "matrix" => Some(AccountType::Matrix),
             "twitter" => Some(AccountType::Twitter),
             _ => None,
         }
@@ -216,8 +220,11 @@ impl Account {
     pub fn account_type(&self) -> &str {
         match self {
             Self::Discord(_) => "discord",
-            Self::Twitter(_) => "discord",
-            _ => "unkown",
+            Self::Display(_) => "display_name",
+            Self::Email(_) => "email",
+            Self::Matrix(_) => "matrix",
+            Self::Twitter(_) => "twitter",
+            _ => "unknown",
         }
     }
 
@@ -618,40 +625,32 @@ impl Listener {
         expected: &Vec<Account>,
     ) -> anyhow::Result<(), anyhow::Error> {
         for acc in expected {
-            match acc {
-                Account::Twitter(twit_acc) => {
-                    match identity_data_tostring(&registration.info.twitter) {
-                        Some(identity_twit_acc) => {
-                            if !twit_acc.eq(&identity_twit_acc) {
-                                return Err(anyhow!(
-                                        "got {}, expected {}",
-                                        twit_acc,
-                                        identity_twit_acc
-                                ));
-                            }
-                        }
-                        None => {
-                            return Err(anyhow!("twitter acc {} not in the identity obj", twit_acc))
-                        }
-                    }
-                }
-                Account::Discord(discord_acc) => {
-                    match identity_data_tostring(&registration.info.discord) {
-                        Some(identity_discord_acc) => {
-                            if !discord_acc.eq(&identity_discord_acc) {
-                                return Err(anyhow!(
-                                        "got {}, expected {}",
-                                        discord_acc,
-                                        identity_discord_acc,
-                                ));
-                            }
-                        }
-                        None => {
-                            return Err(anyhow!("discord acc {} not in identity obj", discord_acc))
-                        }
-                    }
-                }
+            let (stored_acc, expected_acc) = match acc {
+                Account::Discord(discord_acc) => (
+                    identity_data_tostring(&registration.info.discord),
+                    discord_acc,
+                ),
+                Account::Display(display_name) => (
+                    identity_data_tostring(&registration.info.display),
+                    display_name,
+                ),
+                Account::Matrix(matrix_acc) => (
+                    identity_data_tostring(&registration.info.matrix),
+                    matrix_acc,
+                ),
+                Account::Twitter(twit_acc) => (
+                    identity_data_tostring(&registration.info.twitter),
+                    twit_acc,
+                ),
                 _ => todo!(),
+            };
+
+            let stored_acc = stored_acc.ok_or_else(|| {
+                anyhow!("{} acc {} not in identity obj", acc.account_type(), expected_acc)
+            })?;
+
+            if !expected_acc.eq(&stored_acc) {
+                return Err(anyhow!("got {}, expected {}", expected_acc, stored_acc));
             }
         }
         Ok(())
@@ -1297,12 +1296,19 @@ impl RedisConnection {
             matches!(
                 (acc_type, account),
                 (AccountType::Discord, Account::Discord(_))
+                | (AccountType::Display, Account::Display(_))
+                | (AccountType::Email, Account::Email(_))
+                | (AccountType::Matrix, Account::Matrix(_))
                 | (AccountType::Twitter, Account::Twitter(_))
             )
         });
 
         // If we found a matching account, get its token
         match matching_account {
+            Some(account) if matches!(account, Account::Display(_)) => {
+                // NOTE:For display names, we only check they exists onchain
+                Ok(None)
+            }
             Some(account) => {
                 let info = make_info(&account)?;
                 Ok(self.get_challenge_token_from_account_info(&info)?)
