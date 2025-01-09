@@ -437,6 +437,7 @@ impl Listener {
         request: SubscribeAccountStateRequest,
         subscriber: &mut Option<AccountId32>,
     ) -> anyhow::Result<serde_json::Value> {
+        *subscriber = Some(request.payload.clone());
         let redis_cfg = &self.redis_cfg;
         let cfg = GLOBAL_CONFIG.lock().await;
 
