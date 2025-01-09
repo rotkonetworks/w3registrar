@@ -336,7 +336,7 @@ pub enum NotifyAccountState {
 pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
     //matrix::start_bot(cfg.matrix, &cfg.redis, &cfg.watcher).await?;
     spawn_node_listener().await?;
-    spawn_ws_serv(cfg.websocket, &cfg.redis).await
+    spawn_ws_serv().await
 }
 
 
@@ -951,7 +951,7 @@ impl Listener {
                 match pubsub.get_message() {
                     Ok(msg) => {
                         info!("Redis event received: {:?}", msg);
-                        let result = morph_msg(&redis_cfg, msg).await;
+                        let result = process_redis_account_change(&redis_cfg, msg).await;
                         if let Some((_, obj)) = result {
                             if let Err(e) = sender.send(obj).await {
                                 error!("Failed to send message: {:?}", e);
@@ -974,10 +974,7 @@ impl Listener {
 }
 
 /// Spawns a websocket server to listen for incoming registration requests
-pub async fn spawn_ws_serv(
-    websocket_cfg: WebsocketConfig,
-    redis_cfg: &RedisConfig,
-) -> anyhow::Result<()> {
+pub async fn spawn_ws_serv() -> anyhow::Result<()> {
     Listener::new()
         .await
         .listen()
@@ -1565,62 +1562,47 @@ impl RedisConnection {
     }
 }
 
-// NOTE: shouldn't this return a hashmap of the ws_connections we are interested in?
-pub async fn spawn_redis_listener(
-    redis_cfg: &RedisConfig,
-) -> anyhow::Result<Arc<Mutex<HashMap<[u8; 32], Arc<Mutex<WebSocketStream<TcpStream>>>>>>> {
-    todo!();
-    // RedisListner::new(redis_cfg)?.listen().await
-}
-
-pub struct RedisListner {
-    redis_conn: RedisConnection,
-    ws_conns: HashMap<[u8; 32], Arc<Mutex<WebSocketStream<TcpStream>>>>,
-}
-
-async fn morph_msg(
+async fn process_redis_account_change(
     redis_cfg: &RedisConfig,
     msg: redis::Msg,
 ) -> Option<(AccountId32, serde_json::Value)> {
-    // return Ok(serde_json::json!({
-    //     "type": "ok",
-    //     "message": serde_json::json!({
-    //         "info": conn.extract_info(&request.payload)?,
-    //         "hash": "TODO",
-    //         "pending_challenges": conn.get_challenges(&request.payload)?,
-    //         "account": request.payload,
-    //     }),
-    // }));
     let mut conn = RedisConnection::create_conn(redis_cfg).unwrap();
     let payload: String = msg.get_payload().unwrap();
     info!("Got: {:?}", payload);
-    if payload.eq("hset") {
-        let channel_name = msg.get_channel_name();
-        if let Some((_, hname)) = channel_name.split_once(':') {
-            if let Ok(id) = serde_json::from_str::<AccountId32>(hname) {
-                let accounts: String = conn
-                    .conn
-                    .hget(serde_json::to_string(&id).unwrap(), "accounts")
-                    .unwrap();
-                let accounts =
-                    serde_json::from_str::<HashMap<Account, VerifStatus>>(&accounts).unwrap();
+    info!("msg: {:?}", msg);
 
-                let status: String = conn
-                    .conn
-                    .hget(serde_json::to_string(&id).unwrap(), "status")
-                    .unwrap();
-                let status = serde_json::from_str::<VerifStatus>(&status).unwrap();
-                return Some((
-                        id,
-                        serde_json::json!({
-                            "accounts": accounts,
-                            "status": status
-                        }),
-                ));
-            }
-        }
+    // Early return if not an hset operation
+    if !payload.eq("hset") {
+        return None;
     }
-    // let channel = msg.get_channel();
-    None
+
+    // Extract the hash name from channel
+    let channel_name = msg.get_channel_name();
+    let (_, hname) = channel_name.split_once(':').or(None)?;
+    
+    // Parse the account ID
+    let id = serde_json::from_str::<AccountId32>(hname).ok()?;
+
+    // Fetch and parse accounts
+    let accounts: String = conn
+        .conn
+        .hget(serde_json::to_string(&id).unwrap(), "accounts")
+        .unwrap();
+    let accounts = serde_json::from_str::<HashMap<Account, VerifStatus>>(&accounts).unwrap();
+
+    // Fetch and parse status
+    let status: String = conn
+        .conn
+        .hget(serde_json::to_string(&id).unwrap(), "status")
+        .unwrap();
+    let status = serde_json::from_str::<VerifStatus>(&status).unwrap();
+
+    Some((
+        id,
+        serde_json::json!({
+            "accounts": accounts,
+            "status": status
+        }),
+    ))
 }
 
