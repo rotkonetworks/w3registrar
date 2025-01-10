@@ -1,23 +1,14 @@
 #!/bin/bash
 
-echo "Creating test payloads..."
+echo "Creating VerifyIdentity payload..."
 
-# Create compact JSON messages
-SUBSCRIBE_MSG=$(cat << EOF | jq -c .
-{
-    "version": "1.0",
-    "type": "SubscribeAccountState",
-    "payload": "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5"
-}
-EOF
-)
-
+# Create Verify JSON message
 VERIFY_MSG=$(cat << EOF | jq -c .
 {
     "version": "1.0",
     "type": "VerifyIdentity",
     "payload": {
-        "account": "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5",
+        "account": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
         "field": "Discord",
         "challenge": "Vfx5qENvaK"
     }
@@ -25,20 +16,11 @@ VERIFY_MSG=$(cat << EOF | jq -c .
 EOF
 )
 
-
-echo "Testing with these payloads:"
-echo "Subscribe payload:"
-echo $SUBSCRIBE_MSG | jq .
-echo
-echo "Verify payload:"
-echo $VERIFY_MSG | jq .
-echo
-
 test_websocket() {
     local message=$1
     local max_attempts=3
     local attempt=1
-    
+
     while [ $attempt -le $max_attempts ]; do
         echo "Attempt $attempt to connect..."
         # Use websocket client mode with explicit text framing
@@ -52,13 +34,13 @@ test_websocket() {
         fi
         attempt=$((attempt + 1))
     done
-    
+
     echo "Failed to connect after $max_attempts attempts"
     return 1
 }
 
-echo "Testing subscription..."
-#test_websocket "$SUBSCRIBE_MSG"
-
+echo "Verify payload:"
+echo $VERIFY_MSG | jq .
+echo
 echo "Testing verification..."
 test_websocket "$VERIFY_MSG"
