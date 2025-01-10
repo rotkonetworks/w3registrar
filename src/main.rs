@@ -12,8 +12,9 @@ use config::Config;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
+        .with_max_level(Level::DEBUG)
         .with_line_number(true)
+        .with_target(true)
         .with_span_events(FmtSpan::CLOSE)
         .init();
 
