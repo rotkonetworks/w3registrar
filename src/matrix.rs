@@ -12,10 +12,7 @@ use matrix_sdk::{
         events::room::{
             create::RoomCreateEventContent,
             member::StrippedRoomMemberEvent,
-            message::{
-                MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent,
-                TextMessageEventContent,
-            },
+            message::{MessageType, OriginalSyncRoomMessageEvent, TextMessageEventContent},
         },
     },
     Client,
@@ -23,15 +20,16 @@ use matrix_sdk::{
 use redis::{self};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use subxt::utils::AccountId32;
 use tokio::time::{sleep, Duration};
 use tracing::info;
 
 use std::path::Path;
 
-use crate::api::RedisConnection;
+use crate::{api::RedisConnection, config::WatcherConfig, node::register_identity};
 use crate::{
     api::{Account, VerifStatus},
-    config::{MatrixConfig, RedisConfig},
+    config::{MatrixConfig, RedisConfig, GLOBAL_CONFIG},
     token::AuthToken,
 };
 
@@ -63,9 +61,9 @@ async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
     let state_dir = Path::new(&cfg.state_dir);
     let session_path = state_dir.join("session.json");
 
-    info!("Creating client");
+    info!("Creating matrix client");
     let client = Client::builder()
-        .homeserver_url(cfg.homeserver.to_owned())
+        .homeserver_url(cfg.homeserver)
         .store_config(StoreConfig::new())
         .request_config(
             RequestConfig::new()
@@ -98,6 +96,7 @@ async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
         info!("Writing session to {}", session_path.display());
         let session = client.matrix_auth().session().expect("Session missing");
         let session = serde_json::to_string(&session)?;
+        info!("Session content before save: {}", session);
         tokio::fs::write(session_path, session).await?;
     }
 
@@ -144,10 +143,18 @@ struct MatrixBot {
 }
 
 /// Spanws a Matrix client to handle incoming messages from beeper
-pub async fn start_bot(matrix_cfg: MatrixConfig, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
+pub async fn start_bot() -> anyhow::Result<()> {
+
+  let cfg = GLOBAL_CONFIG.lock().await;
+  let redis_cfg = cfg.redis.clone();
+  let matrix_cfg = cfg.matrix.clone();
+  let watcher_cfg = cfg.watcher.clone();
+
+  // cfg.matrix, &cfg.redis, &cfg.watcher
+
     let client = login(matrix_cfg).await?;
 
-    client.add_event_handler_context(redis_cfg.to_owned());
+    client.add_event_handler_context((redis_cfg.to_owned(), watcher_cfg.to_owned()));
     client.add_event_handler(on_stripped_state_member);
     client.add_event_handler(on_room_message);
     // create and add context here
@@ -204,7 +211,11 @@ async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client
     });
 }
 
-async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room, ctx: Ctx<RedisConfig>) {
+async fn on_room_message(
+    ev: OriginalSyncRoomMessageEvent,
+    _room: Room,
+    ctx: Ctx<(RedisConfig, WatcherConfig)>,
+) {
     let MessageType::Text(text_content) = ev.content.msgtype else {
         return;
     };
@@ -232,11 +243,17 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room, ctx: Ctx
                                 let sender = arr.get(0).unwrap().to_string();
                                 // creating an account from the extracted sender
                                 match Account::from_string(sender.clone()) {
-                                    Some(acc) => {
-                                        handle_incoming(acc, &text_content, &_room, &ctx.0)
-                                            .await
-                                            .unwrap()
-                                    }
+                                    // TODO: this looks sooo ugly
+                                    Some(acc) => handle_incoming(
+                                        acc,
+                                        &text_content,
+                                        &_room,
+                                        &ctx.0 .0,
+                                        ctx.0 .1.registrar_index,
+                                        &ctx.0 .1.endpoint,
+                                    )
+                                    .await
+                                    .unwrap(),
                                     None => info!("Couldn't create Acc object from {:?}", sender),
                                 }
                             }
@@ -251,46 +268,80 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room, ctx: Ctx
     }
 }
 
+// TODO: this signature looks ugly
 async fn handle_incoming(
     acc: Account,
     text_content: &TextMessageEventContent,
     _room: &Room,
     redis_cfg: &RedisConfig,
+    reg_index: u32,
+    endpoint: &str,
 ) -> anyhow::Result<()> {
     info!("\nAcc: {:#?}\nContent: {:#?}", acc, text_content);
     let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
-    let accs = redis_connection.search(format!("{}:*", serde_json::to_string(&acc)?));
-    if accs.len() > 0 {
-        if text_content.body.eq("Send challenge") {
-            for v in accs {
-                let id = redis_connection.get_wallet_id(&v);
-                let token = redis_connection.get_challenge_token(&v);
-                let msg = RoomMessageEventContent::text_plain(format!(
-                    "wallet id: {}\nchallenge: {}",
-                    id.to_string(),
-                    token.show()
-                ));
-                _room.send(msg).await?;
-            }
-        } else {
-            for _acc in accs {
-                match redis_connection.get_status(&_acc) {
-                    VerifStatus::Pending => {
-                        let challenge = redis_connection.get_challenge_token(&_acc);
-                        if text_content.body.eq(&challenge.show()) {
-                            redis_connection.set_status(&_acc, VerifStatus::Done)?;
-                            let id = redis_connection.get_wallet_id(&_acc);
-                            redis_connection.remove_acc(&id, &acc)?;
-                            if redis_connection.is_all_verified(&id)? {
-                                redis_connection.signal_done(&id)?;
-                            }
-                            break;
-                        }
-                    }
-                    VerifStatus::Done => {}
-                }
-            }
+    // since an account could be registred by more than wallet, we need to poll each
+    // instance of that account
+    let accounts = redis_connection.search(format!("{}:*", serde_json::to_string(&acc)?))?;
+    // TODO: handle the account VerifStatus in the HahsMap of accounts under the wallet_id
+    if accounts.is_empty() {
+        return Ok(());
+    }
+
+    for acc in accounts {
+        info!("Account: {}", acc);
+        if handle_content(
+            text_content,
+            &mut redis_connection,
+            &acc,
+            reg_index,
+            endpoint,
+        )
+        .await?
+        {
+            break;
         }
+    }
+    Ok(())
+}
+
+/// Handles the incoming message as `text_content`, as it checks it agains the expected
+/// challenge, and if matched it changes the status of `account` to [VerifStatus::Done], this
+/// also checks if all acconts under a given `wallet_id` are registred, if so, it changes
+/// the `status` of the `wallet_id` (given in concatination with the account identifier)
+/// to [VerifStatus::Done]
+async fn handle_content(
+    text_content: &TextMessageEventContent,
+    redis_connection: &mut RedisConnection,
+    account: &str,
+    reg_index: u32,
+    endpoint: &str,
+) -> anyhow::Result<bool> {
+    // NOTE: this will change after this is merged (if-let chaining)
+    // https://github.com/rust-lang/rust/pull/132833
+    if let Ok(Some(false)) = redis_connection.is_verified(&account) {
+        let challenge = redis_connection
+            .get_challenge_token_from_account_info(&account)?
+            .unwrap();
+        if text_content.body.eq(&challenge.show()) {
+            redis_connection.set_status(&account, VerifStatus::Done)?;
+            let id = redis_connection.get_wallet_id(&account);
+            signal_done_if_needed(redis_connection, id, reg_index, endpoint).await?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+async fn signal_done_if_needed(
+    redis_connection: &mut RedisConnection,
+    id: AccountId32,
+    reg_index: u32,
+    endpoint: &str,
+) -> anyhow::Result<()> {
+    if redis_connection.is_all_verified(&id)? {
+        register_identity(&id, reg_index, endpoint).await?;
+        redis_connection.signal_done(&id)?;
+        info!("All requested accounts from {:?} are now verified", id);
     }
     Ok(())
 }

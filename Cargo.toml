@@ -29,6 +29,9 @@ tokio-tungstenite = "0.24.0"
 futures-util = "0.3.31"
 subxt-signer = "0.38.0"
 redis = { version = "0.27.6", features = ["aio", "json", "log", "tokio-comp", "uuid"] }
+url = "2"
+once_cell = "1.20"
+tungstenite = "0.26.1"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

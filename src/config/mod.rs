@@ -2,8 +2,10 @@
 use crate::node::identity::events::judgement_requested::RegistrarIndex;
 use anyhow::anyhow;
 use std::fs;
-use toml;
-
+use std::net::{SocketAddr, ToSocketAddrs};
+use url::{ParseError, Url};
+use once_cell::sync::Lazy;
+use tokio::sync::Mutex;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -22,6 +24,13 @@ impl Config {
     }
 }
 
+pub static GLOBAL_CONFIG: Lazy<Mutex<Config>> = Lazy::new(|| {
+    let config_path = "config.toml";
+    let config = Config::load_from(config_path)
+        .expect("Failed to load configuration");
+    Mutex::new(config)
+});
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Nickname(String);
 
@@ -37,46 +46,41 @@ pub struct MatrixConfig {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct RedisConfig {
-    pub ip: [u8; 4],
+    pub host: String,
     pub port: u16,
-    pub username: String,
-    pub password: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
 }
 
 impl Default for RedisConfig {
     fn default() -> Self {
         Self {
-            ip: [127, 0, 0, 1],
+            host: "127.0.0.1".to_string(),
             port: 6379,
-            username: String::new(),
-            password: String::new(),
+            username: None,
+            password: None,
         }
     }
 }
 
 impl RedisConfig {
-    pub fn to_full_domain(&self) -> String {
-        if !self.username.is_empty() || !self.password.is_empty() {
-            return format!(
-                "redis://{}:{}@{}.{}.{}.{}:{}/",
-                self.username,
-                self.password,
-                self.ip[0],
-                self.ip[1],
-                self.ip[2],
-                self.ip[3],
-                self.port
-            );
-        } else {
-            return format!(
-                "redis://{}.{}.{}.{}:{}/",
-                self.ip[0], self.ip[1], self.ip[2], self.ip[3], self.port
-            );
+    // TODO: handle the `unwrap` calls
+    /// Returns a [Url] from the parsed config
+    pub fn url(&self) -> anyhow::Result<Url, ParseError> {
+        let mut url = Url::parse(&format!("redis://{}:{}", self.host, self.port))?;
+        match &self.username {
+            Some(username) => url.set_username(&username).unwrap(),
+            _ => {}
         }
+        match &self.password {
+            Some(password) => url.set_password(Some(&password)).unwrap(),
+            _ => {}
+        }
+        Ok(url)
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct WatcherConfig {
     pub endpoint: String,
     pub registrar_index: RegistrarIndex,
@@ -85,15 +89,24 @@ pub struct WatcherConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct WebsocketConfig {
-    pub ip: [u8; 4],
+    pub host: String,
     pub port: u16,
 }
 
 impl Default for WebsocketConfig {
     fn default() -> Self {
         Self {
-            ip: [127, 0, 0, 1],
+            host: "127.0.0.1".to_string(),
             port: 8080,
         }
+    }
+}
+
+impl WebsocketConfig {
+    pub fn socket_addrs(&self) -> Option<SocketAddr> {
+        format!("{}:{}", self.host, self.port)
+            .to_socket_addrs()
+            .unwrap()
+            .next()
     }
 }

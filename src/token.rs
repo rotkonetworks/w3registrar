@@ -14,6 +14,12 @@ pub struct Token {
     expected_message: String,
 }
 
+impl Token {
+    pub fn new(token: String) -> Self {
+        Self { expected_message: token }
+    }
+}
+
 impl From<String> for Token {
     fn from(value: String) -> Self {
         Self {
