@@ -19,7 +19,7 @@ use subxt::SubstrateConfig;
 use tokio::{net::TcpStream, sync::Mutex};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
-use tracing::{error, info};
+use tracing::{debug, error, info, warn, Level, span, Instrument};
 
 use crate::config::GLOBAL_CONFIG;
 
@@ -201,7 +201,8 @@ impl Account {
         if let Some(acc) = value.pgp_fingerprint {
             result.push(Account::PGPFingerprint(acc))
         }
-        return result;
+        info!("Found accounts: {:?}", result);
+        result
     }
 
     pub fn inner(&self) -> String {
@@ -359,8 +360,7 @@ pub async fn spawn_node_listener() -> anyhow::Result<()> {
 
 /// Converts the inner of [IdentityData] to a [String]
 pub fn identity_data_tostring(data: &IdentityData) -> Option<String> {
-    info!("Data: {:?}", data);
-    match data {
+    let result = match data {
         IdentityData::Raw0(v) => Some(String::from_utf8_lossy(v).to_string()),
         IdentityData::Raw1(v) => Some(String::from_utf8_lossy(v).to_string()),
         IdentityData::Raw2(v) => Some(String::from_utf8_lossy(v).to_string()),
@@ -395,7 +395,9 @@ pub fn identity_data_tostring(data: &IdentityData) -> Option<String> {
         IdentityData::Raw31(v) => Some(String::from_utf8_lossy(v).to_string()),
         IdentityData::Raw32(v) => Some(String::from_utf8_lossy(v).to_string()),
         _ => None,
-    }
+    };
+    debug!("data: {:?}", result);
+    result
 }
 
 /// helper function to deserialize SS58 string into AccountId32
@@ -626,6 +628,9 @@ impl Listener {
                 ),
                 Account::Twitter(twit_acc) => {
                     (identity_data_tostring(&registration.info.twitter), twit_acc)
+                },
+                Account::Email(email_acc) => {
+                    (identity_data_tostring(&registration.info.email), email_acc)
                 }
                 _ => todo!(),
             };
@@ -720,143 +725,234 @@ impl Listener {
         &mut self,
         write: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         mut read: SplitStream<WebSocketStream<TcpStream>>,
+        span: tracing::Span,
     ) {
         let mut subscriber: Option<AccountId32> = None;
         let (sender, mut receiver) = mpsc::channel::<serde_json::Value>(100);
 
         loop {
             tokio::select! {
-                // Handle messages sent to this task via the `sender` channel
                 Some(msg) = receiver.next() => {
-                    // Prepare the response
-                    let response = serde_json::json!({
-                        "version": "1.0",
-                        "payload": msg
-                    });
-
-                    // Serialize and send the message
-                    let serialized = match serde_json::to_string(&response) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!("Failed to serialize response: {}", e);
-                            continue;
-                        }
-                    };
-
-                    if let Err(e) = Self::send_message(&write, serialized).await {
-                        error!("Failed to send message: {}", e);
+                    if !self.handle_channel_message(&write, msg, &span).await {
                         break;
                     }
                 }
 
-                // Handle incoming WebSocket messages
                 Some(msg_result) = read.next() => {
-                    match msg_result {
-                        Ok(Message::Close(_)) => {
-                            info!("WebSocket connection closed");
-                            break;
-                        }
-                        Ok(msg) => {
-                            // Process the incoming message
-                            match self._handle_incoming(msg, &mut subscriber).await {
-                                Ok(response) => {
-                                    let formatted_response = serde_json::json!({
-                                        "version": "1.0",
-                                        "payload": response
-                                    });
-
-                                    // Serialize and send the response
-                                    let serialized = match serde_json::to_string(&formatted_response) {
-                                        Ok(s) => s,
-                                        Err(e) => {
-                                            error!("Failed to serialize response: {}", e);
-                                            continue;
-                                        }
-                                    };
-
-                                    if let Err(e) = Self::send_message(&write, serialized).await {
-                                        error!("Failed to send response: {}", e);
-                                        break;
-                                    }
-
-                                    // Handle new subscribers and spawn Redis listener
-                                    if let Some(id) = subscriber.take() {
-                                        info!("New subscriber: {:?}", id);
-                                        let mut cloned_self = self.clone();
-                                        let sender = sender.clone();
-                                        tokio::spawn(async move {
-                                            if let Err(e) = cloned_self.spawn_redis_listener(sender, id).await {
-                                                error!("Redis listener error: {}", e);
-                                            }
-                                        });
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("Error handling message: {}", e);
-                                    let error_response = serde_json::json!({
-                                        "version": "1.0",
-                                        "error": e.to_string()
-                                    });
-
-                                    // Serialize and send the error response
-                                    let serialized = match serde_json::to_string(&error_response) {
-                                        Ok(s) => s,
-                                        Err(e) => {
-                                            error!("Failed to serialize error response: {}", e);
-                                            continue;
-                                        }
-                                    };
-
-                                    if let Err(e) = Self::send_message(&write, serialized).await {
-                                        error!("Failed to send error response: {}", e);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("WebSocket error: {}", e);
-                            break;
-                        }
+                    if !self.handle_ws_message(&write, msg_result, &mut subscriber, sender.clone(), &span).await {
+                        break;
                     }
                 }
 
-                // Fallback case if no other branches are matched
                 else => {
-                    error!("Unexpected end of message streams");
+                    error!(parent: &span, "Unexpected end of message streams");
                     break;
                 }
+            }
+        }
+        info!(parent: &span, "WebSocket connection closed");
+    }
+
+    async fn handle_channel_message(
+        &self,
+        write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+        msg: serde_json::Value,
+        span: &tracing::Span,
+    ) -> bool {
+        let response = serde_json::json!({
+            "version": "1.0",
+            "payload": msg
+        });
+
+        let resp_type = msg.get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        match serde_json::to_string(&response) {
+            Ok(serialized) => {
+                debug!(parent: span, response_type = %resp_type, "Sending response");
+                match Self::send_message(write, serialized).await {
+                    Ok(_) => true,
+                    Err(e) => {
+                        error!(parent: span, error = %e, "Failed to send message");
+                        false
+                    }
+                }
+            },
+            Err(e) => {
+                error!(parent: span, error = %e, "Failed to serialize response");
+                true
+            }
+        }
+    }
+
+    async fn handle_ws_message(
+        &mut self,
+        write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+        msg_result: Result<Message, tokio_tungstenite::tungstenite::Error>,
+        subscriber: &mut Option<AccountId32>,
+        sender: Sender<serde_json::Value>,
+        span: &tracing::Span,
+    ) -> bool {
+        match msg_result {
+            Ok(Message::Text(text)) => {
+                self.handle_text_message(write, text, subscriber, sender, span).await
+            },
+            Ok(Message::Close(_)) => {
+                info!(parent: span, "Received close frame");
+                false
+            },
+            Ok(_) => {
+                debug!(parent: span, "Received non-text message");
+                true
+            },
+            Err(e) => {
+                error!(parent: span, error = %e, "WebSocket error");
+                false
+            }
+        }
+    }
+
+    async fn handle_text_message(
+        &mut self,
+        write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+        text: String,
+        subscriber: &mut Option<AccountId32>,
+        sender: Sender<serde_json::Value>,
+        span: &tracing::Span,
+    ) -> bool {
+        let parsed: VersionedMessage = match serde_json::from_str(&text) {
+            Ok(msg) => msg,
+            Err(_) => {
+                error!(parent: span, "Failed to parse WebSocket message");
+                return true;
+            }
+        };
+
+        info!(
+            parent: span,
+            message_version = %parsed.version,
+            message_type = %parsed.message_type,
+            "Received WebSocket message"
+        );
+
+        match self._handle_incoming(Message::Text(text), subscriber).await {
+            Ok(response) => self.handle_successful_response(write, response, subscriber, sender, span).await,
+            Err(e) => self.handle_error_response(write, e, span).await,
+        }
+    }
+
+    async fn handle_successful_response(
+        &self,
+        write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+        response: serde_json::Value,
+        subscriber: &mut Option<AccountId32>,
+        sender: Sender<serde_json::Value>,
+        span: &tracing::Span,
+    ) -> bool {
+        let formatted_response = serde_json::json!({
+            "version": "1.0",
+            "payload": response
+        });
+
+        let serialized = match serde_json::to_string(&formatted_response) {
+            Ok(s) => s,
+            Err(e) => {
+                error!(parent: span, error = %e, "Failed to serialize response");
+                return true;
+            }
+        };
+
+        let resp_type = response.get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        debug!(parent: span, response_type = %resp_type, "Sending response");
+
+        if let Err(e) = Self::send_message(write, serialized).await {
+            error!(parent: span, error = %e, "Failed to send response");
+            return false;
+        }
+
+        if let Some(id) = subscriber.take() {
+            info!(parent: span, subscriber_id = %id, "New subscriber registered");
+            let mut cloned_self = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = cloned_self.spawn_redis_listener(sender, id).await {
+                    error!(error = %e, "Redis listener error");
+                }
+            });
+        }
+
+        true
+    }
+
+    async fn handle_error_response(
+        &self,
+        write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+        error: anyhow::Error,
+        span: &tracing::Span,
+    ) -> bool {
+        error!(parent: span, error = %error, "Error handling message");
+
+        let error_response = serde_json::json!({
+            "version": "1.0",
+            "error": error.to_string()
+        });
+
+        match serde_json::to_string(&error_response) {
+            Ok(serialized) => {
+                match Self::send_message(write, serialized).await {
+                    Ok(_) => true,
+                    Err(e) => {
+                        error!(parent: span, error = %e, "Failed to send error response");
+                        false
+                    }
+                }
+            }
+            Err(e) => {
+                error!(parent: span, error = %e, "Failed to serialize error response");
+                true
             }
         }
     }
 
     /// Handles incoming websocket connection
     pub async fn handle_connection(&mut self, stream: std::net::TcpStream) {
+        let peer_addr = stream.peer_addr().map_or("unknown".to_string(), |addr| addr.to_string());
+        let conn_span = span!(Level::INFO, "ws_connection", peer_addr = %peer_addr);
+
+        info!(parent: &conn_span, "New WebSocket connection attempt");
+
         let tokio_stream = match tokio::net::TcpStream::from_std(stream) {
-            Ok(stream) => stream,
+            Ok(stream) => {
+                debug!(parent: &conn_span, "Successfully converted to tokio TcpStream");
+                stream
+            },
             Err(e) => {
-                error!("Failed to convert to tokio TcpStream: {}", e);
+                error!(parent: &conn_span, error = %e, "Failed to convert to tokio TcpStream");
                 return;
             }
         };
 
         let ws_stream = match tokio_tungstenite::accept_async(tokio_stream).await {
-            Ok(stream) => stream,
+            Ok(stream) => {
+                info!(parent: &conn_span, "WebSocket handshake successful");
+                stream
+            },
             Err(e) => {
-                error!("WebSocket handshake failed: {}", e);
+                error!(parent: &conn_span, error = %e, "WebSocket handshake failed");
                 return;
             }
         };
 
-        info!("WebSocket connection established");
         let (write, read) = ws_stream.split();
         let write = Arc::new(Mutex::new(write));
 
-        self.process_websocket(write, read).await;
-        info!("WebSocket connection closed");
+        info!(parent: &conn_span, "Starting WebSocket message processing");
+        self.process_websocket(write, read, conn_span).await;
     }
 
-    // Replace the current listen method with this:
+    // websocket listener
     pub async fn listen(&mut self) -> ! {
         let listener = match tokio::net::TcpListener::bind(self.socket_addr).await {
             Ok(l) => l,
@@ -915,7 +1011,7 @@ impl Listener {
                     "status": "listener_started",
                     "channel": channel
                 }))
-                .await
+            .await
             {
                 error!("Failed to send test message: {:?}", e);
                 return;
@@ -988,32 +1084,139 @@ impl NodeListener {
     }
 
     pub async fn handle_node_events(&mut self, event: EventDetails<SubstrateConfig>) {
+        let span = span!(Level::INFO, "node_event");
+
         if let Ok(Some(req)) = event.as_event::<JudgementRequested>() {
-            // TODO: check the registrar index
-            info!("Judgement requested by {}", req.who);
-            info!("status: {:?}", self.handle_registration(&req.who).await);
+            info!(
+                parent: &span,
+                requester = %req.who,
+                "Judgement requested"
+            );
+
+            match self.handle_registration(&req.who).await {
+                Ok(_) => info!(
+                    parent: &span,
+                    requester = %req.who,
+                    "Successfully processed registration request"
+                ),
+                Err(e) => error!(
+                    parent: &span,
+                    error = %e,
+                    requester = %req.who,
+                    "Failed to process registration request"
+                ),
+            }
         } else if let Ok(Some(req)) = event.as_event::<JudgementUnrequested>() {
-            info!("Judgement unrequested by {}", req.who);
-            info!("status: {:?}", self.cancel_registration(&req.who).await);
+            info!(
+                parent: &span,
+                requester = %req.who,
+                "Judgement unrequested"
+            );
+
+            match self.cancel_registration(&req.who).await {
+                Ok(_) => info!(
+                    parent: &span,
+                    requester = %req.who,
+                    "Successfully cancelled registration"
+                ),
+                Err(e) => error!(
+                    parent: &span,
+                    error = %e,
+                    requester = %req.who,
+                    "Failed to cancel registration"
+                ),
+            }
         }
     }
 
     /// Listens for incoming events on the substrate node, in particular
     /// the `requestJudgement` event
     pub async fn listen(self) -> anyhow::Result<()> {
+        let span = span!(Level::INFO, "node_listener");
+        info!(parent: &span, "Starting node listener");
+
         let mut block_stream = self.client.blocks().subscribe_finalized().await?;
+        info!(parent: &span, "Successfully subscribed to finalized blocks");
+
         tokio::spawn(async move {
             while let Some(item) = block_stream.next().await {
-                let block = item.unwrap();
-                for event in block.events().await.unwrap().iter() {
-                    let event = event.unwrap();
-                    // TODO: check for cancleRequest calls
-                    let mut self_clone = self.clone();
-                    self_clone.handle_node_events(event).await;
+                match item {
+                    Ok(block) => {
+                        debug!(
+                            parent: &span,
+                            block_number = ?block.number(),
+                            "Processing block"
+                        );
+
+                        if let Ok(events) = block.events().await {
+                            let mut self_clone = self.clone();
+                            self_clone.process_block_events(&span, events).await;
+                        }
+                    },
+                    Err(e) => error!(
+                        parent: &span,
+                        error = %e,
+                        "Failed to process block"
+                    ),
                 }
             }
+            warn!(parent: &span, "Block stream ended");
         });
+
         Ok(())
+    }
+
+    /// process block events we listen
+    async fn process_block_events(
+        &mut self,
+        span: &tracing::Span,
+        events: subxt::events::Events<SubstrateConfig>,
+    ) {
+        for event_result in events.iter() {
+            if let Ok(event) = event_result {
+                if let Ok(Some(req)) = event.as_event::<JudgementRequested>() {
+                    info!(
+                        parent: span,
+                        requester = %req.who,
+                        "Judgement requested"
+                    );
+
+                    match self.handle_registration(&req.who).await {
+                        Ok(_) => info!(
+                            parent: span,
+                            requester = %req.who,
+                            "Successfully processed registration request"
+                        ),
+                        Err(e) => error!(
+                            parent: span,
+                            error = %e,
+                            requester = %req.who,
+                            "Failed to process registration request"
+                        ),
+                    }
+                } else if let Ok(Some(req)) = event.as_event::<JudgementUnrequested>() {
+                    info!(
+                        parent: span,
+                        requester = %req.who,
+                        "Judgement unrequested"
+                    );
+
+                    match self.cancel_registration(&req.who).await {
+                        Ok(_) => info!(
+                            parent: span,
+                            requester = %req.who,
+                            "Successfully cancelled registration"
+                        ),
+                        Err(e) => error!(
+                            parent: span,
+                            error = %e,
+                            requester = %req.who,
+                            "Failed to cancel registration"
+                        ),
+                    }
+                }
+            }
+        }
     }
 
     /// Handles incoming registration request via the `JudgementRequested` event by first checking
@@ -1038,7 +1241,7 @@ impl NodeListener {
                     cfg.registrar.registrar_index,
                     &cfg.registrar.endpoint,
                 )
-                .await?;
+                    .await?;
 
                 // TODO: make all commands chained together and then executed
                 // all at once!
@@ -1099,15 +1302,26 @@ pub struct RedisConnection {
 // TODO: move this to another file?
 impl RedisConnection {
     pub fn create_conn(addr: &RedisConfig) -> anyhow::Result<Self> {
+        let span = span!(Level::INFO, "redis_connection", url = %addr.url()?);
+
+        info!(parent: &span, "Attempting to establish Redis connection");
+
         let client = RedisClient::open(addr.url()?)
-            .map_err(|e| anyhow!("Cannot open Redis client: {}", e))?;
+            .map_err(|e| {
+                error!(parent: &span, error = %e, "Failed to open Redis client");
+                anyhow!("Cannot open Redis client: {}", e)
+            })?;
 
-        let mut conn = client
-            .get_connection()
-            .map_err(|e| anyhow!("Cannot establish Redis connection: {}", e))?;
+        let mut conn = client.get_connection()
+            .map_err(|e| {
+                error!(parent: &span, error = %e, "Failed to establish Redis connection");
+                anyhow!("Cannot establish Redis connection: {}", e)
+            })?;
 
+        info!(parent: &span, "Enabling keyspace notifications");
         RedisConnection::enable_keyspace_notifications(&mut conn)?;
 
+        info!(parent: &span, "Redis connection successfully established");
         Ok(Self { conn })
     }
 
@@ -1239,9 +1453,9 @@ impl RedisConnection {
         // Helper closure to create account key
         let make_info = |account: &Account| -> anyhow::Result<String> {
             Ok(format!(
-                "{}:{}",
-                serde_json::to_string(account)?,
-                serde_json::to_string(wallet_id)?
+                    "{}:{}",
+                    serde_json::to_string(account)?,
+                    serde_json::to_string(wallet_id)?
             ))
         };
 
@@ -1256,10 +1470,10 @@ impl RedisConnection {
             matches!(
                 (acc_type, account),
                 (AccountType::Discord, Account::Discord(_))
-                    | (AccountType::Display, Account::Display(_))
-                    | (AccountType::Email, Account::Email(_))
-                    | (AccountType::Matrix, Account::Matrix(_))
-                    | (AccountType::Twitter, Account::Twitter(_))
+                | (AccountType::Display, Account::Display(_))
+                | (AccountType::Email, Account::Email(_))
+                | (AccountType::Matrix, Account::Matrix(_))
+                | (AccountType::Twitter, Account::Twitter(_))
             )
         });
 
@@ -1303,15 +1517,15 @@ impl RedisConnection {
         match self
             .conn
             .hget::<&str, &str, Option<String>>(account, "token")
-        {
-            Ok(Some(token)) => Ok(Some(Token::new(token))),
-            Ok(None) => Ok(None),
-            Err(e) => Err(anyhow!(
-                "Couldn't retrive challenge for {}\nError {:?}",
-                account,
-                e
-            )),
-        }
+            {
+                Ok(Some(token)) => Ok(Some(Token::new(token))),
+                Ok(None) => Ok(None),
+                Err(e) => Err(anyhow!(
+                        "Couldn't retrive challenge for {}\nError {:?}",
+                        account,
+                        e
+                )),
+            }
     }
 
     /// Get the [AccountId32] from a hashset with `account` as a name, `wallet_id`
@@ -1341,15 +1555,15 @@ impl RedisConnection {
         match self
             .conn
             .hget::<&str, &str, Option<String>>(account, "status")
-        {
-            Ok(Some(status)) => Ok(Some(serde_json::from_str::<VerifStatus>(&status)?)),
-            Ok(None) => Ok(None),
-            Err(e) => Err(anyhow!(
-                "Error getting status for {}\nError: {:?}",
-                account,
-                e
-            )),
-        }
+            {
+                Ok(Some(status)) => Ok(Some(serde_json::from_str::<VerifStatus>(&status)?)),
+                Ok(None) => Ok(None),
+                Err(e) => Err(anyhow!(
+                        "Error getting status for {}\nError: {:?}",
+                        account,
+                        e
+                )),
+            }
     }
 
     /// Set the `status` value of a redis hashset of name `account` to the value of
@@ -1451,22 +1665,22 @@ impl RedisConnection {
         match self
             .conn
             .hget::<&str, &str, String>(&serde_json::to_string(wallet_id).unwrap(), "accounts")
-        {
-            Ok(metadata) => {
-                let mut result = vec![];
-                let metadata: HashMap<Account, VerifStatus> =
-                    serde_json::from_str(&metadata).unwrap();
-                for (acc, current_status) in metadata {
-                    if current_status == status {
-                        result.push(acc);
+            {
+                Ok(metadata) => {
+                    let mut result = vec![];
+                    let metadata: HashMap<Account, VerifStatus> =
+                        serde_json::from_str(&metadata).unwrap();
+                    for (acc, current_status) in metadata {
+                        if current_status == status {
+                            result.push(acc);
+                        }
                     }
+                    return result;
                 }
-                return result;
+                _ => {
+                    vec![]
+                }
             }
-            _ => {
-                vec![]
-            }
-        }
     }
 
     async fn clear_all_related_to(&mut self, who: &AccountId32) -> anyhow::Result<()> {
@@ -1481,7 +1695,7 @@ impl RedisConnection {
                 .cmd("DEL")
                 .arg(format!("{}", account))
                 .exec(&mut self.conn)?;
-        }
+            }
         Ok(())
     }
 
@@ -1513,8 +1727,8 @@ impl RedisConnection {
             let acc = serde_json::from_str::<Account>(acc)?;
             if let Some(lstatus) = self
                 .get_accounts(&serde_json::from_str(wallet_id)?)?
-                .unwrap_or(HashMap::default())
-                .get(&acc)
+                    .unwrap_or(HashMap::default())
+                    .get(&acc)
             {
                 let rstatus: String = self.conn.hget(account, "status")?;
                 let rstatus: VerifStatus = serde_json::from_str(&rstatus)?;
@@ -1541,37 +1755,57 @@ impl RedisConnection {
                     VerifStatus::Pending => {
                         self.save_account(who, &account, Some(Token::generate().await), status)
                             .await?;
-                    }
+                        }
                 }
             }
         }
         Ok(())
     }
 
-    async fn save_account(
+    pub async fn save_account(
         &mut self,
         who: &AccountId32,
         account: &Account,
         token: Option<Token>,
         status: VerifStatus,
     ) -> anyhow::Result<(), RedisError> {
-        info!(
-            "Saving challenge token {:?} for account {:?}",
-            token, account
+        let span = span!(
+            Level::INFO,
+            "save_account",
+            account_id = %who,
+            account_type = %account.account_type(),
+            status = ?status
         );
-        redis::cmd("HSET")
-            .arg(format!(
+
+        async move {
+            info!("Saving account information to Redis");
+            debug!(token = ?token, "Challenge token details");
+
+            let key = format!(
                 "{}:{}",
                 serde_json::to_string(&account)?,
                 serde_json::to_string(who)?
-            ))
-            .arg("status")
-            .arg(serde_json::to_string(&status)?)
-            .arg("wallet_id")
-            .arg(serde_json::to_string(who)?)
-            .arg("token")
-            .arg(token.map(|t| t.show()))
-            .exec(&mut self.conn)
+            );
+
+            let result = redis::cmd("HSET")
+                .arg(&key)
+                .arg("status")
+                .arg(serde_json::to_string(&status)?)
+                .arg("wallet_id")
+                .arg(serde_json::to_string(who)?)
+                .arg("token")
+                .arg(token.map(|t| t.show()))
+                .exec(&mut self.conn);
+
+            match &result {
+                Ok(_) => info!("Successfully saved account information"),
+                Err(e) => error!(error = %e, "Failed to save account information"),
+            }
+
+            result
+        }
+        .instrument(span)
+            .await
     }
 
     async fn save_owner(
@@ -1617,13 +1851,13 @@ async fn process_redis_account_change(
         let status = serde_json::from_str::<VerifStatus>(&status)?;
 
         return Ok(Some((
-            id,
-            serde_json::json!({
-                "accounts": accounts,
-                "status": status,
-                "operation": payload,
-                "key": key
-            }),
+                    id,
+                    serde_json::json!({
+                        "accounts": accounts,
+                        "status": status,
+                        "operation": payload,
+                        "key": key
+                    }),
         )));
     }
 
@@ -1634,12 +1868,12 @@ async fn process_redis_account_change(
     let status = conn.get_status(key)?.expect("Coudn't get status");
 
     Ok(Some((
-        id,
-        serde_json::json!({
-            "account": account,
-            "status": status,
-            "operation": payload,
-            "key": key
-        }),
+                id,
+                serde_json::json!({
+                    "account": account,
+                    "status": status,
+                    "operation": payload,
+                    "key": key
+                }),
     )))
 }
