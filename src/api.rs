@@ -360,7 +360,7 @@ pub async fn spawn_node_listener() -> anyhow::Result<()> {
 
 /// Converts the inner of [IdentityData] to a [String]
 pub fn identity_data_tostring(data: &IdentityData) -> Option<String> {
-    let data = match data {
+    let result = match data {
         IdentityData::Raw0(v) => Some(String::from_utf8_lossy(v).to_string()),
         IdentityData::Raw1(v) => Some(String::from_utf8_lossy(v).to_string()),
         IdentityData::Raw2(v) => Some(String::from_utf8_lossy(v).to_string()),
@@ -395,9 +395,10 @@ pub fn identity_data_tostring(data: &IdentityData) -> Option<String> {
         IdentityData::Raw31(v) => Some(String::from_utf8_lossy(v).to_string()),
         IdentityData::Raw32(v) => Some(String::from_utf8_lossy(v).to_string()),
         _ => None,
-    }
-    info!("Data: {:?}", data);
-    data
+    };
+    debug!("Data: {:?}", result);
+
+    result
 }
 
 /// helper function to deserialize SS58 string into AccountId32
@@ -716,9 +717,11 @@ impl Listener {
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         msg: String,
     ) -> Result<(), anyhow::Error> {
+        debug!("Attempting to send message: {}", msg);
         let mut guard = write.lock().await;
-        guard.send(Message::Text(msg)).await?;
-        Ok(())
+        let result = guard.send(Message::Text(msg)).await;
+        debug!("Message send result: {:?}", result);
+        result.map_err(|e| e.into())
     }
 
     async fn process_websocket(
@@ -850,11 +853,15 @@ impl Listener {
         sender: Sender<serde_json::Value>,
         span: &tracing::Span,
     ) -> bool {
+
+        debug!("Handling successful response: {:?}", response);
         let formatted_response = serde_json::json!({
             "version": "1.0",
             "payload": response
         });
 
+
+        debug!("Formatted response for sending: {:?}", formatted_response);
         let serialized = match serde_json::to_string(&formatted_response) {
             Ok(s) => s,
             Err(e) => {
