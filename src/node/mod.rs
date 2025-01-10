@@ -92,26 +92,27 @@ pub async fn filter_accounts(
     reg_index: u32,
     endpoint: &str,
 ) -> anyhow::Result<HashMap<Account, VerifStatus>> {
-    if identity_data_tostring(&info.web).is_some()
-        || identity_data_tostring(&info.legal).is_some()
-        || identity_data_tostring(&info.github).is_some()
-        || identity_data_tostring(&info.image).is_some()
-        || identity_data_tostring(&info.email).is_some()
-        || info.pgp_fingerprint.is_some()
-    {
-        provide_judgement(who, reg_index, Judgement::Erroneous, endpoint).await?;
+    let accounts = Account::into_accounts(&info);
 
-        let accounts = Account::into_accounts(&info);
-        if accounts.is_empty() {
-            provide_judgement(who, reg_index, Judgement::Unknown, endpoint).await?;
-        }
-        return Ok(Account::into_hashmap(accounts, VerifStatus::Done));
+    // if no accounts to verify, mark as Unknown
+    if accounts.is_empty() {
+        provide_judgement(who, reg_index, Judgement::Unknown, endpoint).await?;
+        return Ok(HashMap::new());
     }
-
-    Ok(Account::into_hashmap(
-        Account::into_accounts(&info),
-        VerifStatus::Pending,
-    ))
+    // check if there are any accounts we don't handle
+    // todo: make configurable via configs
+    for account in &accounts {
+        match account {
+            Account::Matrix(_) |
+                Account::Twitter(_) |
+                Account::Discord(_) => continue,
+            _ => {
+                provide_judgement(who, reg_index, Judgement::Erroneous, endpoint).await?;
+                return Ok(HashMap::new());
+            }
+        }
+    }
+    Ok(Account::into_hashmap(accounts, VerifStatus::Pending))
 }
 
 /// This will provide a [Reasonable] judgement for the account id `who` from the registrar with
