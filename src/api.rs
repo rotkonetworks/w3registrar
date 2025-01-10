@@ -360,7 +360,7 @@ pub async fn spawn_node_listener() -> anyhow::Result<()> {
 
 /// Converts the inner of [IdentityData] to a [String]
 pub fn identity_data_tostring(data: &IdentityData) -> Option<String> {
-    let result = match data {
+    let data = match data {
         IdentityData::Raw0(v) => Some(String::from_utf8_lossy(v).to_string()),
         IdentityData::Raw1(v) => Some(String::from_utf8_lossy(v).to_string()),
         IdentityData::Raw2(v) => Some(String::from_utf8_lossy(v).to_string()),
@@ -395,9 +395,9 @@ pub fn identity_data_tostring(data: &IdentityData) -> Option<String> {
         IdentityData::Raw31(v) => Some(String::from_utf8_lossy(v).to_string()),
         IdentityData::Raw32(v) => Some(String::from_utf8_lossy(v).to_string()),
         _ => None,
-    };
-    debug!("data: {:?}", result);
-    result
+    }
+    info!("Data: {:?}", data);
+    data
 }
 
 /// helper function to deserialize SS58 string into AccountId32
