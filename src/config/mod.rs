@@ -7,6 +7,7 @@ use url::{ParseError, Url};
 use once_cell::sync::Lazy;
 use tokio::sync::Mutex;
 use serde::Deserialize;
+use std::env;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -18,16 +19,27 @@ pub struct Config {
 
 impl Config {
     pub fn load_from(path: &str) -> anyhow::Result<Self> {
-        let content =
-            fs::read_to_string(path).map_err(|_| anyhow!("Failed to open config `{}`.", path))?;
-        toml::from_str(&content).map_err(|err| anyhow!("Failed to parse config: {:?}", err))
+        let absolute_path = std::fs::canonicalize(path)
+            .unwrap_or_else(|_| std::path::PathBuf::from(path));
+        let content = fs::read_to_string(&absolute_path)  // <-- Use absolute_path here
+            .map_err(|e| anyhow!("Failed to open config `{}` (absolute path: {:?}): {}", path, absolute_path, e))?;
+        toml::from_str(&content)
+            .map_err(|err| anyhow!("Failed to parse config at {}: {:?}", path, err))
     }
 }
 
 pub static GLOBAL_CONFIG: Lazy<Mutex<Config>> = Lazy::new(|| {
-    let config_path = "config.toml";
-    let config = Config::load_from(config_path)
-        .expect("Failed to load configuration");
+    let config_path = env::var("CONFIG_PATH")
+        .map_err(|_| eprintln!("CONFIG_PATH not set, falling back to config.toml"))
+        .unwrap_or_else(|_| "config.toml".to_string());
+    
+    let config = Config::load_from(&config_path)
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to load config from {}: {}", config_path, e);
+            eprintln!("Current working directory: {:?}", env::current_dir().unwrap_or_default());
+            panic!("Configuration error");
+        });
+    
     Mutex::new(config)
 });
 

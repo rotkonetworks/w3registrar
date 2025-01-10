@@ -10,9 +10,9 @@ port = 8080
 [redis]
 host = "127.0.0.1"
 port = 6379
-# leave them emtpy if you don't wish to an account
-username = "asdf"
-password = "abc"
+# leave them empty if you don't wish to an account
+# username = "asdf"
+# password = "abc"
 
 [matrix]
 homeserver = "https://matrix.org"

@@ -1,0 +1,44 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - w3r_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  w3registrar:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - w3r_network
+    volumes:
+      - ./config.toml:/etc/w3registrar/config.toml:ro
+      - ./keyfile:/etc/w3registrar/keyfile:ro
+    environment:
+      - CONFIG_PATH=/etc/w3registrar/config.toml
+      - RUST_LOG=info
+      - KEYFILE_PATH=/etc/w3registrar/keyfile
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /etc/w3registrar/config.toml && test -f /etc/w3registrar/keyfile"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  redis_data:
+
+networks:
+  w3r_network:
+    driver: bridge
