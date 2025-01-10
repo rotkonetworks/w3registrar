@@ -24,7 +24,7 @@ use tracing::{error, info};
 use crate::config::GLOBAL_CONFIG;
 
 use crate::{
-    config::{RedisConfig, WatcherConfig},
+    config::{RedisConfig, RegistrarConfig},
     matrix,
     node::{
         self,
@@ -72,7 +72,7 @@ pub enum Account {
     Web(String),
     Email(String),
     Github(String),
-    PGPFingerPrint([u8; 20]),
+    PGPFingerprint([u8; 20]),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -114,7 +114,7 @@ impl Serialize for Account {
             Account::Web(name) => format!("Web: {}", name),
             Account::Email(name) => format!("Email: {}", name),
             Account::Github(name) => format!("Github: {}", name),
-            Account::PGPFingerPrint(fp) => format!("PGPFingerPrint: {:?}", fp),
+            Account::PGPFingerprint(fp) => format!("PGPFingerprint: {:?}", fp),
         };
         serializer.serialize_str(&acc)
     }
@@ -137,7 +137,7 @@ impl<'de> Deserialize<'de> for Account {
                 "Github" => Ok(Account::Github(acc_name.to_owned())),
                 "Legal" => Ok(Account::Legal(acc_name.to_owned())),
                 "Web" => Ok(Account::Web(acc_name.to_owned())),
-                "PGPFingerPrint" => Err(serde::de::Error::custom("TODO")),
+                "PGPFingerprint" => Err(serde::de::Error::custom("TODO")),
                 _ => {
                     return Err(serde::de::Error::custom("Invalid account format"));
                 }
@@ -199,7 +199,7 @@ impl Account {
         }
 
         if let Some(acc) = value.pgp_fingerprint {
-            result.push(Account::PGPFingerPrint(acc))
+            result.push(Account::PGPFingerprint(acc))
         }
         return result;
     }
@@ -214,7 +214,7 @@ impl Account {
             Account::Legal(v) => v.to_owned(),
             Account::Github(v) => v.to_owned(),
             Account::Web(v) => v.to_owned(),
-            Account::PGPFingerPrint(v) => String::from_utf8(v.to_vec()).unwrap(),
+            Account::PGPFingerprint(v) => String::from_utf8(v.to_vec()).unwrap(),
         }
     }
 
@@ -341,9 +341,9 @@ pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
     spawn_node_listener().await?;
     info!("Node listener spawned successfully");
 
-    info!("Spawning matrix bot...");
-    matrix::start_bot().await?;
-    info!("Matrix bot spawned successfully");
+    //info!("Spawning matrix bot...");
+    //matrix::start_bot().await?;
+    //info!("Matrix bot spawned successfully");
 
     // Spawn websocket server
     info!("Spawning websocket server...");
@@ -437,7 +437,7 @@ impl Listener {
         let cfg = GLOBAL_CONFIG.lock().await;
 
         // Connect to the node to get registration info
-        let client = NodeClient::from_url(&cfg.watcher.endpoint).await?;
+        let client = NodeClient::from_url(&cfg.registrar.endpoint).await?;
         let registration = node::get_registration(&client, &request.payload).await?;
 
         // Connect to Redis
@@ -449,8 +449,8 @@ impl Listener {
         let accounts = filter_accounts(
             &registration.info,
             &request.payload,
-            cfg.watcher.registrar_index,
-            &cfg.watcher.endpoint,
+            cfg.registrar.registrar_index,
+            &cfg.registrar.endpoint,
         )
         .await?;
 
@@ -980,10 +980,10 @@ impl NodeListener {
     pub async fn new() -> anyhow::Result<Self> {
         let cfg = GLOBAL_CONFIG.lock().await;
         Ok(Self {
-            client: NodeClient::from_url(&cfg.watcher.endpoint).await?,
+            client: NodeClient::from_url(&cfg.registrar.endpoint).await?,
             redis_cfg: cfg.redis.clone(),
-            reg_index: cfg.watcher.registrar_index.clone(),
-            endpoint: cfg.watcher.endpoint.clone(),
+            reg_index: cfg.registrar.registrar_index.clone(),
+            endpoint: cfg.registrar.endpoint.clone(),
         })
     }
 
@@ -1035,8 +1035,8 @@ impl NodeListener {
                 let accounts = filter_accounts(
                     &reg.info,
                     who,
-                    cfg.watcher.registrar_index,
-                    &cfg.watcher.endpoint,
+                    cfg.registrar.registrar_index,
+                    &cfg.registrar.endpoint,
                 )
                 .await?;
 

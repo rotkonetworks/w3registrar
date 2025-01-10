@@ -3,6 +3,8 @@
 #[subxt::subxt(runtime_metadata_path = "./identity.scale")]
 pub mod api {}
 
+use crate::config::GLOBAL_CONFIG;
+
 use anyhow::{anyhow, Result};
 use sp_core::blake2_256;
 use sp_core::Encode;
@@ -82,36 +84,32 @@ pub async fn provide_judgement<'a>(
 // TODO: change the fn signature to include the accounts that we can handle
 /// Filters all requested accounts to inlcude only those that we can handle, and default
 /// the judgement of other accounts to `Erroneous`, and the judgement for empty identity
-/// objects to `Unkown`
-///
-/// # Note
-/// For now, we only handle registration requests from `Matrix`, `Twitter` and `Discord`
+/// objects to `Unknown`
 pub async fn filter_accounts(
     info: &IdentityInfo,
     who: &AccountId32,
     reg_index: u32,
     endpoint: &str,
 ) -> anyhow::Result<HashMap<Account, VerifStatus>> {
-    if identity_data_tostring(&info.web).is_some()
-        || identity_data_tostring(&info.legal).is_some()
-        || identity_data_tostring(&info.github).is_some()
-        || identity_data_tostring(&info.image).is_some()
-        || identity_data_tostring(&info.email).is_some()
-        || info.pgp_fingerprint.is_some()
-    {
-        provide_judgement(who, reg_index, Judgement::Erroneous, endpoint).await?;
-
-        let accounts = Account::into_accounts(&info);
-        if accounts.is_empty() {
-            provide_judgement(who, reg_index, Judgement::Unknown, endpoint).await?;
-        }
-        return Ok(Account::into_hashmap(accounts, VerifStatus::Done));
+    let accounts = Account::into_accounts(&info);
+    
+    let cfg = GLOBAL_CONFIG.lock().await;
+    let supported = &cfg.registrar.services;
+    
+    if accounts.is_empty() {
+        provide_judgement(who, reg_index, Judgement::Unknown, endpoint).await?;
+        return Ok(HashMap::new());
     }
 
-    Ok(Account::into_hashmap(
-        Account::into_accounts(&info),
-        VerifStatus::Pending,
-    ))
+    for account in &accounts {
+        let account_type = account.account_type();
+        if !supported.iter().any(|s| s == account_type) {
+            provide_judgement(who, reg_index, Judgement::Erroneous, endpoint).await?;
+            return Ok(HashMap::new());
+        }
+    }
+
+    Ok(Account::into_hashmap(accounts, VerifStatus::Pending))
 }
 
 /// This will provide a [Reasonable] judgement for the account id `who` from the registrar with

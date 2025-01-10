@@ -26,7 +26,7 @@ use tracing::info;
 
 use std::path::Path;
 
-use crate::{api::RedisConnection, config::WatcherConfig, node::register_identity};
+use crate::{api::RedisConnection, config::RegistrarConfig, node::register_identity};
 use crate::{
     api::{Account, VerifStatus},
     config::{MatrixConfig, RedisConfig, GLOBAL_CONFIG},
@@ -148,13 +148,13 @@ pub async fn start_bot() -> anyhow::Result<()> {
   let cfg = GLOBAL_CONFIG.lock().await;
   let redis_cfg = cfg.redis.clone();
   let matrix_cfg = cfg.matrix.clone();
-  let watcher_cfg = cfg.watcher.clone();
+  let registrar_cfg = cfg.registrar.clone();
 
-  // cfg.matrix, &cfg.redis, &cfg.watcher
+  // cfg.matrix, &cfg.redis, &cfg.registrar
 
     let client = login(matrix_cfg).await?;
 
-    client.add_event_handler_context((redis_cfg.to_owned(), watcher_cfg.to_owned()));
+    client.add_event_handler_context((redis_cfg.to_owned(), registrar_cfg.to_owned()));
     client.add_event_handler(on_stripped_state_member);
     client.add_event_handler(on_room_message);
     // create and add context here
@@ -214,7 +214,7 @@ async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client
 async fn on_room_message(
     ev: OriginalSyncRoomMessageEvent,
     _room: Room,
-    ctx: Ctx<(RedisConfig, WatcherConfig)>,
+    ctx: Ctx<(RedisConfig, RegistrarConfig)>,
 ) {
     let MessageType::Text(text_content) = ev.content.msgtype else {
         return;

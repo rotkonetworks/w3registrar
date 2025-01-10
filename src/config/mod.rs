@@ -13,7 +13,7 @@ use std::env;
 pub struct Config {
     pub matrix: MatrixConfig,
     pub websocket: WebsocketConfig,
-    pub watcher: WatcherConfig,
+    pub registrar: RegistrarConfig,
     pub redis: RedisConfig,
 }
 
@@ -93,10 +93,11 @@ impl RedisConfig {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub struct WatcherConfig {
+pub struct RegistrarConfig {
     pub endpoint: String,
     pub registrar_index: RegistrarIndex,
     pub keystore_path: String,
+    pub services: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
