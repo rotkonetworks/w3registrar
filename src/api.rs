@@ -332,28 +332,6 @@ pub enum NotifyAccountState {
     NotifyAccountState,
 }
 // --------------------------------------
-
-/// Spawns the Websocket client, Matrix client and the Node(substrate) listener
-pub async fn spawn_services(cfg: Config) -> anyhow::Result<()> {
-    info!("Starting services...");
-
-    // Spawn node listener first
-    info!("Spawning node listener...");
-    spawn_node_listener().await?;
-    info!("Node listener spawned successfully");
-
-    //info!("Spawning matrix bot...");
-    //matrix::start_bot().await?;
-    //info!("Matrix bot spawned successfully");
-
-    // Spawn websocket server
-    info!("Spawning websocket server...");
-    spawn_ws_serv().await?;
-
-    info!("Services closed!");
-    Ok(())
-}
-
 pub async fn spawn_node_listener() -> anyhow::Result<()> {
     NodeListener::new().await?.listen().await
 }
@@ -423,7 +401,7 @@ struct Listener {
 
 impl Listener {
     pub async fn new() -> Self {
-        let cfg = GLOBAL_CONFIG.lock().await;
+        let cfg = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG is not initialized");
         Self {
             redis_cfg: cfg.redis.clone(),
             socket_addr: cfg.websocket.socket_addrs().unwrap(),
@@ -437,7 +415,7 @@ impl Listener {
     ) -> anyhow::Result<serde_json::Value> {
         *subscriber = Some(request.payload.clone());
         let redis_cfg = &self.redis_cfg;
-        let cfg = GLOBAL_CONFIG.lock().await;
+        let cfg = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG is not initialized");
 
         // Connect to the node to get registration info
         let client = NodeClient::from_url(&cfg.registrar.endpoint).await?;
@@ -1081,7 +1059,7 @@ impl NodeListener {
     /// This function will fail if the _redis_url_ is an invalid url to a redis server
     /// or if _node_url_ is not a valid url for a substrate BC node
     pub async fn new() -> anyhow::Result<Self> {
-        let cfg = GLOBAL_CONFIG.lock().await;
+        let cfg = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG is not initialized");
         Ok(Self {
             client: NodeClient::from_url(&cfg.registrar.endpoint).await?,
             redis_cfg: cfg.redis.clone(),
@@ -1241,7 +1219,7 @@ impl NodeListener {
                 let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
                 conn.clear_all_related_to(who).await?;
 
-                let cfg = GLOBAL_CONFIG.lock().await;
+                let cfg = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG is not initialized");
                 let accounts = filter_accounts(
                     &reg.info,
                     who,

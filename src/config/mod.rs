@@ -5,7 +5,7 @@ use std::fs;
 use std::net::{SocketAddr, ToSocketAddrs};
 use url::{ParseError, Url};
 use once_cell::sync::Lazy;
-use tokio::sync::Mutex;
+use tokio::sync::OnceCell;
 use serde::Deserialize;
 use std::env;
 
@@ -21,27 +21,20 @@ impl Config {
     pub fn load_from(path: &str) -> anyhow::Result<Self> {
         let absolute_path = std::fs::canonicalize(path)
             .unwrap_or_else(|_| std::path::PathBuf::from(path));
-        let content = fs::read_to_string(&absolute_path)  // <-- Use absolute_path here
+        let content = fs::read_to_string(&absolute_path)
             .map_err(|e| anyhow!("Failed to open config `{}` (absolute path: {:?}): {}", path, absolute_path, e))?;
         toml::from_str(&content)
             .map_err(|err| anyhow!("Failed to parse config at {}: {:?}", path, err))
     }
 }
 
-pub static GLOBAL_CONFIG: Lazy<Mutex<Config>> = Lazy::new(|| {
-    let config_path = env::var("CONFIG_PATH")
-        .map_err(|_| eprintln!("CONFIG_PATH not set, falling back to config.toml"))
-        .unwrap_or_else(|_| "config.toml".to_string());
-    
-    let config = Config::load_from(&config_path)
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to load config from {}: {}", config_path, e);
-            eprintln!("Current working directory: {:?}", env::current_dir().unwrap_or_default());
-            panic!("Configuration error");
-        });
-    
-    Mutex::new(config)
-});
+pub static GLOBAL_CONFIG: OnceCell<Config> = OnceCell::const_new();
+
+pub async fn initialize_config() {
+    let config_path = env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
+    let config = Config::load_from(&config_path).expect("Failed to load config");
+    GLOBAL_CONFIG.set(config).expect("GLOBAL_CONFIG already initialized");
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Nickname(String);

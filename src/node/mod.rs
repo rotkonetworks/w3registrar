@@ -93,7 +93,7 @@ pub async fn filter_accounts(
 ) -> anyhow::Result<HashMap<Account, VerifStatus>> {
     let accounts = Account::into_accounts(&info);
     
-    let cfg = GLOBAL_CONFIG.lock().await;
+    let cfg = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG is not initialized");
     let supported = &cfg.registrar.services;
     
     if accounts.is_empty() {
