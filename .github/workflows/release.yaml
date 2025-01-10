@@ -1,10 +1,8 @@
 name: Release binaries
-
 on:
   push:
     tags:
       - 'v*'
-
 jobs:
   release:
     name: Release - ${{ matrix.platform.release_for }}
@@ -36,7 +34,6 @@ jobs:
             target: aarch64-apple-darwin
             bin: w3registrar
             name: w3registrar-macos-arm64
-
     steps:
       - uses: actions/checkout@v4
       
@@ -45,9 +42,38 @@ jobs:
         with:
           targets: ${{ matrix.platform.target }}
 
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            protobuf-compiler \
+            cmake \
+            pkg-config \
+            clang \
+            llvm
+
+      - name: Install cross-compilation dependencies
+        if: ${{ matrix.platform.use_cross }}
+        run: |
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            libssl-dev:arm64 \
+            libclang-dev:arm64 \
+            libudev-dev:arm64
+
       - name: Install cross
         if: ${{ matrix.platform.use_cross }}
         run: cargo install cross
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install \
+            protobuf \
+            cmake \
+            llvm
 
       - name: Build binary
         if: ${{ !matrix.platform.use_cross }}
