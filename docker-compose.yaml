@@ -24,7 +24,7 @@ services:
       - w3r_network
     volumes:
       - ./config.toml:/etc/w3registrar/config.toml:ro
-      - ./keyfile:/etc/w3registrar/keyfile:ro
+      - ./.keyfile:/etc/w3registrar/keyfile:ro
     environment:
       - CONFIG_PATH=/etc/w3registrar/config.toml
       - RUST_LOG=info
