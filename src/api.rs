@@ -77,6 +77,7 @@ pub enum Account {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Copy)]
 pub enum AccountType {
     Discord,
+    #[serde(rename = "display_name")]
     Display,
     Email,
     Matrix,
@@ -1315,7 +1316,7 @@ pub struct VerificationFields {
     pub twitter: bool,
     pub matrix: bool,
     pub email: bool,
-    pub display: bool,
+    pub display_name: bool,
     pub github: bool,
     pub legal: bool,
     pub web: bool,
@@ -1326,7 +1327,7 @@ impl Default for VerificationFields {
     fn default() -> Self {
         Self {
             matrix: false,
-            display: false,
+            display_name: false,
             discord: false,
             email: false,
             twitter: false,
@@ -1407,9 +1408,12 @@ impl RedisConnection {
     /// Returns pairs of [account_type, challenge_token]
     pub fn get_challenges(&mut self, wallet_id: &AccountId32) -> anyhow::Result<Vec<Vec<String>>> {
         let wallet_id_str = serde_json::to_string(wallet_id)?;
+        println!("Wallet ID string: {}", wallet_id_str);
 
-        Ok(self
-            .get_accounts_from_status(wallet_id, VerifStatus::Pending)
+        let pending_accounts = self.get_accounts_from_status(wallet_id, VerifStatus::Pending);
+        println!("Pending accounts: {:?}", pending_accounts);
+
+        Ok(pending_accounts
             .into_iter()
             .filter_map(|account| {
                 let info = format!(
@@ -1417,10 +1421,21 @@ impl RedisConnection {
                     serde_json::to_string(&account).ok()?,
                     wallet_id_str
                 );
+                println!("Checking challenge for info key: {}", info);
 
-                match self.get_challenge_token_from_account_info(&info).unwrap() {
-                    Some(token) => Some(vec![account.account_type().to_string(), token.show()]),
-                    None => None,
+                match self.get_challenge_token_from_account_info(&info) {
+                    Ok(Some(token)) => {
+                        println!("Found challenge token: {}", token.show());
+                        Some(vec![account.account_type().to_string(), token.show()])
+                    }
+                    Ok(None) => {
+                        println!("No challenge token found for account");
+                        None
+                    }
+                    Err(e) => {
+                        println!("Error retrieving challenge token: {:?}", e);
+                        None
+                    }
                 }
             })
             .collect())
@@ -1439,7 +1454,7 @@ impl RedisConnection {
             if acc_state == VerifStatus::Done {
                 match account {
                     Account::Discord(_) => verif_state.discord = true,
-                    Account::Display(_) => verif_state.display = true,
+                    Account::Display(_) => verif_state.display_name = true,
                     Account::Email(_) => verif_state.email = true,
                     Account::Twitter(_) => verif_state.twitter = true,
                     Account::Matrix(_) => verif_state.matrix = true,
@@ -1482,7 +1497,7 @@ impl RedisConnection {
         wallet_id: &AccountId32,
         acc_type: &AccountType,
     ) -> anyhow::Result<Option<Token>> {
-        // Helper closure to create account key
+        // helper closure to create account key
         let make_info = |account: &Account| -> anyhow::Result<String> {
             Ok(format!(
                 "{}:{}",
@@ -1506,10 +1521,14 @@ impl RedisConnection {
                     | (AccountType::Email, Account::Email(_))
                     | (AccountType::Matrix, Account::Matrix(_))
                     | (AccountType::Twitter, Account::Twitter(_))
+                    | (AccountType::Github, Account::Github(_))
+                    | (AccountType::Legal, Account::Legal(_))
+                    | (AccountType::Web, Account::Web(_))
+                    | (AccountType::PGPFingerprint, Account::PGPFingerprint(_))
             )
         });
 
-        // If we found a matching account, get its token
+        // if we found a matching account, get its token
         match matching_account {
             Some(account) if matches!(account, Account::Display(_)) => {
                 // NOTE:For display names, we only check they exists onchain
@@ -1776,18 +1795,11 @@ impl RedisConnection {
         accounts: HashMap<Account, VerifStatus>,
     ) -> anyhow::Result<()> {
         for (account, status) in accounts {
-            // we don't save a token for display fields, and we don't
-            // create tokens/challenges for them
-            if let Account::Discord(_) = account {
-                self.save_account(who, &account, None, VerifStatus::Done)
-                    .await?
-            } else {
-                match status {
-                    VerifStatus::Done => self.save_account(who, &account, None, status).await?,
-                    VerifStatus::Pending => {
-                        self.save_account(who, &account, Some(Token::generate().await), status)
-                            .await?;
-                    }
+            match status {
+                VerifStatus::Done => self.save_account(who, &account, None, status).await?,
+                VerifStatus::Pending => {
+                    self.save_account(who, &account, Some(Token::generate().await), status)
+                        .await?;
                 }
             }
         }
@@ -1813,7 +1825,11 @@ impl RedisConnection {
             info!("Saving account information to Redis");
             debug!(token = ?token, "Challenge token details");
 
-            let key = serde_json::to_string(&(&account, who))?;
+            let key = format!(
+                "{}:{}",
+                serde_json::to_string(&account)?,
+                serde_json::to_string(who)?
+            );
 
             let mut cmd = redis::cmd("HSET");
             cmd.arg(&key)
@@ -1822,7 +1838,7 @@ impl RedisConnection {
                 .arg("wallet_id")
                 .arg(serde_json::to_string(who)?);
 
-            // this is here  display_name
+            // filter display_name
             if let Some(token_value) = token {
                 cmd.arg("token").arg(token_value.show());
             }

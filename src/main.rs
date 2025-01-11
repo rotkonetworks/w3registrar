@@ -14,7 +14,7 @@ use tracing::{error, info};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
+        .with_max_level(Level::DEBUG)
         .with_line_number(true)
         .with_target(true)
         .with_span_events(FmtSpan::CLOSE)
@@ -29,10 +29,10 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting services...");
 
     let matrix_handle = tokio::spawn(async {
-        //info!("Spawning matrix bot...");
-        //if let Err(e) = matrix::start_bot().await {
-        //    error!("Matrix bot error: {}", e);
-        //}
+        info!("Spawning matrix bot...");
+        if let Err(e) = matrix::start_bot().await {
+            error!("Matrix bot error: {}", e);
+        }
     });
 
     let node_handle = tokio::spawn(async {
