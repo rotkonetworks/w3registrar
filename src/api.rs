@@ -421,16 +421,14 @@ impl Listener {
     ) -> anyhow::Result<serde_json::Value> {
         *subscriber = Some(request.payload.clone());
         let redis_cfg = &self.redis_cfg;
+
         let cfg = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG is not initialized");
 
-        // Connect to the node to get registration info
         let client = NodeClient::from_url(&cfg.registrar.endpoint).await?;
         let registration = node::get_registration(&client, &request.payload).await?;
 
-        // Connect to Redis
         let mut conn = RedisConnection::create_conn(redis_cfg)?;
 
-        // Clear existing data for this account
         conn.clear_all_related_to(&request.payload).await?;
 
         let accounts = filter_accounts(
@@ -439,9 +437,8 @@ impl Listener {
             cfg.registrar.registrar_index,
             &cfg.registrar.endpoint,
         )
-        .await?;
+            .await?;
 
-        // Process accounts and store in Redis
         for (account, status) in &accounts {
             if !matches!(status, VerifStatus::Pending) {
                 continue;
@@ -449,9 +446,8 @@ impl Listener {
 
             match account {
                 Account::Display(name) => {
-                    debug!("account display_name: {}", name);
-                    conn.save_account(&request.payload, account, None, VerifStatus::Done)
-                        .await?;
+                    info!("Display account found: {}, marking as Done", name);
+                    conn.save_account(&request.payload, account, None, VerifStatus::Done).await?;
                 }
                 _ => {
                     conn.save_account(
@@ -460,18 +456,26 @@ impl Listener {
                         Some(Token::generate().await),
                         VerifStatus::Pending,
                     )
-                    .await?;
-                }
+                        .await?;
+                    }
             }
         }
+
         conn.save_owner(&request.payload, &accounts).await?;
+
+        // Construct and return the unified response
+        let verification_fields = conn.extract_info(&request.payload)?;
+        info!("Verification fields: {:?}", verification_fields);
+        let hash = self.hash_identity_info(&registration.info);
+        let pending_challenges = conn.get_challenges(&request.payload)?;
+
         Ok(serde_json::json!({
             "type": "ok",
             "message": {
-                "info": conn.extract_info(&request.payload)?,
-                "hash": format!("0x{}", hex::encode(blake2_256(&registration.info.encode()))),
-                "pending_challenges": conn.get_challenges(&request.payload)?,
-                "account": request.payload.to_string()
+                "account": request.payload.to_string(),
+                "hash": hash,
+                "info": verification_fields,
+                "pending_challenges": pending_challenges
             }
         }))
     }
@@ -1383,7 +1387,7 @@ impl RedisConnection {
                     None => None,
                 }
             })
-            .collect::<Vec<Vec<String>>>())
+            .collect())
     }
 
     /// constructing [VerificationFields] object from the registration status of all the accounts
@@ -1391,35 +1395,26 @@ impl RedisConnection {
     pub fn extract_info(&mut self, wallet_id: &AccountId32) -> anyhow::Result<VerificationFields> {
         let accounts: String = self
             .conn
-            .hget(serde_json::to_string(&wallet_id)?, "accounts")?;
-        info!("Accounts: {}", accounts);
+            .hget(serde_json::to_string(wallet_id)?, "accounts")?;
         let accounts: HashMap<Account, VerifStatus> = serde_json::from_str(&accounts)?;
-        info!("Accounts: {:?}", accounts);
         let mut verif_state = VerificationFields::default();
 
         for (account, acc_state) in accounts {
             if acc_state == VerifStatus::Done {
-                // TODO: check this
                 match account {
-                    Account::Discord(_) => {
-                        verif_state.discord = true;
-                    }
-                    Account::Display(_) => {
-                        verif_state.display = true;
-                    }
-                    Account::Email(_) => {
-                        verif_state.email = true;
-                    }
-                    Account::Twitter(_) => {
-                        verif_state.twitter = true;
-                    }
-                    Account::Matrix(_) => {
-                        verif_state.matrix = true;
-                    }
-                    _ => {}
+                    Account::Discord(_) => verif_state.discord = true,
+                    Account::Display(_) => verif_state.display = true,
+                    Account::Email(_) => verif_state.email = true,
+                    Account::Twitter(_) => verif_state.twitter = true,
+                    Account::Matrix(_) => verif_state.matrix = true,
+                    Account::Github(_) => verif_state.github = true,
+                    Account::Legal(_) => verif_state.legal = true,
+                    Account::Web(_) => verif_state.web = true,
+                    Account::PGPFingerprint(_) => verif_state.pgp_fingerprint = true,
                 }
             }
         }
+
         Ok(verif_state)
     }
 
