@@ -253,9 +253,12 @@ async fn on_room_message(
                                         ctx.0 .1.registrar_index,
                                         &ctx.0 .1.endpoint,
                                     )
-                                        .await
-                                        .unwrap(),
-                                    Err(e) => info!("Couldn't create Account object from {:?}: {:?}", sender, e),
+                                    .await
+                                    .unwrap(),
+                                    Err(e) => info!(
+                                        "Couldn't create Account object from {:?}: {:?}",
+                                        sender, e
+                                    ),
                                 }
                             }
                             _ => {}

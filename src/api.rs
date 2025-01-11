@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use sp_core::blake2_256;
 use sp_core::Encode;
 use std::fmt;
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use std::str::FromStr;
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use subxt::events::EventDetails;
 use subxt::utils::AccountId32;
 use subxt::SubstrateConfig;
@@ -101,7 +101,7 @@ impl FromStr for AccountType {
             "legal" => Ok(Self::Legal),
             "web" => Ok(Self::Web),
             "pgp_fingerprint" => Ok(Self::PGPFingerprint),
-            _ => Err(anyhow::anyhow!("Invalid account type: {}", s))
+            _ => Err(anyhow::anyhow!("Invalid account type: {}", s)),
         }
     }
 }
@@ -139,14 +139,14 @@ impl Account {
 
     pub fn inner(&self) -> String {
         match self {
-            Self::Twitter(v) | 
-            Self::Discord(v) | 
-            Self::Matrix(v) | 
-            Self::Display(v) | 
-            Self::Email(v) |
-            Self::Legal(v) |
-            Self::Github(v) |
-            Self::Web(v) => v.to_owned(),
+            Self::Twitter(v)
+            | Self::Discord(v)
+            | Self::Matrix(v)
+            | Self::Display(v)
+            | Self::Email(v)
+            | Self::Legal(v)
+            | Self::Github(v)
+            | Self::Web(v) => v.to_owned(),
             Self::PGPFingerprint(v) => hex::encode(v),
         }
     }
@@ -179,7 +179,7 @@ impl Account {
 
     pub fn into_accounts(value: &IdentityInfo) -> Vec<Account> {
         let mut accounts = Vec::new();
-        
+
         let mut add_if_some = |data: &IdentityData, constructor: fn(String) -> Account| {
             if let Some(value) = identity_data_tostring(data) {
                 accounts.push(constructor(value));
@@ -206,7 +206,10 @@ impl Account {
     where
         I: IntoIterator<Item = Account>,
     {
-        accounts.into_iter().map(|acc| (acc, status.clone())).collect()
+        accounts
+            .into_iter()
+            .map(|acc| (acc, status.clone()))
+            .collect()
     }
 }
 
@@ -214,11 +217,15 @@ impl FromStr for Account {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (account_type, value) = s.split_once(':')
+        let (account_type, value) = s
+            .split_once(':')
             .ok_or_else(|| anyhow::anyhow!("Invalid account format, expected Type:Name"))?;
 
         let account_type: AccountType = account_type.parse()?;
-        Ok(Self::from_type_and_value(account_type, value.trim().to_owned()))
+        Ok(Self::from_type_and_value(
+            account_type,
+            value.trim().to_owned(),
+        ))
     }
 }
 
@@ -435,7 +442,7 @@ impl Listener {
             cfg.registrar.registrar_index,
             &cfg.registrar.endpoint,
         )
-            .await?;
+        .await?;
 
         for (account, status) in &accounts {
             if !matches!(status, VerifStatus::Pending) {
@@ -447,7 +454,7 @@ impl Listener {
                     info!("Display account found: {}, marking as Done", name);
                     conn.save_account(&request.payload, account, None, VerifStatus::Done)
                         .await?;
-                    }
+                }
                 _ => {
                     conn.save_account(
                         &request.payload,
@@ -455,8 +462,8 @@ impl Listener {
                         Some(Token::generate().await),
                         VerifStatus::Pending,
                     )
-                        .await?;
-                    }
+                    .await?;
+                }
             }
         }
 
@@ -525,8 +532,8 @@ impl Listener {
                     .await
             }
             _ => Err(anyhow!(
-                    "Unsupported message type: {}",
-                    message.message_type
+                "Unsupported message type: {}",
+                message.message_type
             )),
         }
     }
@@ -580,8 +587,8 @@ impl Listener {
                 Ok(())
             }
             Err(_) => Err(anyhow!(
-                    "coudn't get registration of {} from the BC node",
-                    id
+                "coudn't get registration of {} from the BC node",
+                id
             )),
         }
     }
@@ -591,7 +598,7 @@ impl Listener {
     fn has_paid_fee(judgements: Vec<(u32, Judgement<u128>)>) -> anyhow::Result<(), anyhow::Error> {
         if judgements
             .iter()
-                .any(|(_, j)| matches!(j, Judgement::FeePaid(_)))
+            .any(|(_, j)| matches!(j, Judgement::FeePaid(_)))
         {
             Ok(())
         } else {
@@ -847,34 +854,34 @@ impl Listener {
         match self
             ._handle_incoming(Message::Text(text.into()), subscriber)
             .await
-            {
-                Ok(response) => {
-                    let serialized = match serde_json::to_string(&response) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!(parent: span, error = %e, "Failed to serialize response");
-                            return true;
-                        }
-                    };
-
-                    if let Err(e) = Self::send_message(write, serialized).await {
-                        error!(parent: span, error = %e, "Failed to send response");
-                        return false;
+        {
+            Ok(response) => {
+                let serialized = match serde_json::to_string(&response) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!(parent: span, error = %e, "Failed to serialize response");
+                        return true;
                     }
+                };
 
-                    if let Some(id) = subscriber.take() {
-                        info!(parent: span, subscriber_id = %id, "New subscriber registered");
-                        let mut cloned_self = self.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = cloned_self.spawn_redis_listener(sender, id).await {
-                                error!(error = %e, "Redis listener error");
-                            }
-                        });
-                    }
-                    true
+                if let Err(e) = Self::send_message(write, serialized).await {
+                    error!(parent: span, error = %e, "Failed to send response");
+                    return false;
                 }
-                Err(e) => self.handle_error_response(write, e, span).await,
+
+                if let Some(id) = subscriber.take() {
+                    info!(parent: span, subscriber_id = %id, "New subscriber registered");
+                    let mut cloned_self = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = cloned_self.spawn_redis_listener(sender, id).await {
+                            error!(error = %e, "Redis listener error");
+                        }
+                    });
+                }
+                true
             }
+            Err(e) => self.handle_error_response(write, e, span).await,
+        }
     }
 
     async fn handle_successful_response(
@@ -1277,7 +1284,7 @@ impl NodeListener {
                     cfg.registrar.registrar_index,
                     &cfg.registrar.endpoint,
                 )
-                    .await?;
+                .await?;
 
                 // TODO: make all commands chained together and then executed
                 // all at once!
@@ -1478,9 +1485,9 @@ impl RedisConnection {
         // Helper closure to create account key
         let make_info = |account: &Account| -> anyhow::Result<String> {
             Ok(format!(
-                    "{}:{}",
-                    serde_json::to_string(account)?,
-                    serde_json::to_string(wallet_id)?
+                "{}:{}",
+                serde_json::to_string(account)?,
+                serde_json::to_string(wallet_id)?
             ))
         };
 
@@ -1495,10 +1502,10 @@ impl RedisConnection {
             matches!(
                 (acc_type, account),
                 (AccountType::Discord, Account::Discord(_))
-                | (AccountType::Display, Account::Display(_))
-                | (AccountType::Email, Account::Email(_))
-                | (AccountType::Matrix, Account::Matrix(_))
-                | (AccountType::Twitter, Account::Twitter(_))
+                    | (AccountType::Display, Account::Display(_))
+                    | (AccountType::Email, Account::Email(_))
+                    | (AccountType::Matrix, Account::Matrix(_))
+                    | (AccountType::Twitter, Account::Twitter(_))
             )
         });
 
@@ -1542,15 +1549,15 @@ impl RedisConnection {
         match self
             .conn
             .hget::<&str, &str, Option<String>>(account, "token")
-            {
-                Ok(Some(token)) => Ok(Some(Token::new(token))),
-                Ok(None) => Ok(None),
-                Err(e) => Err(anyhow!(
-                        "Couldn't retrive challenge for {}\nError {:?}",
-                        account,
-                        e
-                )),
-            }
+        {
+            Ok(Some(token)) => Ok(Some(Token::new(token))),
+            Ok(None) => Ok(None),
+            Err(e) => Err(anyhow!(
+                "Couldn't retrive challenge for {}\nError {:?}",
+                account,
+                e
+            )),
+        }
     }
 
     /// Get the [AccountId32] from a hashset with `account` as a name, `wallet_id`
@@ -1580,15 +1587,15 @@ impl RedisConnection {
         match self
             .conn
             .hget::<&str, &str, Option<String>>(account, "status")
-            {
-                Ok(Some(status)) => Ok(Some(serde_json::from_str::<VerifStatus>(&status)?)),
-                Ok(None) => Ok(None),
-                Err(e) => Err(anyhow!(
-                        "Error getting status for {}\nError: {:?}",
-                        account,
-                        e
-                )),
-            }
+        {
+            Ok(Some(status)) => Ok(Some(serde_json::from_str::<VerifStatus>(&status)?)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(anyhow!(
+                "Error getting status for {}\nError: {:?}",
+                account,
+                e
+            )),
+        }
     }
 
     /// Set the `status` value of a redis hashset of name `account` to the value of
@@ -1690,22 +1697,22 @@ impl RedisConnection {
         match self
             .conn
             .hget::<&str, &str, String>(&serde_json::to_string(wallet_id).unwrap(), "accounts")
-            {
-                Ok(metadata) => {
-                    let mut result = vec![];
-                    let metadata: HashMap<Account, VerifStatus> =
-                        serde_json::from_str(&metadata).unwrap();
-                    for (acc, current_status) in metadata {
-                        if current_status == status {
-                            result.push(acc);
-                        }
+        {
+            Ok(metadata) => {
+                let mut result = vec![];
+                let metadata: HashMap<Account, VerifStatus> =
+                    serde_json::from_str(&metadata).unwrap();
+                for (acc, current_status) in metadata {
+                    if current_status == status {
+                        result.push(acc);
                     }
-                    return result;
                 }
-                _ => {
-                    vec![]
-                }
+                return result;
             }
+            _ => {
+                vec![]
+            }
+        }
     }
 
     async fn clear_all_related_to(&mut self, who: &AccountId32) -> anyhow::Result<()> {
@@ -1720,7 +1727,7 @@ impl RedisConnection {
                 .cmd("DEL")
                 .arg(format!("{}", account))
                 .exec(&mut self.conn)?;
-            }
+        }
         Ok(())
     }
 
@@ -1780,7 +1787,7 @@ impl RedisConnection {
                     VerifStatus::Pending => {
                         self.save_account(who, &account, Some(Token::generate().await), status)
                             .await?;
-                        }
+                    }
                 }
             }
         }
@@ -1830,7 +1837,7 @@ impl RedisConnection {
             result
         }
         .instrument(span)
-            .await
+        .await
     }
 
     async fn save_owner(
@@ -1877,13 +1884,13 @@ async fn process_redis_account_change(
         let status = serde_json::from_str::<VerifStatus>(&status_str)?;
 
         return Ok(Some((
-                    id,
-                    serde_json::json!({
-                        "accounts": accounts,
-                        "status": status,
-                        "operation": payload,
-                        "key": key
-                    }),
+            id,
+            serde_json::json!({
+                "accounts": accounts,
+                "status": status,
+                "operation": payload,
+                "key": key
+            }),
         )));
     }
 
@@ -1896,13 +1903,13 @@ async fn process_redis_account_change(
             .ok_or_else(|| anyhow::anyhow!("Couldn't retrieve status for key: {}", key))?;
 
         return Ok(Some((
-                    id,
-                    serde_json::json!({
-                        "account": account,
-                        "status": status,
-                        "operation": payload,
-                        "key": key
-                    }),
+            id,
+            serde_json::json!({
+                "account": account,
+                "status": status,
+                "operation": payload,
+                "key": key
+            }),
         )));
     }
 
