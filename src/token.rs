@@ -1,16 +1,19 @@
-use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
+use rand::prelude::*;
+
+const OLC_ALPHABET: &str = "23456789CFGHJKLMNPQRVWXY";
 
 pub trait AuthToken: PartialEq + Eq {
-    /// Generates a token that constitutes of the account and
+    /// Generates a token that constitutes the account and
     /// the expected message to receive from the account
     async fn generate() -> Token;
+    /// Shows generated token string
     fn show(&self) -> String;
 }
 
 #[derive(PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
 pub struct Token {
-    /// Expected message to recieve
+    /// Expected message to receive
     expected_message: String,
 }
 
@@ -37,15 +40,15 @@ impl<'a> From<&'a str> for Token {
 }
 
 impl AuthToken for Token {
-    /// Generates a [Token] for a specific [AccountType], this token
-    /// constituted of the [AccountType] and the expecetd message as a
-    /// [String] 10 characters long
+    /// Generates a [Token] as a [String] 8 characters long, using the base-20 `OLC_ALPHABET`.
     async fn generate() -> Token {
-        let s: String = rand::thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(10)
-            .map(char::from)
-            .collect();
+        let mut rng = rand::thread_rng();
+        let s: String = (0..10)
+            .map(|_| {
+                let idx = rng.gen_range(0..OLC_ALPHABET.len());
+                OLC_ALPHABET.chars().nth(idx).unwrap()
+            })
+        .collect();
         Token {
             expected_message: s,
         }
