@@ -9,7 +9,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 
 use crate::api::{spawn_ws_serv,spawn_node_listener};
 use crate::config::{GLOBAL_CONFIG, Config};
-use tracing::info;
+use tracing::{info, error};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -25,21 +25,41 @@ async fn main() -> anyhow::Result<()> {
     GLOBAL_CONFIG.set(config).expect("GLOBAL_CONFIG already initialized");
 
     info!("Starting services...");
+    
+    // Spawn services as separate tasks
+    let node_handle = tokio::spawn(async {
+        info!("Spawning node listener...");
+        if let Err(e) = spawn_node_listener().await {
+            error!("Node listener error: {}", e);
+        }
+    });
 
-    // Spawn node listener first
-    info!("Spawning node listener...");
-    spawn_node_listener().await?;
-    info!("Node listener spawned successfully");
+    let matrix_handle = tokio::spawn(async {
+        info!("Spawning matrix bot...");
+        if let Err(e) = matrix::start_bot().await {
+            error!("Matrix bot error: {}", e);
+        }
+    });
 
-    //info!("Spawning matrix bot...");
-    //matrix::start_bot().await?;
-    //info!("Matrix bot spawned successfully");
+    let ws_handle = tokio::spawn(async {
+        info!("Spawning websocket server...");
+        spawn_ws_serv().await
+    });
 
-    // Spawn websocket server
-    info!("Spawning websocket server...");
-    spawn_ws_serv().await;
+    info!("All services spawned successfully");
 
-    info!("Services closed!");
+    // Wait for Ctrl+C
+    tokio::signal::ctrl_c().await?;
+    info!("Shutdown signal received, stopping services...");
+
+    // Cancel all tasks
+    node_handle.abort();
+    matrix_handle.abort();
+    ws_handle.abort();
+
+    // Wait for tasks to finish
+    let _ = tokio::join!(node_handle, matrix_handle, ws_handle);
+    
+    info!("All services stopped gracefully");
     Ok(())
-
 }
