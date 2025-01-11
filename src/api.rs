@@ -54,11 +54,27 @@ impl VerifStatus {
     }
 }
 
+impl fmt::Display for VerifStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Done => write!(f, "Done"),
+            Self::Pending => write!(f, "Pending"), 
+        }
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct AcctMetadata {
     pub status: VerifStatus,
     pub id: AccountId32,
     pub token: Token,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidationMode {
+    Direct,
+    Inbound,
+    Outbound,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -124,6 +140,23 @@ impl fmt::Display for AccountType {
 }
 
 impl Account {
+    pub fn determine(&self) -> ValidationMode {
+        match self {
+            // Direct: verified directly without user action
+            Account::Display(_)
+            | Account::Web(_) => ValidationMode::Direct,
+            // Inbound: receive challenge via websocket
+            Account::Email(_)
+            | Account::PGPFingerprint(_) => ValidationMode::Inbound,
+            // Outbound: send challenge via websocket
+            Account::Discord(_)
+            | Account::Github(_)
+            | Account::Legal(_)
+            | Account::Matrix(_)
+            | Account::Twitter(_) => ValidationMode::Outbound,
+        }
+    }
+
     pub fn account_type(&self) -> AccountType {
         match self {
             Self::Discord(_) => AccountType::Discord,
@@ -1633,7 +1666,7 @@ impl RedisConnection {
             // this acount is in format "{platform}:{acc_name}":"{wallet_id}"
             account,
             "status",
-            serde_json::to_string(&status)?,
+            status.to_string(),
         )?;
 
         let wallet_id = self.conn.hget::<&str, &str, String>(account, "wallet_id")?;
@@ -1663,9 +1696,9 @@ impl RedisConnection {
     /// The `account` should be in the "[Account]:[AccountId32]" format
     pub fn signal_done(&mut self, wallet_id: &AccountId32) -> anyhow::Result<()> {
         self.conn.hset::<String, &str, String, ()>(
-            serde_json::to_string(&wallet_id)?,
+            wallet_id.to_string(),
             "status",
-            serde_json::to_string(&VerifStatus::Done)?,
+            VerifStatus::Done.to_string(),
         )?;
         Ok(())
     }
@@ -1830,27 +1863,44 @@ impl RedisConnection {
                 serde_json::to_string(&account)?,
                 serde_json::to_string(who)?
             );
+            debug!("Generated Redis key: {}", key);
 
             let mut cmd = redis::cmd("HSET");
             cmd.arg(&key)
                 .arg("status")
-                .arg(serde_json::to_string(&status)?)
+                .arg(status.to_string())
                 .arg("wallet_id")
-                .arg(serde_json::to_string(who)?);
+                .arg(who.to_string());
 
-            // filter display_name
-            if let Some(token_value) = token {
-                cmd.arg("token").arg(token_value.show());
+            let validation_mode = account.determine();
+
+            if matches!(validation_mode, ValidationMode::Inbound | ValidationMode::Outbound) {
+                if let Some(token_value) = token {
+                    info!("Token provided for account: {}", token_value.show());
+                    cmd.arg("token").arg(token_value.show());
+                } else {
+                    info!("No token provided for an Inbound/Outbound account.");
+                }
             }
 
             let result = cmd.exec(&mut self.conn);
 
             match &result {
-                Ok(_) => info!("Successfully saved account information"),
-                Err(e) => error!(error = %e, "Failed to save account information"),
+                Ok(_) => {
+                    debug!(
+                        "Saved account information for key: {}",
+                        key
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to save account information for key: {}, Error: {:?}",
+                        key, e
+                    );
+                }
             }
 
-            result
+            Ok(())
         }
         .instrument(span)
         .await
@@ -1863,11 +1913,11 @@ impl RedisConnection {
     ) -> anyhow::Result<(), RedisError> {
         redis::pipe()
             .cmd("HSET")
-            .arg(serde_json::to_string(who)?)
+            .arg(who.to_string())
             .arg("accounts")
             .arg(serde_json::to_string(&accounts)?)
             .arg("status")
-            .arg(serde_json::to_string(&VerifStatus::Pending)?)
+            .arg(VerifStatus::Pending.to_string())
             .exec(&mut self.conn)
     }
 }
