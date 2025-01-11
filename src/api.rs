@@ -128,21 +128,29 @@ impl<'de> Deserialize<'de> for Account {
         let acc = String::deserialize(deserializer)?;
         let parts: Option<(&str, &str)> = acc.split_once(':');
         match parts {
-            Some((acc_type, acc_name)) => match acc_type {
-                "Discord" => Ok(Account::Discord(acc_name.to_owned())),
-                "Twitter" => Ok(Account::Twitter(acc_name.to_owned())),
-                "Matrix" => Ok(Account::Matrix(acc_name.to_owned())),
-                "Email" => Ok(Account::Email(acc_name.to_owned())),
-                "Display" => Ok(Account::Display(acc_name.to_owned())),
-                "Github" => Ok(Account::Github(acc_name.to_owned())),
-                "Legal" => Ok(Account::Legal(acc_name.to_owned())),
-                "Web" => Ok(Account::Web(acc_name.to_owned())),
-                "PGPFingerprint" => Err(serde::de::Error::custom("TODO")),
-                _ => {
-                    return Err(serde::de::Error::custom("Invalid account format"));
+            Some((acc_type, acc_name)) => {
+                let acc_type = acc_type.trim();
+                let acc_name = acc_name.trim();
+                match acc_type {
+                    "Discord" => Ok(Account::Discord(acc_name.to_owned())),
+                    "Twitter" => Ok(Account::Twitter(acc_name.to_owned())),
+                    "Matrix" => Ok(Account::Matrix(acc_name.to_owned())),
+                    "Email" => Ok(Account::Email(acc_name.to_owned())),
+                    "Display" => Ok(Account::Display(acc_name.to_owned())),
+                    "Github" => Ok(Account::Github(acc_name.to_owned())),
+                    "Legal" => Ok(Account::Legal(acc_name.to_owned())),
+                    "Web" => Ok(Account::Web(acc_name.to_owned())),
+                    "PGPFingerprint" => Err(serde::de::Error::custom("TODO")),
+                    _ => {
+                        Err(serde::de::Error::custom(format!(
+                            "Invalid account type: {}", acc_type
+                        )))
+                    }
                 }
-            },
-            None => return Err(serde::de::Error::custom("Invalid account format")),
+            }
+            None => Err(serde::de::Error::custom(format!(
+                "Invalid account format, expected Type:Name, got: {}", acc
+            ))),
         }
     }
 }
@@ -720,16 +728,29 @@ impl Listener {
                 }
 
                 Some(msg_result) = read.next() => {
-                    if !self.handle_ws_message(&write, msg_result, &mut subscriber, sender.clone(), &span).await {
-                        break;
+                    match msg_result {
+                        Ok(Message::Close(_)) => {
+                            info!(parent: &span, "Received close frame");
+                            break;
+                        }
+                        _ => {
+                            if !self.handle_ws_message(&write, msg_result, &mut subscriber, sender.clone(), &span).await {
+                                break;
+                            }
+                        }
                     }
                 }
 
                 else => {
-                    error!(parent: &span, "Unexpected end of message streams");
+                    info!(parent: &span, "WebSocket or channel stream ended");
                     break;
                 }
             }
+        }
+
+        // Cleanup
+        if let Some(id) = subscriber {
+            info!(parent: &span, subscriber_id = %id, "Cleaning up subscriber");
         }
         info!(parent: &span, "WebSocket connection closed");
     }
@@ -974,73 +995,69 @@ impl Listener {
         info!("Starting Redis listener task!");
 
         tokio::spawn(async move {
-            let mut redis_conn = RedisConnection::create_conn(&redis_cfg)
-                .map_err(|e| anyhow!("Failed to create a Redis connection: {}", e))
-                .unwrap();
+            let mut redis_conn = match RedisConnection::create_conn(&redis_cfg) {
+                Ok(conn) => conn,
+                Err(e) => {
+                    error!("Failed to create Redis connection: {}", e);
+                    return;
+                }
+            };
 
             let mut pubsub = redis_conn.as_pubsub();
-
-            let channel = format!(
-                "__keyspace@0__:{}",
-                serde_json::to_string(&account).unwrap()
-            );
+            let channel = format!("__keyspace@0__:{}", serde_json::to_string(&account).unwrap());
 
             info!("Subscribing to channel: {}", channel);
             if let Err(e) = pubsub.subscribe(&channel) {
-                error!("Failed to subscribe to channel: {:?}", e);
+                error!("Failed to subscribe to channel: {}", e);
                 return;
             }
 
-            if let Err(e) = sender
-                .send(serde_json::json!({
-                    "status": "listener_started",
-                    "channel": channel
-                }))
-            .await
-            {
-                error!("Failed to send test message: {:?}", e);
-                return;
-            }
-
-            info!("Starting message processing loop");
+            debug!("Starting message processing loop");
             loop {
-                match pubsub.get_message() {
-                    Ok(msg) => {
-                        info!("Redis event received: {:?}", msg);
-                        match process_redis_account_change(&redis_cfg, &msg).await {
-                            Ok(result) => {
-                                if let Some((_, obj)) = result {
-                                    if let Err(e) = sender.send(obj).await {
-                                        error!("Failed to send message: {:?}", e);
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                info!("coudln't process redis msg {:?} because of {:#?}", msg, e)
-                            }
-                        }
-                    }
+                // get message or break on error
+                let msg = match pubsub.get_message() {
+                    Ok(msg) => msg,
                     Err(e) => {
-                        error!("Error getting Redis message: {:?}", e);
+                        error!("Error getting Redis message: {}", e);
                         break;
                     }
+                };
+
+                debug!("Redis event received: {:?}", msg);
+
+                // process message, continue on error
+                let result = match process_redis_account_change(&redis_cfg, &msg).await {
+                    Ok(result) => result,
+                    Err(e) => {
+                        info!("Failed to process Redis message {:?}: {:#?}", msg, e);
+                        continue;
+                    }
+                };
+
+                // extract object if it exists, continue if none
+                let (_, obj) = match result {
+                    Some(data) => data,
+                    None => continue,
+                };
+
+                // send message, break if channel closed
+                if let Err(_) = sender.send(obj).await {
+                    info!("WebSocket channel closed, stopping Redis listener");
+                    break;
                 }
             }
-            info!("Redis listener loop ended");
+            debug!("Redis listener loop ended");
         });
 
-        info!("Redis listener task spawned");
+        debug!("Redis listener task spawned");
         Ok(())
     }
 }
 
 /// Spawns a websocket server to listen for incoming registration requests
-pub async fn spawn_ws_serv() -> anyhow::Result<()> {
+pub async fn spawn_ws_serv() -> ! {
     let mut listener = Listener::new().await;
-    listener.listen().await;
-
-    Ok(())
+    listener.listen().await
 }
 
 /// Used to listen/interact with BC events on the substrate node
@@ -1772,15 +1789,19 @@ impl RedisConnection {
                 serde_json::to_string(who)?
             );
 
-            let result = redis::cmd("HSET")
-                .arg(&key)
+            let mut cmd = redis::cmd("HSET");
+            cmd.arg(&key)
                 .arg("status")
                 .arg(serde_json::to_string(&status)?)
                 .arg("wallet_id")
-                .arg(serde_json::to_string(who)?)
-                .arg("token")
-                .arg(token.map(|t| t.show()))
-                .exec(&mut self.conn);
+                .arg(serde_json::to_string(who)?);
+
+            // this is here  display_name
+            if let Some(token_value) = token {
+                cmd.arg("token").arg(token_value.show());
+            }
+
+            let result = cmd.exec(&mut self.conn);
 
             match &result {
                 Ok(_) => info!("Successfully saved account information"),

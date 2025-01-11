@@ -10,7 +10,7 @@ VERIFY_MSG=$(cat << EOF | jq -c .
     "payload": {
         "account": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
         "field": "Discord",
-        "challenge": "Vfx5qENvaK"
+        "challenge": "QB5A6EpiTv"
     }
 }
 EOF

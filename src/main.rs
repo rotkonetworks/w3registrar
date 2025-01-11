@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn websocket server
     info!("Spawning websocket server...");
-    spawn_ws_serv().await?;
+    spawn_ws_serv().await;
 
     info!("Services closed!");
     Ok(())
