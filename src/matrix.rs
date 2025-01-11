@@ -20,6 +20,7 @@ use matrix_sdk::{
 use redis::{self};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::str::FromStr;
 use subxt::utils::AccountId32;
 use tokio::time::{sleep, Duration};
 use tracing::info;
@@ -243,9 +244,8 @@ async fn on_room_message(
                                 // extract's the sender src ['Discord:user_x']
                                 let sender = arr.first().unwrap().to_string();
                                 // creating an account from the extracted sender
-                                match Account::from_string(sender.clone()) {
-                                    // TODO: this looks sooo ugly
-                                    Some(acc) => handle_incoming(
+                                match Account::from_str(&sender) {
+                                    Ok(acc) => handle_incoming(
                                         acc,
                                         &text_content,
                                         &_room,
@@ -253,9 +253,9 @@ async fn on_room_message(
                                         ctx.0 .1.registrar_index,
                                         &ctx.0 .1.endpoint,
                                     )
-                                    .await
-                                    .unwrap(),
-                                    None => info!("Couldn't create Acc object from {:?}", sender),
+                                        .await
+                                        .unwrap(),
+                                    Err(e) => info!("Couldn't create Account object from {:?}: {:?}", sender, e),
                                 }
                             }
                             _ => {}

@@ -12915,6 +12915,7 @@ dependencies = [
  "serde_json",
  "sp-core 35.0.0",
  "sqlx",
+ "strum 0.26.3",
  "subxt",
  "subxt-signer",
  "tokio",

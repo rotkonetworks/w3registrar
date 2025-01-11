@@ -8,12 +8,12 @@ use futures::StreamExt;
 use futures_util::SinkExt;
 use redis::{self, RedisError};
 use redis::{Client as RedisClient, Commands};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use sp_core::blake2_256;
 use sp_core::Encode;
-use std::boxed::Box;
-use std::str::FromStr;
+use std::fmt;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::str::FromStr;
 use subxt::events::EventDetails;
 use subxt::utils::AccountId32;
 use subxt::SubstrateConfig;
@@ -74,28 +74,151 @@ pub enum Account {
     PGPFingerprint([u8; 20]),
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Copy)]
 pub enum AccountType {
     Discord,
     Display,
     Email,
     Matrix,
     Twitter,
+    Github,
+    Legal,
+    Web,
+    PGPFingerprint,
 }
 
-impl AccountType {
-    /// Checks if `field` is eq to an account name (discord, twitter, etc)
-    /// in a case insensitive manner i.e. "Discord" == "discord" == "DiScOrD"
-    /// TODO: use serde :)
-    fn from_str(field: &str) -> Option<Self> {
-        match field.to_lowercase().as_str() {
-            "discord" => Some(AccountType::Discord),
-            "display_name" => Some(AccountType::Display),
-            "email" => Some(AccountType::Email),
-            "matrix" => Some(AccountType::Matrix),
-            "twitter" => Some(AccountType::Twitter),
-            _ => None,
+impl FromStr for AccountType {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "discord" => Ok(Self::Discord),
+            "display_name" => Ok(Self::Display),
+            "email" => Ok(Self::Email),
+            "matrix" => Ok(Self::Matrix),
+            "twitter" => Ok(Self::Twitter),
+            "github" => Ok(Self::Github),
+            "legal" => Ok(Self::Legal),
+            "web" => Ok(Self::Web),
+            "pgp_fingerprint" => Ok(Self::PGPFingerprint),
+            _ => Err(anyhow::anyhow!("Invalid account type: {}", s))
         }
+    }
+}
+
+impl fmt::Display for AccountType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Discord => write!(f, "discord"),
+            Self::Display => write!(f, "display_name"),
+            Self::Email => write!(f, "email"),
+            Self::Matrix => write!(f, "matrix"),
+            Self::Twitter => write!(f, "twitter"),
+            Self::Github => write!(f, "github"),
+            Self::Legal => write!(f, "legal"),
+            Self::Web => write!(f, "web"),
+            Self::PGPFingerprint => write!(f, "pgp_fingerprint"),
+        }
+    }
+}
+
+impl Account {
+    pub fn account_type(&self) -> AccountType {
+        match self {
+            Self::Discord(_) => AccountType::Discord,
+            Self::Display(_) => AccountType::Display,
+            Self::Email(_) => AccountType::Email,
+            Self::Matrix(_) => AccountType::Matrix,
+            Self::Twitter(_) => AccountType::Twitter,
+            Self::Github(_) => AccountType::Github,
+            Self::Legal(_) => AccountType::Legal,
+            Self::Web(_) => AccountType::Web,
+            Self::PGPFingerprint(_) => AccountType::PGPFingerprint,
+        }
+    }
+
+    pub fn inner(&self) -> String {
+        match self {
+            Self::Twitter(v) | 
+            Self::Discord(v) | 
+            Self::Matrix(v) | 
+            Self::Display(v) | 
+            Self::Email(v) |
+            Self::Legal(v) |
+            Self::Github(v) |
+            Self::Web(v) => v.to_owned(),
+            Self::PGPFingerprint(v) => hex::encode(v),
+        }
+    }
+
+    pub fn from_type_and_value(account_type: AccountType, value: String) -> Self {
+        match account_type {
+            AccountType::Discord => Self::Discord(value),
+            AccountType::Display => Self::Display(value),
+            AccountType::Email => Self::Email(value),
+            AccountType::Matrix => Self::Matrix(value),
+            AccountType::Twitter => Self::Twitter(value),
+            AccountType::Github => Self::Github(value),
+            AccountType::Legal => Self::Legal(value),
+            AccountType::Web => Self::Web(value),
+            AccountType::PGPFingerprint => {
+                if let Ok(bytes) = hex::decode(&value) {
+                    if bytes.len() == 20 {
+                        let mut fingerprint = [0u8; 20];
+                        fingerprint.copy_from_slice(&bytes);
+                        Self::PGPFingerprint(fingerprint)
+                    } else {
+                        Self::PGPFingerprint([0u8; 20])
+                    }
+                } else {
+                    Self::PGPFingerprint([0u8; 20])
+                }
+            }
+        }
+    }
+
+    pub fn into_accounts(value: &IdentityInfo) -> Vec<Account> {
+        let mut accounts = Vec::new();
+        
+        let mut add_if_some = |data: &IdentityData, constructor: fn(String) -> Account| {
+            if let Some(value) = identity_data_tostring(data) {
+                accounts.push(constructor(value));
+            }
+        };
+
+        add_if_some(&value.discord, Account::Discord);
+        add_if_some(&value.twitter, Account::Twitter);
+        add_if_some(&value.matrix, Account::Matrix);
+        add_if_some(&value.email, Account::Email);
+        add_if_some(&value.display, Account::Display);
+        add_if_some(&value.github, Account::Github);
+        add_if_some(&value.legal, Account::Legal);
+        add_if_some(&value.web, Account::Web);
+
+        if let Some(fingerprint) = value.pgp_fingerprint {
+            accounts.push(Account::PGPFingerprint(fingerprint));
+        }
+
+        accounts
+    }
+
+    pub fn into_hashmap<I>(accounts: I, status: VerifStatus) -> HashMap<Account, VerifStatus>
+    where
+        I: IntoIterator<Item = Account>,
+    {
+        accounts.into_iter().map(|acc| (acc, status.clone())).collect()
+    }
+}
+
+impl FromStr for Account {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (account_type, value) = s.split_once(':')
+            .ok_or_else(|| anyhow::anyhow!("Invalid account format, expected Type:Name"))?;
+
+        let account_type: AccountType = account_type.parse()?;
+        Ok(Self::from_type_and_value(account_type, value.trim().to_owned()))
     }
 }
 
@@ -104,162 +227,18 @@ impl Serialize for Account {
     where
         S: serde::Serializer,
     {
-        let acc = match self {
-            Account::Discord(name) => format!("Discord:{}", name),
-            Account::Twitter(name) => format!("Twitter:{}", name),
-            Account::Matrix(name) => format!("Matrix :{}", name),
-            Account::Display(name) => format!("Display :{}", name),
-            Account::Legal(name) => format!("Legal :{}", name),
-            Account::Web(name) => format!("Web: {}", name),
-            Account::Email(name) => format!("Email: {}", name),
-            Account::Github(name) => format!("Github: {}", name),
-            Account::PGPFingerprint(fp) => format!("PGPFingerprint: {:?}", fp),
-        };
-        serializer.serialize_str(&acc)
+        let s = format!("{}:{}", self.account_type(), self.inner());
+        serializer.serialize_str(&s)
     }
 }
 
 impl<'de> Deserialize<'de> for Account {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: Deserializer<'de>,
+        D: serde::Deserializer<'de>,
     {
-        let acc = String::deserialize(deserializer)?;
-        let parts: Option<(&str, &str)> = acc.split_once(':');
-        match parts {
-            Some((acc_type, acc_name)) => {
-                let acc_type = acc_type.trim();
-                let acc_name = acc_name.trim();
-                match acc_type {
-                    "Discord" => Ok(Account::Discord(acc_name.to_owned())),
-                    "Twitter" => Ok(Account::Twitter(acc_name.to_owned())),
-                    "Matrix" => Ok(Account::Matrix(acc_name.to_owned())),
-                    "Email" => Ok(Account::Email(acc_name.to_owned())),
-                    "Display" => Ok(Account::Display(acc_name.to_owned())),
-                    "Github" => Ok(Account::Github(acc_name.to_owned())),
-                    "Legal" => Ok(Account::Legal(acc_name.to_owned())),
-                    "Web" => Ok(Account::Web(acc_name.to_owned())),
-                    "PGPFingerprint" => Err(serde::de::Error::custom("TODO")),
-                    _ => Err(serde::de::Error::custom(format!(
-                        "Invalid account type: {}",
-                        acc_type
-                    ))),
-                }
-            }
-            None => Err(serde::de::Error::custom(format!(
-                "Invalid account format, expected Type:Name, got: {}",
-                acc
-            ))),
-        }
-    }
-}
-
-impl Account {
-    /// Derives an [Account] from a String in the following template
-    /// <platform>:<acc-name>
-    /// TODO: substitute this with deserialization call
-    pub fn from_string(value: String) -> Option<Self> {
-        match value.split_once(":") {
-            Some((l, r)) => {
-                info!("\nPlatform: {}\nNick: {}", l, r);
-                match &l[1..] {
-                    "discord" => Some(Self::Discord(String::from(&r[..r.len() - 1]))),
-                    "display_name" => Some(Self::Display(String::from(&r[..r.len() - 1]))),
-                    "email" => Some(Self::Email(String::from(&r[..r.len() - 1]))),
-                    "matrix" => Some(Self::Matrix(String::from(&r[..r.len() - 1]))),
-                    "twitter" => Some(Self::Twitter(String::from(&r[..r.len() - 1]))),
-                    _ => None,
-                }
-            }
-            None => None,
-        }
-    }
-
-    pub fn into_accounts(value: &IdentityInfo) -> Vec<Account> {
-        let mut result = vec![];
-
-        let mut push_account_if_some =
-            |opt: Option<String>, constructor: Box<dyn Fn(String) -> Account>| {
-                if let Some(acc) = opt {
-                    result.push(constructor(acc));
-                }
-            };
-
-        push_account_if_some(
-            identity_data_tostring(&value.discord),
-            Box::new(Account::Discord),
-        );
-        push_account_if_some(
-            identity_data_tostring(&value.twitter),
-            Box::new(Account::Twitter),
-        );
-        push_account_if_some(
-            identity_data_tostring(&value.matrix),
-            Box::new(Account::Matrix),
-        );
-        push_account_if_some(
-            identity_data_tostring(&value.email),
-            Box::new(Account::Email),
-        );
-        push_account_if_some(
-            identity_data_tostring(&value.display),
-            Box::new(Account::Display),
-        );
-        push_account_if_some(
-            identity_data_tostring(&value.github),
-            Box::new(Account::Github),
-        );
-        push_account_if_some(
-            identity_data_tostring(&value.legal),
-            Box::new(Account::Legal),
-        );
-
-        // handling for pgp_fingerprint(not a string)
-        if let Some(acc) = value.pgp_fingerprint {
-            result.push(Account::PGPFingerprint(acc));
-        }
-
-        info!("Found accounts: {:?}", result);
-
-        result
-    }
-
-    pub fn inner(&self) -> String {
-        match self {
-            Account::Twitter(v) => v.to_owned(),
-            Account::Discord(v) => v.to_owned(),
-            Account::Matrix(v) => v.to_owned(),
-            Account::Display(v) => v.to_owned(),
-            Account::Email(v) => v.to_owned(),
-            Account::Legal(v) => v.to_owned(),
-            Account::Github(v) => v.to_owned(),
-            Account::Web(v) => v.to_owned(),
-            Account::PGPFingerprint(v) => String::from_utf8(v.to_vec()).unwrap(),
-        }
-    }
-
-    pub fn account_type(&self) -> &str {
-        match self {
-            Self::Discord(_) => "discord",
-            Self::Display(_) => "display_name",
-            Self::Email(_) => "email",
-            Self::Matrix(_) => "matrix",
-            Self::Twitter(_) => "twitter",
-            _ => "unknown",
-        }
-    }
-
-    /// constructs a [HashMap] of {Accout: VerifStatus} from a
-    /// [Vec<Account>] as `accounts` and a [VerifStatus] as `value`
-    pub fn into_hashmap(
-        accounts: Vec<Account>,
-        value: VerifStatus,
-    ) -> HashMap<Account, VerifStatus> {
-        let mut result = HashMap::new();
-        for account in accounts {
-            result.insert(account, value.clone());
-        }
-        result
+        let s = String::deserialize(deserializer)?;
+        Self::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -435,7 +414,7 @@ impl Listener {
         &mut self,
         request: SubscribeAccountStateRequest,
         subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<WebSocketMessage> {
+    ) -> anyhow::Result<serde_json::Value> {
         *subscriber = Some(request.payload.clone());
         let redis_cfg = &self.redis_cfg;
 
@@ -456,7 +435,7 @@ impl Listener {
             cfg.registrar.registrar_index,
             &cfg.registrar.endpoint,
         )
-        .await?;
+            .await?;
 
         for (account, status) in &accounts {
             if !matches!(status, VerifStatus::Pending) {
@@ -468,7 +447,7 @@ impl Listener {
                     info!("Display account found: {}, marking as Done", name);
                     conn.save_account(&request.payload, account, None, VerifStatus::Done)
                         .await?;
-                }
+                    }
                 _ => {
                     conn.save_account(
                         &request.payload,
@@ -476,8 +455,8 @@ impl Listener {
                         Some(Token::generate().await),
                         VerifStatus::Pending,
                     )
-                    .await?;
-                }
+                        .await?;
+                    }
             }
         }
 
@@ -487,21 +466,22 @@ impl Listener {
         let hash = self.hash_identity_info(&registration.info);
         let pending_challenges = conn.get_challenges(&request.payload)?;
 
-        let response = JsonResultPayload {
-            response_type: "ok".to_string(),
-            message: serde_json::json!({
-                "AccountState": {
-                    "account": request.payload.to_string(),
-                    "hashed_info": hash,
-                    "verification_state": {
-                        "fields": verification_fields
-                    },
-                    "pending_challenges": pending_challenges
+        Ok(serde_json::json!({
+            "type": "JsonResult",
+            "payload": {
+                "type": "ok",
+                "message": {
+                    "AccountState": {
+                        "account": request.payload.to_string(),
+                        "hashed_info": hash,
+                        "verification_state": {
+                            "fields": verification_fields
+                        },
+                        "pending_challenges": pending_challenges
+                    }
                 }
-            }),
-        };
-
-        Ok(WebSocketMessage::JsonResult(response))
+            }
+        }))
     }
 
     /// Generates a hex-encoded blake2 hash of the identity info with 0x prefix
@@ -530,8 +510,7 @@ impl Listener {
                     payload: account_id,
                 };
 
-                let response = self.handle_subscription_request(req, subscriber).await?;
-                Ok(serde_json::to_value(response)?)
+                self.handle_subscription_request(req, subscriber).await
             }
             "VerifyIdentity" => {
                 let verify_request: ChallengedAccount = serde_json::from_value(message.payload)
@@ -546,8 +525,8 @@ impl Listener {
                     .await
             }
             _ => Err(anyhow!(
-                "Unsupported message type: {}",
-                message.message_type
+                    "Unsupported message type: {}",
+                    message.message_type
             )),
         }
     }
@@ -601,8 +580,8 @@ impl Listener {
                 Ok(())
             }
             Err(_) => Err(anyhow!(
-                "coudn't get registration of {} from the BC node",
-                id
+                    "coudn't get registration of {} from the BC node",
+                    id
             )),
         }
     }
@@ -612,7 +591,7 @@ impl Listener {
     fn has_paid_fee(judgements: Vec<(u32, Judgement<u128>)>) -> anyhow::Result<(), anyhow::Error> {
         if judgements
             .iter()
-            .any(|(_, j)| matches!(j, Judgement::FeePaid(_)))
+                .any(|(_, j)| matches!(j, Judgement::FeePaid(_)))
         {
             Ok(())
         } else {
@@ -789,17 +768,12 @@ impl Listener {
         msg: serde_json::Value,
         span: &tracing::Span,
     ) -> bool {
-        let response = serde_json::json!({
-            "version": "1.0",
-            "payload": msg
-        });
-
         let resp_type = msg
             .get("type")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
 
-        match serde_json::to_string(&response) {
+        match serde_json::to_string(&msg) {
             Ok(serialized) => {
                 debug!(parent: span, response_type = %resp_type, "Sending response");
                 match Self::send_message(write, serialized).await {
@@ -873,13 +847,34 @@ impl Listener {
         match self
             ._handle_incoming(Message::Text(text.into()), subscriber)
             .await
-        {
-            Ok(response) => {
-                self.handle_successful_response(write, response, subscriber, sender, span)
-                    .await
+            {
+                Ok(response) => {
+                    let serialized = match serde_json::to_string(&response) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!(parent: span, error = %e, "Failed to serialize response");
+                            return true;
+                        }
+                    };
+
+                    if let Err(e) = Self::send_message(write, serialized).await {
+                        error!(parent: span, error = %e, "Failed to send response");
+                        return false;
+                    }
+
+                    if let Some(id) = subscriber.take() {
+                        info!(parent: span, subscriber_id = %id, "New subscriber registered");
+                        let mut cloned_self = self.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = cloned_self.spawn_redis_listener(sender, id).await {
+                                error!(error = %e, "Redis listener error");
+                            }
+                        });
+                    }
+                    true
+                }
+                Err(e) => self.handle_error_response(write, e, span).await,
             }
-            Err(e) => self.handle_error_response(write, e, span).await,
-        }
     }
 
     async fn handle_successful_response(
@@ -891,13 +886,8 @@ impl Listener {
         span: &tracing::Span,
     ) -> bool {
         debug!("Handling successful response: {:?}", response);
-        let formatted_response = serde_json::json!({
-            "version": "1.0",
-            "payload": response
-        });
 
-        debug!("Formatted response for sending: {:?}", formatted_response);
-        let serialized = match serde_json::to_string(&formatted_response) {
+        let serialized = match serde_json::to_string(&response) {
             Ok(s) => s,
             Err(e) => {
                 error!(parent: span, error = %e, "Failed to serialize response");
@@ -1287,7 +1277,7 @@ impl NodeListener {
                     cfg.registrar.registrar_index,
                     &cfg.registrar.endpoint,
                 )
-                .await?;
+                    .await?;
 
                 // TODO: make all commands chained together and then executed
                 // all at once!
@@ -1422,7 +1412,7 @@ impl RedisConnection {
                 );
 
                 match self.get_challenge_token_from_account_info(&info).unwrap() {
-                    Some(token) => Some(vec![account.account_type().to_owned(), token.show()]),
+                    Some(token) => Some(vec![account.account_type().to_string(), token.show()]),
                     None => None,
                 }
             })
@@ -1488,9 +1478,9 @@ impl RedisConnection {
         // Helper closure to create account key
         let make_info = |account: &Account| -> anyhow::Result<String> {
             Ok(format!(
-                "{}:{}",
-                serde_json::to_string(account)?,
-                serde_json::to_string(wallet_id)?
+                    "{}:{}",
+                    serde_json::to_string(account)?,
+                    serde_json::to_string(wallet_id)?
             ))
         };
 
@@ -1505,10 +1495,10 @@ impl RedisConnection {
             matches!(
                 (acc_type, account),
                 (AccountType::Discord, Account::Discord(_))
-                    | (AccountType::Display, Account::Display(_))
-                    | (AccountType::Email, Account::Email(_))
-                    | (AccountType::Matrix, Account::Matrix(_))
-                    | (AccountType::Twitter, Account::Twitter(_))
+                | (AccountType::Display, Account::Display(_))
+                | (AccountType::Email, Account::Email(_))
+                | (AccountType::Matrix, Account::Matrix(_))
+                | (AccountType::Twitter, Account::Twitter(_))
             )
         });
 
@@ -1552,15 +1542,15 @@ impl RedisConnection {
         match self
             .conn
             .hget::<&str, &str, Option<String>>(account, "token")
-        {
-            Ok(Some(token)) => Ok(Some(Token::new(token))),
-            Ok(None) => Ok(None),
-            Err(e) => Err(anyhow!(
-                "Couldn't retrive challenge for {}\nError {:?}",
-                account,
-                e
-            )),
-        }
+            {
+                Ok(Some(token)) => Ok(Some(Token::new(token))),
+                Ok(None) => Ok(None),
+                Err(e) => Err(anyhow!(
+                        "Couldn't retrive challenge for {}\nError {:?}",
+                        account,
+                        e
+                )),
+            }
     }
 
     /// Get the [AccountId32] from a hashset with `account` as a name, `wallet_id`
@@ -1590,15 +1580,15 @@ impl RedisConnection {
         match self
             .conn
             .hget::<&str, &str, Option<String>>(account, "status")
-        {
-            Ok(Some(status)) => Ok(Some(serde_json::from_str::<VerifStatus>(&status)?)),
-            Ok(None) => Ok(None),
-            Err(e) => Err(anyhow!(
-                "Error getting status for {}\nError: {:?}",
-                account,
-                e
-            )),
-        }
+            {
+                Ok(Some(status)) => Ok(Some(serde_json::from_str::<VerifStatus>(&status)?)),
+                Ok(None) => Ok(None),
+                Err(e) => Err(anyhow!(
+                        "Error getting status for {}\nError: {:?}",
+                        account,
+                        e
+                )),
+            }
     }
 
     /// Set the `status` value of a redis hashset of name `account` to the value of
@@ -1700,22 +1690,22 @@ impl RedisConnection {
         match self
             .conn
             .hget::<&str, &str, String>(&serde_json::to_string(wallet_id).unwrap(), "accounts")
-        {
-            Ok(metadata) => {
-                let mut result = vec![];
-                let metadata: HashMap<Account, VerifStatus> =
-                    serde_json::from_str(&metadata).unwrap();
-                for (acc, current_status) in metadata {
-                    if current_status == status {
-                        result.push(acc);
+            {
+                Ok(metadata) => {
+                    let mut result = vec![];
+                    let metadata: HashMap<Account, VerifStatus> =
+                        serde_json::from_str(&metadata).unwrap();
+                    for (acc, current_status) in metadata {
+                        if current_status == status {
+                            result.push(acc);
+                        }
                     }
+                    return result;
                 }
-                return result;
+                _ => {
+                    vec![]
+                }
             }
-            _ => {
-                vec![]
-            }
-        }
     }
 
     async fn clear_all_related_to(&mut self, who: &AccountId32) -> anyhow::Result<()> {
@@ -1730,7 +1720,7 @@ impl RedisConnection {
                 .cmd("DEL")
                 .arg(format!("{}", account))
                 .exec(&mut self.conn)?;
-        }
+            }
         Ok(())
     }
 
@@ -1790,7 +1780,7 @@ impl RedisConnection {
                     VerifStatus::Pending => {
                         self.save_account(who, &account, Some(Token::generate().await), status)
                             .await?;
-                    }
+                        }
                 }
             }
         }
@@ -1805,7 +1795,7 @@ impl RedisConnection {
         status: VerifStatus,
     ) -> anyhow::Result<(), RedisError> {
         let span = span!(
-            Level::INFO,
+            Level::DEBUG,
             "save_account",
             account_id = %who,
             account_type = %account.account_type(),
@@ -1816,11 +1806,7 @@ impl RedisConnection {
             info!("Saving account information to Redis");
             debug!(token = ?token, "Challenge token details");
 
-            let key = format!(
-                "{}:{}",
-                serde_json::to_string(&account)?,
-                serde_json::to_string(who)?
-            );
+            let key = serde_json::to_string(&(&account, who))?;
 
             let mut cmd = redis::cmd("HSET");
             cmd.arg(&key)
@@ -1844,7 +1830,7 @@ impl RedisConnection {
             result
         }
         .instrument(span)
-        .await
+            .await
     }
 
     async fn save_owner(
@@ -1891,13 +1877,13 @@ async fn process_redis_account_change(
         let status = serde_json::from_str::<VerifStatus>(&status_str)?;
 
         return Ok(Some((
-            id,
-            serde_json::json!({
-                "accounts": accounts,
-                "status": status,
-                "operation": payload,
-                "key": key
-            }),
+                    id,
+                    serde_json::json!({
+                        "accounts": accounts,
+                        "status": status,
+                        "operation": payload,
+                        "key": key
+                    }),
         )));
     }
 
@@ -1910,13 +1896,13 @@ async fn process_redis_account_change(
             .ok_or_else(|| anyhow::anyhow!("Couldn't retrieve status for key: {}", key))?;
 
         return Ok(Some((
-            id,
-            serde_json::json!({
-                "account": account,
-                "status": status,
-                "operation": payload,
-                "key": key
-            }),
+                    id,
+                    serde_json::json!({
+                        "account": account,
+                        "status": status,
+                        "operation": payload,
+                        "key": key
+                    }),
         )));
     }
 

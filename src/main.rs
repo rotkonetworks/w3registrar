@@ -29,10 +29,10 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting services...");
 
     let matrix_handle = tokio::spawn(async {
-        info!("Spawning matrix bot...");
-        if let Err(e) = matrix::start_bot().await {
-            error!("Matrix bot error: {}", e);
-        }
+        //info!("Spawning matrix bot...");
+        //if let Err(e) = matrix::start_bot().await {
+        //    error!("Matrix bot error: {}", e);
+        //}
     });
 
     let node_handle = tokio::spawn(async {

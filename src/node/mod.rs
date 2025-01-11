@@ -4,6 +4,7 @@
 pub mod api {}
 
 use crate::config::GLOBAL_CONFIG;
+use crate::api::AccountType;
 
 use anyhow::{anyhow, Result};
 use sp_core::blake2_256;
@@ -105,7 +106,8 @@ pub async fn filter_accounts(
 
     for account in &accounts {
         let account_type = account.account_type();
-        if !supported.iter().any(|s| s == account_type) {
+        if !supported.iter().any(|s| AccountType::from_str(s).ok() == Some(account_type)) {
+
             provide_judgement(who, reg_index, Judgement::Erroneous, endpoint).await?;
             return Ok(HashMap::new());
         }
