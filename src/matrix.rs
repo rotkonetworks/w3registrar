@@ -49,7 +49,7 @@ pub struct RegistrationResponse {
 /// Verifies a [Device] with the `.verify` method
 async fn verify_device(device: &Device) -> anyhow::Result<()> {
     match device.verify().await {
-        Ok(_) => return Ok(()),
+        Ok(_) => Ok(()),
         Err(_) => Err(anyhow::Error::msg("Can't verify your device")),
     }
 }
@@ -89,7 +89,7 @@ async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
         info!("Logging in as {}", cfg.username);
         client
             .matrix_auth()
-            .login_username(cfg.username.to_owned(), cfg.password.as_str())
+            .login_username(cfg.username, cfg.password.as_str())
             .initial_device_display_name("w3r")
             .await?;
 
@@ -136,7 +136,7 @@ async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
         }
     }
 
-    return Ok(client);
+    Ok(client)
 }
 struct MatrixBot {
     redis_conn: redis::Connection,
@@ -239,8 +239,8 @@ async fn on_room_message(
                     Some(v) => {
                         match v {
                             Value::Array(arr) => {
-                                // extract's the sender ['Discord:user_x']
-                                let sender = arr.get(0).unwrap().to_string();
+                                // extract's the sender src ['Discord:user_x']
+                                let sender = arr.first().unwrap().to_string();
                                 // creating an account from the extracted sender
                                 match Account::from_string(sender.clone()) {
                                     // TODO: this looks sooo ugly
