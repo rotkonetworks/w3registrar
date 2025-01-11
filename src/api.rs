@@ -24,8 +24,7 @@ use tracing::{debug, error, info, warn, Level, span, Instrument};
 use crate::config::GLOBAL_CONFIG;
 
 use crate::{
-    config::{RedisConfig, RegistrarConfig},
-    matrix,
+    config::RedisConfig,
     node::{
         self,
         api::runtime_types::{
@@ -39,7 +38,6 @@ use crate::{
     },
     token::AuthToken,
     token::Token,
-    Config,
 };
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -51,7 +49,7 @@ pub enum VerifStatus {
 impl VerifStatus {
     pub async fn set_done(&mut self) -> anyhow::Result<()> {
         *self = Self::Done;
-        return anyhow::Result::Ok(());
+        anyhow::Result::Ok(())
     }
 }
 
@@ -169,10 +167,10 @@ impl Account {
                     "email" => Some(Self::Email(String::from(&r[..r.len() - 1]))),
                     "matrix" => Some(Self::Matrix(String::from(&r[..r.len() - 1]))),
                     "twitter" => Some(Self::Twitter(String::from(&r[..r.len() - 1]))),
-                    _ => return None,
+                    _ => None,
                 }
             }
-            None => return None,
+            None => None,
         }
     }
 
@@ -451,6 +449,7 @@ impl Listener {
 
             match account {
                 Account::Display(name) => {
+                    debug!("account display_name: {}", name);
                     conn.save_account(&request.payload, account, None, VerifStatus::Done)
                         .await?;
                 }
@@ -1250,7 +1249,7 @@ impl NodeListener {
                 conn.save_owner(who, &accounts).await?;
                 conn.save_accounts(who, accounts).await?;
 
-                return Ok(());
+                Ok(())
             }
             Err(_) => return Err(anyhow!("could not get registration for {}", who)),
         }
@@ -1718,23 +1717,27 @@ impl RedisConnection {
             .map(|status| matches!(status, VerifStatus::Done)))
     }
 
-    /// checks if the hashshet of name `account` is in consistent with it's corresponding
-    /// hashset of name `wallet_id` where as the `account` is consistent of both [Account] and
-    /// [AccountId32]
-    //
-    /// # Note:
-    /// The `account` param should be in the "[Account]:[AccountId32]" format
+    /// Checks if the status of a given account is consistent between the Redis hashset
+    /// and the local metadata stored under the associated wallet ID.
+    ///
+    /// Returns:
+    /// - `Ok(Some(true))`: If the statuses match.
+    /// - `Ok(Some(false))`: If the statuses do not match.
+    /// - `Ok(None)`: If the account or wallet ID is not found.
     pub fn is_consistent(&mut self, account: &str) -> anyhow::Result<Option<bool>> {
         if let Some((acc, wallet_id)) = account.rsplit_once(':') {
+            let wallet_id = serde_json::from_str(wallet_id)?;
             let acc = serde_json::from_str::<Account>(acc)?;
+
             if let Some(lstatus) = self
-                .get_accounts(&serde_json::from_str(wallet_id)?)?
-                    .unwrap_or(HashMap::default())
+                .get_accounts(&wallet_id)?
+                    .unwrap_or_default()
                     .get(&acc)
             {
                 let rstatus: String = self.conn.hget(account, "status")?;
                 let rstatus: VerifStatus = serde_json::from_str(&rstatus)?;
-                return Ok(Some(matches!(rstatus, lstatus)));
+
+                return Ok(Some(rstatus == *lstatus));
             }
         }
         Ok(None)
@@ -1845,6 +1848,7 @@ async fn process_redis_account_change(
 
     if !matches!(payload.as_str(), "hset" | "hdel" | "del") {
         info!("Ignoring Redis operation: {}", payload);
+
         return Ok(None);
     }
 
@@ -1853,33 +1857,38 @@ async fn process_redis_account_change(
     // main account key case
     if let Ok(id) = serde_json::from_str::<AccountId32>(key) {
         let accounts = conn.get_accounts(&id)?.unwrap_or_default();
-        let status: String = conn.conn.hget(key, "status")?;
-        let status = serde_json::from_str::<VerifStatus>(&status)?;
+        let status_str: String = conn.conn.hget(key, "status")?;
+        let status = serde_json::from_str::<VerifStatus>(&status_str)?;
 
         return Ok(Some((
-                    id,
-                    serde_json::json!({
-                        "accounts": accounts,
-                        "status": status,
-                        "operation": payload,
-                        "key": key
-                    }),
+            id,
+            serde_json::json!({
+                "accounts": accounts,
+                "status": status,
+                "operation": payload,
+                "key": key
+            }),
         )));
     }
 
     // related account key case
-    let (account_str, id_str) = key.rsplit_once(':').unwrap_or_default();
-    let account = serde_json::from_str::<Account>(account_str)?;
-    let id = serde_json::from_str::<AccountId32>(id_str)?;
-    let status = conn.get_status(key)?.expect("Coudn't get status");
+    if let Some((account_str, id_str)) = key.rsplit_once(':') {
+        let account = serde_json::from_str::<Account>(account_str)?;
+        let id = serde_json::from_str::<AccountId32>(id_str)?;
+        let status = conn.get_status(key)?.ok_or_else(|| {
+            anyhow::anyhow!("Couldn't retrieve status for key: {}", key)
+        })?;
 
-    Ok(Some((
-                id,
-                serde_json::json!({
-                    "account": account,
-                    "status": status,
-                    "operation": payload,
-                    "key": key
-                }),
-    )))
+        return Ok(Some((
+            id,
+            serde_json::json!({
+                "account": account,
+                "status": status,
+                "operation": payload,
+                "key": key
+            }),
+        )));
+    }
+
+    Ok(None)
 }

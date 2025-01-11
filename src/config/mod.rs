@@ -4,7 +4,6 @@ use anyhow::anyhow;
 use std::fs;
 use std::net::{SocketAddr, ToSocketAddrs};
 use url::{ParseError, Url};
-use once_cell::sync::Lazy;
 use tokio::sync::OnceCell;
 use serde::Deserialize;
 use std::env;

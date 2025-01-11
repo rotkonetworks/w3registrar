@@ -16,7 +16,7 @@ use subxt::utils::AccountId32;
 use subxt::SubstrateConfig;
 use tracing::info;
 
-use super::api::{identity_data_tostring, Account, VerifStatus};
+use super::api::{Account, VerifStatus};
 use api::identity::calls::types::provide_judgement::Identity;
 use api::runtime_types::pallet_identity::types::Judgement;
 use api::runtime_types::pallet_identity::types::Registration;
