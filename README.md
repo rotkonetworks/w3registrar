@@ -1,4 +1,4 @@
-# Web3 Registrar
+# Identity Registrar
 
 An automated registrar service for [Polkadot on-chain identities](https://wiki.polkadot.network/docs/learn-identity).
 
