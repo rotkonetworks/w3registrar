@@ -92,10 +92,12 @@ pub async fn filter_accounts(
     endpoint: &str,
 ) -> anyhow::Result<HashMap<Account, VerifStatus>> {
     let accounts = Account::into_accounts(&info);
-    
-    let cfg = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG is not initialized");
+
+    let cfg = GLOBAL_CONFIG
+        .get()
+        .expect("GLOBAL_CONFIG is not initialized");
     let supported = &cfg.registrar.services;
-    
+
     if accounts.is_empty() {
         provide_judgement(who, reg_index, Judgement::Unknown, endpoint).await?;
         return Ok(HashMap::new());

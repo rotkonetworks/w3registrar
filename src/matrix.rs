@@ -144,13 +144,14 @@ struct MatrixBot {
 
 /// Spanws a Matrix client to handle incoming messages from beeper
 pub async fn start_bot() -> anyhow::Result<()> {
+    let cfg = GLOBAL_CONFIG
+        .get()
+        .expect("GLOBAL_CONFIG is not initialized");
+    let redis_cfg = cfg.redis.clone();
+    let matrix_cfg = cfg.matrix.clone();
+    let registrar_cfg = cfg.registrar.clone();
 
-  let cfg = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG is not initialized");
-  let redis_cfg = cfg.redis.clone();
-  let matrix_cfg = cfg.matrix.clone();
-  let registrar_cfg = cfg.registrar.clone();
-
-  // cfg.matrix, &cfg.redis, &cfg.registrar
+    // cfg.matrix, &cfg.redis, &cfg.registrar
 
     let client = login(matrix_cfg).await?;
 

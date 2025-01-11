@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 use crate::node::identity::events::judgement_requested::RegistrarIndex;
 use anyhow::anyhow;
-use std::fs;
-use std::net::{SocketAddr, ToSocketAddrs};
-use url::{ParseError, Url};
-use tokio::sync::OnceCell;
 use serde::Deserialize;
 use std::env;
+use std::fs;
+use std::net::{SocketAddr, ToSocketAddrs};
+use tokio::sync::OnceCell;
+use url::{ParseError, Url};
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -18,10 +18,16 @@ pub struct Config {
 
 impl Config {
     pub fn load_from(path: &str) -> anyhow::Result<Self> {
-        let absolute_path = std::fs::canonicalize(path)
-            .unwrap_or_else(|_| std::path::PathBuf::from(path));
-        let content = fs::read_to_string(&absolute_path)
-            .map_err(|e| anyhow!("Failed to open config `{}` (absolute path: {:?}): {}", path, absolute_path, e))?;
+        let absolute_path =
+            std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
+        let content = fs::read_to_string(&absolute_path).map_err(|e| {
+            anyhow!(
+                "Failed to open config `{}` (absolute path: {:?}): {}",
+                path,
+                absolute_path,
+                e
+            )
+        })?;
         toml::from_str(&content)
             .map_err(|err| anyhow!("Failed to parse config at {}: {:?}", path, err))
     }
@@ -32,7 +38,9 @@ pub static GLOBAL_CONFIG: OnceCell<Config> = OnceCell::const_new();
 pub async fn initialize_config() {
     let config_path = env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
     let config = Config::load_from(&config_path).expect("Failed to load config");
-    GLOBAL_CONFIG.set(config).expect("GLOBAL_CONFIG already initialized");
+    GLOBAL_CONFIG
+        .set(config)
+        .expect("GLOBAL_CONFIG already initialized");
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use rand::prelude::*;
+use serde::{Deserialize, Serialize};
 
 const OLC_ALPHABET: &str = "23456789CFGHJKLMNPQRVWXY";
 
@@ -19,7 +19,9 @@ pub struct Token {
 
 impl Token {
     pub fn new(token: String) -> Self {
-        Self { expected_message: token }
+        Self {
+            expected_message: token,
+        }
     }
 }
 
@@ -48,7 +50,7 @@ impl AuthToken for Token {
                 let idx = rng.gen_range(0..OLC_ALPHABET.len());
                 OLC_ALPHABET.chars().nth(idx).unwrap()
             })
-        .collect();
+            .collect();
         Token {
             expected_message: s,
         }
