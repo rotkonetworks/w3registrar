@@ -11,6 +11,7 @@ use redis::{Client as RedisClient, Commands};
 use serde::{Deserialize, Deserializer, Serialize};
 use sp_core::blake2_256;
 use sp_core::Encode;
+use std::boxed::Box;
 use std::str::FromStr;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use subxt::events::EventDetails;
@@ -176,38 +177,50 @@ impl Account {
 
     pub fn into_accounts(value: &IdentityInfo) -> Vec<Account> {
         let mut result = vec![];
-        if let Some(acc) = identity_data_tostring(&value.discord) {
-            result.push(Account::Discord(acc))
-        }
 
-        if let Some(acc) = identity_data_tostring(&value.twitter) {
-            result.push(Account::Twitter(acc))
-        }
+        let mut push_account_if_some =
+            |opt: Option<String>, constructor: Box<dyn Fn(String) -> Account>| {
+                if let Some(acc) = opt {
+                    result.push(constructor(acc));
+                }
+            };
 
-        if let Some(acc) = identity_data_tostring(&value.matrix) {
-            result.push(Account::Matrix(acc))
-        }
+        push_account_if_some(
+            identity_data_tostring(&value.discord),
+            Box::new(Account::Discord),
+        );
+        push_account_if_some(
+            identity_data_tostring(&value.twitter),
+            Box::new(Account::Twitter),
+        );
+        push_account_if_some(
+            identity_data_tostring(&value.matrix),
+            Box::new(Account::Matrix),
+        );
+        push_account_if_some(
+            identity_data_tostring(&value.email),
+            Box::new(Account::Email),
+        );
+        push_account_if_some(
+            identity_data_tostring(&value.display),
+            Box::new(Account::Display),
+        );
+        push_account_if_some(
+            identity_data_tostring(&value.github),
+            Box::new(Account::Github),
+        );
+        push_account_if_some(
+            identity_data_tostring(&value.legal),
+            Box::new(Account::Legal),
+        );
 
-        if let Some(acc) = identity_data_tostring(&value.email) {
-            result.push(Account::Email(acc))
-        }
-
-        if let Some(acc) = identity_data_tostring(&value.display) {
-            result.push(Account::Display(acc))
-        }
-
-        if let Some(acc) = identity_data_tostring(&value.github) {
-            result.push(Account::Github(acc))
-        }
-
-        if let Some(acc) = identity_data_tostring(&value.legal) {
-            result.push(Account::Legal(acc))
-        }
-
+        // handling for pgp_fingerprint(not a string)
         if let Some(acc) = value.pgp_fingerprint {
-            result.push(Account::PGPFingerprint(acc))
+            result.push(Account::PGPFingerprint(acc));
         }
+
         info!("Found accounts: {:?}", result);
+
         result
     }
 
@@ -301,7 +314,7 @@ pub enum WebSocketMessage {
     RequestVerificationChallenge(VerificationRequest),
     VerifyIdentity(VerifyIdentityRequest),
     NotifyAccountState(NotifyAccountState),
-    JsonResult(JsonResult),
+    JsonResult(JsonResultPayload),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -329,8 +342,10 @@ pub enum VerifyIdentity {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum JsonResult {
-    JsonResult,
+pub struct JsonResultPayload {
+    #[serde(rename = "type")]
+    response_type: String,
+    message: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -420,7 +435,7 @@ impl Listener {
         &mut self,
         request: SubscribeAccountStateRequest,
         subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<serde_json::Value> {
+    ) -> anyhow::Result<WebSocketMessage> {
         *subscriber = Some(request.payload.clone());
         let redis_cfg = &self.redis_cfg;
 
@@ -468,21 +483,25 @@ impl Listener {
 
         conn.save_owner(&request.payload, &accounts).await?;
 
-        // Construct and return the unified response
         let verification_fields = conn.extract_info(&request.payload)?;
-        info!("Verification fields: {:?}", verification_fields);
         let hash = self.hash_identity_info(&registration.info);
         let pending_challenges = conn.get_challenges(&request.payload)?;
 
-        Ok(serde_json::json!({
-            "type": "ok",
-            "message": {
-                "account": request.payload.to_string(),
-                "hash": hash,
-                "info": verification_fields,
-                "pending_challenges": pending_challenges
-            }
-        }))
+        let response = JsonResultPayload {
+            response_type: "ok".to_string(),
+            message: serde_json::json!({
+                "AccountState": {
+                    "account": request.payload.to_string(),
+                    "hashed_info": hash,
+                    "verification_state": {
+                        "fields": verification_fields
+                    },
+                    "pending_challenges": pending_challenges
+                }
+            }),
+        };
+
+        Ok(WebSocketMessage::JsonResult(response))
     }
 
     /// Generates a hex-encoded blake2 hash of the identity info with 0x prefix
@@ -511,7 +530,8 @@ impl Listener {
                     payload: account_id,
                 };
 
-                self.handle_subscription_request(req, subscriber).await
+                let response = self.handle_subscription_request(req, subscriber).await?;
+                Ok(serde_json::to_value(response)?)
             }
             "VerifyIdentity" => {
                 let verify_request: ChallengedAccount = serde_json::from_value(message.payload)
