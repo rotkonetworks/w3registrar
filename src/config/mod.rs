@@ -2,18 +2,47 @@
 use crate::node::identity::events::judgement_requested::RegistrarIndex;
 use anyhow::anyhow;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::net::{SocketAddr, ToSocketAddrs};
 use tokio::sync::OnceCell;
-use url::{ParseError, Url};
+use url::Url;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub matrix: MatrixConfig,
     pub websocket: WebsocketConfig,
-    pub registrar: RegistrarConfig,
+    pub registrar: RegistrarConfigs,
     pub redis: RedisConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RegistrarConfigs {
+    #[serde(flatten)]
+    pub networks: HashMap<String, RegistrarConfig>,
+}
+
+impl RegistrarConfigs {
+    pub fn get_network(&self, network: &str) -> Option<&RegistrarConfig> {
+        self.networks.get(network)
+    }
+
+    pub fn supported_networks(&self) -> Vec<String> {
+        self.networks.keys().cloned().collect()
+    }
+
+    pub fn is_network_supported(&self, network: &str) -> bool {
+        self.networks.contains_key(network)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RegistrarConfig {
+    pub endpoint: String,
+    pub registrar_index: RegistrarIndex,
+    pub keystore_path: String,
+    pub services: Vec<String>,
 }
 
 impl Config {
@@ -76,28 +105,22 @@ impl Default for RedisConfig {
 }
 
 impl RedisConfig {
-    // TODO: handle the `unwrap` calls
     /// Returns a [Url] from the parsed config
-    pub fn url(&self) -> anyhow::Result<Url, ParseError> {
+    pub fn url(&self) -> anyhow::Result<Url> {
         let mut url = Url::parse(&format!("redis://{}:{}", self.host, self.port))?;
-        match &self.username {
-            Some(username) => url.set_username(&username).unwrap(),
-            _ => {}
+
+        if let Some(username) = &self.username {
+            url.set_username(username)
+                .map_err(|_| anyhow::anyhow!("Failed to set Redis username"))?;
         }
-        match &self.password {
-            Some(password) => url.set_password(Some(&password)).unwrap(),
-            _ => {}
+
+        if let Some(password) = &self.password {
+            url.set_password(Some(password))
+                .map_err(|_| anyhow::anyhow!("Failed to set Redis password"))?;
         }
+
         Ok(url)
     }
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub struct RegistrarConfig {
-    pub endpoint: String,
-    pub registrar_index: RegistrarIndex,
-    pub keystore_path: String,
-    pub services: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

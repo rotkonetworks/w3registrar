@@ -89,17 +89,23 @@ pub async fn filter_accounts(
     info: &IdentityInfo,
     who: &AccountId32,
     reg_index: u32,
-    endpoint: &str,
+    network: &str,
 ) -> anyhow::Result<HashMap<Account, bool>> {
     let accounts = Account::into_accounts(info);
 
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
-    let supported = &cfg.registrar.services;
+
+    let network_cfg = cfg
+        .registrar
+        .get_network(network)
+        .ok_or_else(|| anyhow!("Network {} not configured", network))?;
+
+    let supported = &network_cfg.services;
 
     if accounts.is_empty() {
-        provide_judgement(who, reg_index, Judgement::Unknown, endpoint).await?;
+        provide_judgement(who, reg_index, Judgement::Unknown, &network_cfg.endpoint).await?;
         return Ok(HashMap::new());
     }
 
@@ -109,7 +115,7 @@ pub async fn filter_accounts(
             .iter()
             .any(|s| AccountType::from_str(s).ok() == Some(account_type))
         {
-            provide_judgement(who, reg_index, Judgement::Erroneous, endpoint).await?;
+            provide_judgement(who, reg_index, Judgement::Erroneous, &network_cfg.endpoint).await?;
             return Ok(HashMap::new());
         }
     }
@@ -122,15 +128,26 @@ pub async fn filter_accounts(
 pub async fn register_identity<'a>(
     who: &AccountId32,
     reg_index: u32,
-    endpoint: &str,
+    network: &str,
 ) -> anyhow::Result<&'a str> {
-    let client = Client::from_url(endpoint).await.map_err(|e| {
+    let cfg = GLOBAL_CONFIG
+        .get()
+        .expect("GLOBAL_CONFIG is not initialized");
+
+    let network_cfg = cfg
+        .registrar
+        .get_network(network)
+        .ok_or_else(|| anyhow!("Network {} not configured", network))?;
+
+    let client = Client::from_url(&network_cfg.endpoint).await.map_err(|e| {
         anyhow!(
-            "unable to connect to {} network because of {}",
-            endpoint,
+            "unable to connect to {} network({}) because of {}",
+            network,
+            network_cfg.endpoint,
             e.to_string(),
         )
     })?;
+
     let registration = get_registration(&client, who).await?;
     let hash = hex::encode(blake2_256(&registration.info.encode()));
 
@@ -141,6 +158,7 @@ pub async fn register_identity<'a>(
         Identity::from_str(&hash)?,
     );
 
+    // TODO: use from keyfile + add IdentityJudgement proxy
     let signer: subxt::tx::signer::PairSigner<SubstrateConfig, subxt::ext::sp_core::sr25519::Pair> = {
         let acc = subxt::ext::sp_core::sr25519::Pair::from_string("//ALICE", None)?;
         subxt::tx::PairSigner::new(acc)
@@ -148,7 +166,7 @@ pub async fn register_identity<'a>(
 
     let conf = subxt::config::substrate::SubstrateExtrinsicParamsBuilder::new().build();
     match client.tx().sign_and_submit(&judgement, &signer, conf).await {
-        Ok(_) => return Ok("Judged with reasonable"),
-        Err(e) => return Err(anyhow!("unable to submit judgement\nError: {:?}", e)),
+        Ok(_) => Ok("Judged with reasonable"),
+        Err(e) => Err(anyhow!("unable to submit judgement\nError: {:?}", e)),
     }
 }

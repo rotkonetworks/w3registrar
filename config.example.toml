@@ -1,8 +1,16 @@
 [registrar]
+
+[registrar.rococo]
 endpoint = "wss://dev.rotko.net/people-rococo/"
 registrar_index = 0
 keystore_path = "./keyfile"
-services = ["matrix", "twitter", "discord"]
+services = ["email","matrix", "twitter", "discord", "display_name"]
+
+[registrar.polkadot]
+endpoint = "wss://polkadot.dotters.network"
+registrar_index = 0
+keystore_path = "./keyfile.polkadot"
+services = ["email","matrix", "twitter", "discord", "display_name"]
 
 [websocket]
 host = "127.0.0.1"

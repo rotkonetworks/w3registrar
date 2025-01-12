@@ -26,12 +26,12 @@ use tracing::info;
 
 use std::path::Path;
 
-use crate::{api::RedisConnection, config::RegistrarConfig, node::register_identity};
 use crate::{
     api::Account,
     config::{MatrixConfig, RedisConfig, GLOBAL_CONFIG},
     token::AuthToken,
 };
+use crate::{api::RedisConnection, config::RegistrarConfig, node::register_identity};
 
 const STATE_DIR: &str = "/tmp/matrix_";
 
