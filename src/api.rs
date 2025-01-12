@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use anyhow::anyhow;
+use chrono::{DateTime, Utc};
 use futures::channel::mpsc::{self, Sender};
 use futures::stream::SplitSink;
 use futures::stream::SplitStream;
@@ -11,6 +12,7 @@ use redis::{Client as RedisClient, Commands};
 use serde::{Deserialize, Serialize};
 use sp_core::blake2_256;
 use sp_core::Encode;
+use std::collections::HashSet;
 use std::fmt;
 use std::str::FromStr;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
@@ -58,16 +60,24 @@ impl fmt::Display for VerifStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Done => write!(f, "Done"),
-            Self::Pending => write!(f, "Pending"), 
+            Self::Pending => write!(f, "Pending"),
         }
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct AcctMetadata {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerificationState {
     pub status: VerifStatus,
-    pub id: AccountId32,
-    pub token: Token,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub media_types: HashSet<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaAccount {
+    pub name: String,
+    pub status: VerifStatus,
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,11 +153,9 @@ impl Account {
     pub fn determine(&self) -> ValidationMode {
         match self {
             // Direct: verified directly without user action
-            Account::Display(_)
-            | Account::Web(_) => ValidationMode::Direct,
+            Account::Display(_) | Account::Web(_) => ValidationMode::Direct,
             // Inbound: receive challenge via websocket
-            Account::Email(_)
-            | Account::PGPFingerprint(_) => ValidationMode::Inbound,
+            Account::Email(_) | Account::PGPFingerprint(_) => ValidationMode::Inbound,
             // Outbound: send challenge via websocket
             Account::Discord(_)
             | Account::Github(_)
@@ -1374,6 +1382,7 @@ impl Default for VerificationFields {
 
 pub struct RedisConnection {
     conn: redis::Connection,
+    //   network: String, // relaychain e.g. "polkadot", "kusama"
 }
 
 // TODO: move this to another file?
@@ -1418,7 +1427,8 @@ impl RedisConnection {
         &mut self,
         account_id: &AccountId32,
     ) -> anyhow::Result<redis::PubSub> {
-        let related_keys = self.search(format!("*:{}", serde_json::to_string(&account_id)?))?;
+        //        let related_keys = self.search(format!("*:{}", serde_json::to_string(&account_id)?))?;
+        let related_keys = self.search(format!("*:{}", account_id.to_string()))?;
         let mut pubsub = self.conn.as_pubsub();
 
         for key in related_keys {
@@ -1441,6 +1451,7 @@ impl RedisConnection {
     /// Returns pairs of [account_type, challenge_token]
     pub fn get_challenges(&mut self, wallet_id: &AccountId32) -> anyhow::Result<Vec<Vec<String>>> {
         let wallet_id_str = serde_json::to_string(wallet_id)?;
+
         println!("Wallet ID string: {}", wallet_id_str);
 
         let pending_accounts = self.get_accounts_from_status(wallet_id, VerifStatus::Pending);
@@ -1451,8 +1462,8 @@ impl RedisConnection {
             .filter_map(|account| {
                 let info = format!(
                     "{}:{}",
-                    serde_json::to_string(&account).ok()?,
-                    wallet_id_str
+                    format!("{}:{}", account.account_type(), account.inner()),
+                    wallet_id.to_string()
                 );
                 println!("Checking challenge for info key: {}", info);
 
@@ -1477,9 +1488,7 @@ impl RedisConnection {
     /// constructing [VerificationFields] object from the registration status of all the accounts
     /// under `wallet_id`
     pub fn extract_info(&mut self, wallet_id: &AccountId32) -> anyhow::Result<VerificationFields> {
-        let accounts: String = self
-            .conn
-            .hget(serde_json::to_string(wallet_id)?, "accounts")?;
+        let accounts: String = self.conn.hget(wallet_id.to_string(), "accounts")?;
         let accounts: HashMap<Account, VerifStatus> = serde_json::from_str(&accounts)?;
         let mut verif_state = VerificationFields::default();
 
@@ -1534,8 +1543,8 @@ impl RedisConnection {
         let make_info = |account: &Account| -> anyhow::Result<String> {
             Ok(format!(
                 "{}:{}",
-                serde_json::to_string(account)?,
-                serde_json::to_string(wallet_id)?
+                format!("{}:{}", account.account_type(), account.inner()),
+                wallet_id.to_string()
             ))
         };
 
@@ -1722,8 +1731,8 @@ impl RedisConnection {
     /// Get all known accounts linked to the `wallet_id` without regard to its registration  status
     ///
     /// # Note
-    /// This DOES NOT query anything from the peoples network, rather it gets its info from the
-    /// `redis` server
+    /// This DOES NOT query anything from the people chain,
+    /// rather it gets its info from locally on the `redis` server
     pub fn get_accounts(
         &mut self,
         wallet_id: &AccountId32,
@@ -1739,7 +1748,7 @@ impl RedisConnection {
     /// Get all known accounts linked to the `wallet_id` with a rgistration status equal to `status`
     ///
     /// # Note
-    /// This DOES NOT querry anything from the peoples network, rather it gets its info from the
+    /// This DOES NOT query anything from the peoples network, rather it gets its info from the
     /// `redis` server
     pub fn get_accounts_from_status(
         &mut self,
@@ -1773,12 +1782,9 @@ impl RedisConnection {
             .arg(&serde_json::to_string(who)?)
             .exec(&mut self.conn)?;
 
-        let accounts = self.search(format!("*:{}", serde_json::to_string(&who)?))?;
+        let accounts = self.search(format!("*:{}", who))?;
         for account in accounts {
-            redis::pipe()
-                .cmd("DEL")
-                .arg(format!("{}", account))
-                .exec(&mut self.conn)?;
+            redis::pipe().cmd("DEL").arg(account).exec(&mut self.conn)?;
         }
         Ok(())
     }
@@ -1858,11 +1864,8 @@ impl RedisConnection {
             info!("Saving account information to Redis");
             debug!(token = ?token, "Challenge token details");
 
-            let key = format!(
-                "{}:{}",
-                serde_json::to_string(&account)?,
-                serde_json::to_string(who)?
-            );
+            let key = format!("{}:{}", account.account_type(), account.inner());
+
             debug!("Generated Redis key: {}", key);
 
             let mut cmd = redis::cmd("HSET");
@@ -1874,7 +1877,10 @@ impl RedisConnection {
 
             let validation_mode = account.determine();
 
-            if matches!(validation_mode, ValidationMode::Inbound | ValidationMode::Outbound) {
+            if matches!(
+                validation_mode,
+                ValidationMode::Inbound | ValidationMode::Outbound
+            ) {
                 if let Some(token_value) = token {
                     info!("Token provided for account: {}", token_value.show());
                     cmd.arg("token").arg(token_value.show());
@@ -1887,10 +1893,7 @@ impl RedisConnection {
 
             match &result {
                 Ok(_) => {
-                    debug!(
-                        "Saved account information for key: {}",
-                        key
-                    );
+                    debug!("Saved account information for key: {}", key);
                 }
                 Err(e) => {
                     error!(
@@ -1944,7 +1947,8 @@ async fn process_redis_account_change(
     let key = channel.strip_prefix("__keyspace@0__:").unwrap_or_default();
 
     // main account key case
-    if let Ok(id) = serde_json::from_str::<AccountId32>(key) {
+    //    if let Ok(id) = serde_json::from_str::<AccountId32>(key) {
+    if let Ok(id) = AccountId32::from_str(key) {
         let accounts = conn.get_accounts(&id)?.unwrap_or_default();
         let status_str: String = conn.conn.hget(key, "status")?;
         let status = serde_json::from_str::<VerifStatus>(&status_str)?;
