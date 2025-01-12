@@ -17,7 +17,7 @@ use subxt::utils::AccountId32;
 use subxt::SubstrateConfig;
 use tracing::info;
 
-use super::api::{Account, VerifStatus};
+use super::api::Account;
 use api::identity::calls::types::provide_judgement::Identity;
 use api::runtime_types::pallet_identity::types::Judgement;
 use api::runtime_types::pallet_identity::types::Registration;
@@ -82,8 +82,7 @@ pub async fn provide_judgement<'a>(
     }
 }
 
-// TODO: change the fn signature to include the accounts that we can handle
-/// Filters all requested accounts to inlcude only those that we can handle, and default
+/// Filters all requested accounts to include only those that we can handle, and default
 /// the judgement of other accounts to `Erroneous`, and the judgement for empty identity
 /// objects to `Unknown`
 pub async fn filter_accounts(
@@ -91,7 +90,7 @@ pub async fn filter_accounts(
     who: &AccountId32,
     reg_index: u32,
     endpoint: &str,
-) -> anyhow::Result<HashMap<Account, VerifStatus>> {
+) -> anyhow::Result<HashMap<Account, bool>> {
     let accounts = Account::into_accounts(info);
 
     let cfg = GLOBAL_CONFIG
@@ -111,12 +110,11 @@ pub async fn filter_accounts(
             .any(|s| AccountType::from_str(s).ok() == Some(account_type))
         {
             provide_judgement(who, reg_index, Judgement::Erroneous, endpoint).await?;
-
             return Ok(HashMap::new());
         }
     }
 
-    Ok(Account::into_hashmap(accounts, VerifStatus::Pending))
+    Ok(Account::into_hashmap(accounts, false))
 }
 
 /// This will provide a [Reasonable] judgement for the account id `who` from the registrar with

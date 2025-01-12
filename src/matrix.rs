@@ -18,7 +18,6 @@ use matrix_sdk::{
     Client,
 };
 use redis::{self};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
@@ -29,23 +28,12 @@ use std::path::Path;
 
 use crate::{api::RedisConnection, config::RegistrarConfig, node::register_identity};
 use crate::{
-    api::{Account, VerifStatus},
+    api::Account,
     config::{MatrixConfig, RedisConfig, GLOBAL_CONFIG},
     token::AuthToken,
 };
 
 const STATE_DIR: &str = "/tmp/matrix_";
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum RegistrationStatus {
-    Pending(String),
-    Done(String),
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RegistrationResponse {
-    status: RegistrationStatus,
-}
 
 /// Verifies a [Device] with the `.verify` method
 async fn verify_device(device: &Device) -> anyhow::Result<()> {
@@ -308,11 +296,10 @@ async fn handle_incoming(
     Ok(())
 }
 
-/// Handles the incoming message as `text_content`, as it checks it agains the expected
-/// challenge, and if matched it changes the status of `account` to [VerifStatus::Done], this
-/// also checks if all acconts under a given `wallet_id` are registred, if so, it changes
-/// the `status` of the `wallet_id` (given in concatination with the account identifier)
-/// to [VerifStatus::Done]
+/// Handles the incoming message as `text_content`, as it checks it against the expected
+/// challenge. If matched, it sets done=true for the account. This also checks if all
+/// accounts under a given `wallet_id` are registered - if so, it marks the `wallet_id`
+/// as done (given in concatenation with the account identifier)
 async fn handle_content(
     text_content: &TextMessageEventContent,
     redis_connection: &mut RedisConnection,
@@ -320,14 +307,12 @@ async fn handle_content(
     reg_index: u32,
     endpoint: &str,
 ) -> anyhow::Result<bool> {
-    // NOTE: this will change after this is merged (if-let chaining)
-    // https://github.com/rust-lang/rust/pull/132833
     if let Ok(Some(false)) = redis_connection.is_verified(&account) {
         let challenge = redis_connection
             .get_challenge_token_from_account_info(&account)?
             .unwrap();
         if text_content.body.eq(&challenge.show()) {
-            redis_connection.set_status(&account, VerifStatus::Done)?;
+            redis_connection.set_done(&account, true)?;
             let id = redis_connection.get_wallet_id(&account);
             signal_done_if_needed(redis_connection, id, reg_index, endpoint).await?;
             return Ok(true);
