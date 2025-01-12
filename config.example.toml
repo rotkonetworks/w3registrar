@@ -13,7 +13,7 @@ keystore_path = "./keyfile.polkadot"
 fields = ["email","matrix", "twitter", "discord", "display_name"]
 
 [spawned_services]
-matrix = false
+matrix = true
 websocket = true
 nodelistener = true
 
