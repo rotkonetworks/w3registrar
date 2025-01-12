@@ -21,6 +21,7 @@ use redis;
 use serde_json::Value;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
+use tokio::sync::broadcast;
 use tokio::time::{sleep, Duration};
 use tracing::info;
 
@@ -41,7 +42,6 @@ async fn verify_device(device: &Device) -> anyhow::Result<()> {
         Err(_) => Err(anyhow::Error::msg("Can't verify your device")),
     }
 }
-
 
 /// Preform the login to the matrix account specified in the [Config], while
 /// checking for previous sessions info in from the `<state_dir>/session.json`
@@ -132,7 +132,7 @@ struct MatrixBot {
 }
 
 /// Spanws a Matrix client to handle incoming messages from beeper
-pub async fn start_bot() -> anyhow::Result<()> {
+pub async fn start_bot(mut shutdown_rx: broadcast::Receiver<()>) -> anyhow::Result<()> {
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
@@ -140,17 +140,14 @@ pub async fn start_bot() -> anyhow::Result<()> {
     let matrix_cfg = cfg.matrix.clone();
     let registrar_cfg = cfg.registrar.clone();
 
-    // cfg.matrix, &cfg.redis, &cfg.registrar
-
     let client = login(matrix_cfg).await?;
 
     client.add_event_handler_context((redis_cfg.to_owned(), registrar_cfg.to_owned()));
-    client.add_event_handler(on_stripped_state_member);
-    client.add_event_handler(on_room_message);
-    // create and add context here
-    // Note that the context can be used only in this function, unless returned
-    // which cannot happen since the add_event_handler_context takes ownership
-    // of it
+
+    // Store the handler handles
+    let member_handle = client.add_event_handler(on_stripped_state_member);
+    let message_handle = client.add_event_handler(on_room_message);
+
     info!(
         "Encryption Status: {:#?}",
         client.encryption().cross_signing_status().await
@@ -161,13 +158,48 @@ pub async fn start_bot() -> anyhow::Result<()> {
         info!("Logged in with device ID {:#?}", device_id);
     }
 
-    tokio::spawn(async move {
-        let settings = SyncSettings::default().timeout(Duration::from_secs(30));
-        match client.sync(settings).await {
-            Ok(_) => info!("sync is done Successfully!"),
-            Err(e) => tracing::error!("can't sync duo to {:#?}", e),
-        };
+    // start sync in a separate task
+    let sync_client = client.clone();
+    let settings = SyncSettings::default().timeout(Duration::from_secs(30));
+
+    let (sync_stop_tx, mut sync_stop_rx) = tokio::sync::mpsc::channel(1);
+    let sync_task = tokio::spawn(async move {
+        tokio::select! {
+            sync_result = sync_client.sync(settings) => {
+                match sync_result {
+                    Ok(_) => info!("Matrix sync completed successfully"),
+                    Err(e) => tracing::error!("Matrix sync error: {:#?}", e),
+                }
+            }
+            _ = sync_stop_rx.recv() => {
+                info!("Sync stop signal received");
+            }
+        }
     });
+
+    // wait for shutdown signal or sync completion
+    tokio::select! {
+        _ = shutdown_rx.recv() => {
+            info!("Received shutdown signal, stopping Matrix bot");
+
+            // remove event handlers
+            client.remove_event_handler(member_handle);
+            client.remove_event_handler(message_handle);
+
+            // stop the sync
+            let _ = sync_stop_tx.send(()).await;
+            drop(client);
+
+            // set a timeout for clean shutdown
+            sleep(Duration::from_secs(5)).await;
+            info!("Clean shutdown timeout reached");
+        }
+        _ = sync_task => {
+            info!("Matrix sync ended unexpectedly");
+        }
+    }
+
+    info!("Matrix bot stopped");
     Ok(())
 }
 
@@ -261,7 +293,7 @@ async fn on_room_message(
 }
 
 async fn handle_incoming(
-    acc: Account, 
+    acc: Account,
     text_content: &TextMessageEventContent,
     _room: &Room,
     redis_cfg: &RedisConfig,
@@ -277,21 +309,21 @@ async fn handle_incoming(
 
     // Handle each instance of the account
     let accounts = redis_connection.search(format!("{}:*", serde_json::to_string(&acc)?))?;
-    
+
     if accounts.is_empty() {
         return Ok(());
     }
 
     for acc_str in accounts {
         info!("Account: {}", acc_str);
-        
+
         // extract account ID from the account string
         let parts: Vec<&str> = acc_str.split(':').collect();
         if parts.len() < 2 {
             continue;
         }
-        
-        if let Ok(account_id) = AccountId32::from_str(parts[parts.len()-1]) {
+
+        if let Ok(account_id) = AccountId32::from_str(parts[parts.len() - 1]) {
             if handle_content(
                 text_content,
                 &mut redis_connection,
@@ -324,7 +356,10 @@ async fn handle_content(
     endpoint: &str,
 ) -> anyhow::Result<bool> {
     // get the current state
-    let state = match redis_connection.get_verification_state(network, account_id).await? {
+    let state = match redis_connection
+        .get_verification_state(network, account_id)
+        .await?
+    {
         Some(state) => state,
         None => return Ok(false),
     };

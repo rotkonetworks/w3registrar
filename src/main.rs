@@ -28,39 +28,66 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Starting services...");
 
-    let matrix_handle = tokio::spawn(async {
-        info!("Spawning matrix bot...");
-        if let Err(e) = matrix::start_bot().await {
-            error!("Matrix bot error: {}", e);
-        }
-    });
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
 
-    let node_handle = tokio::spawn(async {
-        info!("Spawning node listener...");
-        if let Err(e) = spawn_node_listener().await {
-            error!("Node listener error: {}", e);
-        }
-    });
+    let matrix_handle = {
+        let shutdown_rx = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            info!("Spawning matrix bot...");
+            if let Err(e) = matrix::start_bot(shutdown_rx).await {
+                error!("Matrix bot error: {}", e);
+            }
+        })
+    };
 
-    let ws_handle = tokio::spawn(async {
-        info!("Spawning websocket server...");
-        spawn_ws_serv().await
-    });
+    let node_handle = {
+        let shutdown_rx = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            info!("Spawning node listener...");
+            if let Err(e) = spawn_node_listener(shutdown_rx).await {
+                error!("Node listener error: {}", e);
+            }
+        })
+    };
+
+    let ws_handle = {
+        let shutdown_rx = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            info!("Spawning websocket server...");
+            if let Err(e) = spawn_ws_serv(shutdown_rx).await {
+                error!("WebSocket server error: {}", e);
+            }
+        })
+    };
 
     info!("All services spawned successfully");
 
-    // Wait for Ctrl+C
+    // wait for kill signal
     tokio::signal::ctrl_c().await?;
     info!("Shutdown signal received, stopping services...");
 
-    // Cancel all tasks
-    node_handle.abort();
-    matrix_handle.abort();
-    ws_handle.abort();
+    let _ = shutdown_tx.send(());
 
-    // Wait for tasks to finish
-    let _ = tokio::join!(node_handle, matrix_handle, ws_handle);
+    let shutdown_timeout = tokio::time::Duration::from_secs(5);
 
-    info!("All services stopped gracefully");
+    let all_tasks = futures::future::join_all(vec![node_handle, matrix_handle, ws_handle]);
+
+    match tokio::time::timeout(shutdown_timeout, all_tasks).await {
+        Ok(results) => {
+            for result in results {
+                if let Err(e) = result {
+                    error!("Task join error: {}", e);
+                }
+            }
+            info!("All services stopped gracefully");
+        }
+        Err(_) => {
+            error!(
+                "Shutdown timeout reached after {} seconds, forcing exit",
+                shutdown_timeout.as_secs()
+            );
+        }
+    }
+
     Ok(())
 }

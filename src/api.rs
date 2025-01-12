@@ -398,8 +398,20 @@ pub enum NotifyAccountState {
     NotifyAccountState,
 }
 // --------------------------------------
-pub async fn spawn_node_listener() -> anyhow::Result<()> {
-    NodeListener::new().await?.listen().await
+pub async fn spawn_node_listener(
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+) -> anyhow::Result<()> {
+    let node_listener = NodeListener::new().await?;
+
+    tokio::select! {
+        _ = shutdown_rx.recv() => {
+            info!("Received shutdown signal, stopping Node listener");
+            Ok(())
+        }
+        result = node_listener.listen() => {
+            result
+        }
+    }
 }
 
 /// Converts the inner of [IdentityData] to a [String]
@@ -482,7 +494,9 @@ impl Listener {
         network: &str,
         subscriber: &mut Option<AccountId32>,
     ) -> anyhow::Result<serde_json::Value> {
-        let cfg = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG is not initialized");
+        let cfg = GLOBAL_CONFIG
+            .get()
+            .expect("GLOBAL_CONFIG is not initialized");
 
         if !cfg.registrar.is_network_supported(network) {
             return Ok(serde_json::json!({
@@ -491,7 +505,8 @@ impl Listener {
             }));
         }
 
-        let network_cfg = cfg.registrar
+        let network_cfg = cfg
+            .registrar
             .get_network(network)
             .ok_or_else(|| anyhow!("Network {} not configured", network))?;
 
@@ -507,7 +522,8 @@ impl Listener {
             &request.payload,
             network_cfg.registrar_index,
             network,
-        ).await?;
+        )
+        .await?;
 
         // create verification state
         let mut verification = AccountVerification::new(network.to_string());
@@ -534,7 +550,8 @@ impl Listener {
         }
 
         // save new state
-        conn.save_verification_state(network, &request.payload, &verification).await?;
+        conn.save_verification_state(network, &request.payload, &verification)
+            .await?;
 
         let hash = self.hash_identity_info(&registration.info);
 
@@ -568,17 +585,22 @@ impl Listener {
         let account_id = string_to_account_id(&request.payload.account)?;
         let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
 
-        let state = conn.get_verification_state("rococo", &account_id).await?
+        let state = conn
+            .get_verification_state("rococo", &account_id)
+            .await?
             .ok_or_else(|| anyhow!("No verification state found"))?;
 
         let acc_type = request.payload.field.to_string();
-        let challenge = state.challenges.get(&acc_type)
+        let challenge = state
+            .challenges
+            .get(&acc_type)
             .ok_or_else(|| anyhow!("No challenge found for {}", acc_type))?;
 
         match &challenge.token {
             Some(token) if token == &request.payload.challenge => {
                 // Mark challenge as complete
-                conn.update_challenge_status("rococo", &account_id, &acc_type).await?;
+                conn.update_challenge_status("rococo", &account_id, &acc_type)
+                    .await?;
 
                 Ok(serde_json::json!({
                     "type": "ok",
@@ -593,7 +615,7 @@ impl Listener {
                 ),
             })),
             None => Ok(serde_json::json!({
-                "type": "error", 
+                "type": "error",
                 "reason": "No active challenge found"
             })),
         }
@@ -648,8 +670,8 @@ impl Listener {
                     .await
             }
             _ => Err(anyhow!(
-                    "Unsupported message type: {}",
-                    message.message_type
+                "Unsupported message type: {}",
+                message.message_type
             )),
         }
     }
@@ -703,8 +725,8 @@ impl Listener {
                 Ok(())
             }
             Err(_) => Err(anyhow!(
-                    "coudn't get registration of {} from the BC node",
-                    id
+                "coudn't get registration of {} from the BC node",
+                id
             )),
         }
     }
@@ -714,7 +736,7 @@ impl Listener {
     fn has_paid_fee(judgements: Vec<(u32, Judgement<u128>)>) -> anyhow::Result<(), anyhow::Error> {
         if judgements
             .iter()
-                .any(|(_, j)| matches!(j, Judgement::FeePaid(_)))
+            .any(|(_, j)| matches!(j, Judgement::FeePaid(_)))
         {
             Ok(())
         } else {
@@ -932,34 +954,34 @@ impl Listener {
         match self
             ._handle_incoming(Message::Text(text.into()), subscriber)
             .await
-            {
-                Ok(response) => {
-                    let serialized = match serde_json::to_string(&response) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!(parent: span, error = %e, "Failed to serialize response");
-                            return true;
-                        }
-                    };
-
-                    if let Err(e) = Self::send_message(write, serialized).await {
-                        error!(parent: span, error = %e, "Failed to send response");
-                        return false;
+        {
+            Ok(response) => {
+                let serialized = match serde_json::to_string(&response) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!(parent: span, error = %e, "Failed to serialize response");
+                        return true;
                     }
+                };
 
-                    if let Some(id) = subscriber.take() {
-                        info!(parent: span, subscriber_id = %id, "New subscriber registered");
-                        let mut cloned_self = self.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = cloned_self.spawn_redis_listener(sender, id).await {
-                                error!(error = %e, "Redis listener error");
-                            }
-                        });
-                    }
-                    true
+                if let Err(e) = Self::send_message(write, serialized).await {
+                    error!(parent: span, error = %e, "Failed to send response");
+                    return false;
                 }
-                Err(e) => self.handle_error_response(write, e, span).await,
+
+                if let Some(id) = subscriber.take() {
+                    info!(parent: span, subscriber_id = %id, "New subscriber registered");
+                    let mut cloned_self = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = cloned_self.spawn_redis_listener(sender, id).await {
+                            error!(error = %e, "Redis listener error");
+                        }
+                    });
+                }
+                true
             }
+            Err(e) => self.handle_error_response(write, e, span).await,
+        }
     }
 
     async fn handle_successful_response(
@@ -1070,7 +1092,7 @@ impl Listener {
         self.process_websocket(write, read, conn_span).await;
     }
 
-    // websocket listener
+    /// websocket listener
     pub async fn listen(&mut self) -> ! {
         let listener = match tokio::net::TcpListener::bind(self.socket_addr).await {
             Ok(l) => l,
@@ -1140,7 +1162,7 @@ impl Listener {
 
                 debug!("Redis event received: {:?}", msg);
 
-                // process message, continue on error  
+                // process message, continue on error
                 let result = match RedisConnection::process_state_change(&redis_cfg, &msg).await {
                     Ok(result) => result,
                     Err(e) => {
@@ -1170,9 +1192,47 @@ impl Listener {
 }
 
 /// Spawns a websocket server to listen for incoming registration requests
-pub async fn spawn_ws_serv() -> ! {
-    let mut listener = Listener::new().await;
-    listener.listen().await
+pub async fn spawn_ws_serv(
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+) -> anyhow::Result<()> {
+    let listener = Listener::new().await;
+
+    let addr = listener.socket_addr;
+    let tcp_listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .unwrap_or_else(|e| {
+            error!("Failed to bind to address: {}", e);
+            std::process::exit(1);
+        });
+
+    info!("WebSocket server listening on {}", addr);
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                info!("Received shutdown signal, stopping WebSocket server");
+                break;
+            }
+            accept_result = tcp_listener.accept() => {
+                match accept_result {
+                    Ok((stream, addr)) => {
+                        info!("Incoming connection from {:?}...", addr);
+                        let mut clone = listener.clone();
+                        tokio::spawn(async move {
+                            clone.handle_connection(stream.into_std().unwrap()).await;
+                        });
+                        info!("Connection handler spawned");
+                    }
+                    Err(e) => {
+                        error!("Failed to accept connection: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    info!("WebSocket server stopped");
+    Ok(())
 }
 
 /// Used to listen/interact with BC events on the substrate node
@@ -1237,7 +1297,7 @@ impl NodeListener {
             network_cfg.registrar_index,
             network,
         )
-            .await?;
+        .await?;
 
         let mut verification = AccountVerification::new(network.to_string());
         for (account, is_done) in &accounts {
@@ -1310,6 +1370,8 @@ impl NodeListener {
             .expect("GLOBAL_CONFIG is not initialized");
         let networks = cfg.registrar.supported_networks();
 
+        let mut handles = Vec::new();
+
         for network in networks {
             let client = self
                 .clients
@@ -1321,7 +1383,7 @@ impl NodeListener {
             let mut self_clone = self.clone();
             let span_clone = span.clone();
 
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 while let Some(item) = block_stream.next().await {
                     match item {
                         Ok(block) => {
@@ -1337,10 +1399,14 @@ impl NodeListener {
                     }
                 }
             });
+
+            handles.push(handle);
         }
 
+        futures::future::join_all(handles).await;
         Ok(())
     }
+
     /// process block events we listen
     async fn process_block_events(
         &mut self,
@@ -1534,17 +1600,20 @@ impl RedisConnection {
     ) -> anyhow::Result<Vec<Vec<String>>> {
         let state = match self.get_verification_state(network, account_id).await? {
             Some(s) => s,
-            None => return Ok(Vec::new())
+            None => return Ok(Vec::new()),
         };
 
-        let pending = state.challenges.iter()
+        let pending = state
+            .challenges
+            .iter()
             .filter(|(_, challenge)| !challenge.done)
             .filter_map(|(acc_type, challenge)| {
-                challenge.token.as_ref().map(|token| {
-                    vec![acc_type.clone(), token.clone()]
-                })
+                challenge
+                    .token
+                    .as_ref()
+                    .map(|token| vec![acc_type.clone(), token.clone()])
             })
-        .collect();
+            .collect();
 
         Ok(pending)
     }
@@ -1558,7 +1627,7 @@ impl RedisConnection {
     ) -> anyhow::Result<VerificationFields> {
         let state = match self.get_verification_state(network, account_id).await? {
             Some(s) => s,
-            None => return Ok(VerificationFields::default())
+            None => return Ok(VerificationFields::default()),
         };
 
         let mut fields = VerificationFields::default();
@@ -1599,20 +1668,20 @@ impl RedisConnection {
     /// ```
     pub async fn get_challenge_token_from_account_type(
         &mut self,
-        network: &str,  
+        network: &str,
         account_id: &AccountId32,
         acc_type: &AccountType,
     ) -> anyhow::Result<Option<Token>> {
         let state = match self.get_verification_state(network, account_id).await? {
             Some(s) => s,
-            None => return Ok(None)
+            None => return Ok(None),
         };
 
         let type_key = acc_type.to_string();
-        
+
         match state.challenges.get(&type_key) {
             Some(challenge) => Ok(challenge.token.clone().map(Token::new)),
-            None => Ok(None)
+            None => Ok(None),
         }
     }
 
@@ -1643,12 +1712,12 @@ impl RedisConnection {
     ) -> anyhow::Result<Option<Token>> {
         let state = match self.get_verification_state(network, account_id).await? {
             Some(s) => s,
-            None => return Ok(None)
+            None => return Ok(None),
         };
 
         match state.challenges.get(account_type) {
             Some(challenge) => Ok(challenge.token.clone().map(Token::new)),
-            None => Ok(None)
+            None => Ok(None),
         }
     }
 
@@ -1773,14 +1842,13 @@ impl RedisConnection {
         };
 
         Ok(Some((
-                    id,
-                    serde_json::json!({
-                        "type": "AccountState", 
-                        "network": network,
-                        "verification_state": state,
-                        "operation": payload,
-                    }),
+            id,
+            serde_json::json!({
+                "type": "AccountState",
+                "network": network,
+                "verification_state": state,
+                "operation": payload,
+            }),
         )))
     }
-
 }
