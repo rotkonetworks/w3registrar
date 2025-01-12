@@ -312,12 +312,19 @@ impl<'de> Deserialize<'de> for Account {
 pub struct SubscribeAccountStateRequest {
     #[serde(rename = "type")]
     pub _type: SubscribeAccountState,
-    #[serde(deserialize_with = "ss58_to_account_id32")]
     pub payload: AccountId32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IncomingSubscribeRequest {
+    pub network: String,
+    #[serde(deserialize_with = "ss58_to_account_id32")]
+    pub account: AccountId32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChallengedAccount {
+    pub network: String,
     pub account: String,
     pub field: AccountType,
     pub challenge: String,
@@ -635,26 +642,15 @@ impl Listener {
     ) -> anyhow::Result<serde_json::Value> {
         match message.message_type.as_str() {
             "SubscribeAccountState" => {
-                let payload = message
-                    .payload
-                    .as_str()
-                    .ok_or_else(|| anyhow!("Payload must be a string"))?;
+                let incoming: IncomingSubscribeRequest = serde_json::from_value(message.payload)
+                    .map_err(|e| anyhow!("Invalid SubscribeAccountState payload: {}", e))?;
 
-                let network = message
-                    .payload
-                    .get("network")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("rococo"); // default to
-
-                let account_id = AccountId32::from_str(payload)
-                    .map_err(|e| anyhow!("Invalid account ID: {}", e))?;
-
-                let req = SubscribeAccountStateRequest {
+                let internal_request = SubscribeAccountStateRequest {
                     _type: SubscribeAccountState::SubscribeAccountState,
-                    payload: account_id,
+                    payload: incoming.account,
                 };
 
-                self.handle_subscription_request(req, network, subscriber)
+                self.handle_subscription_request(internal_request, &incoming.network, subscriber)
                     .await
             }
             "VerifyIdentity" => {
@@ -670,8 +666,8 @@ impl Listener {
                     .await
             }
             _ => Err(anyhow!(
-                "Unsupported message type: {}",
-                message.message_type
+                    "Unsupported message type: {}",
+                    message.message_type
             )),
         }
     }
