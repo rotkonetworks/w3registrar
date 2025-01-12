@@ -522,8 +522,17 @@ impl Listener {
         let registration = node::get_registration(&client, &request.payload).await?;
 
         let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
-        conn.clear_all_related_to(network, &request.payload).await?;
 
+        // 1) attempt to load existing verification state, if any
+        let existing_verification = conn
+            .get_verification_state(network, &request.payload)
+            .await?;
+
+        // 2) if none found, create a fresh AccountVerification
+        let mut verification =
+            existing_verification.unwrap_or_else(|| AccountVerification::new(network.to_string()));
+
+        // get the accounts from the chain’s identity info
         let accounts = filter_accounts(
             &registration.info,
             &request.payload,
@@ -532,8 +541,8 @@ impl Listener {
         )
         .await?;
 
-        // create verification state
-        let mut verification = AccountVerification::new(network.to_string());
+        // 3) for each discovered account, only create a token if we do not
+        //    already have one stored. Otherwise, reuse the old token/challenge.
         for (account, is_done) in &accounts {
             let (acc_type, name) = match account {
                 Account::Discord(name) => ("discord", name),
@@ -547,22 +556,25 @@ impl Listener {
                 Account::PGPFingerprint(bytes) => ("pgp_fingerprint", &hex::encode(bytes)),
             };
 
-            let token = if *is_done || matches!(account, Account::Display(_)) {
-                None
-            } else {
-                Some(Token::generate().await.show())
-            };
-
-            verification.add_challenge(acc_type, name.clone(), token);
+            // only add a new challenge if not already present.
+            // if *is_done or it's a display_name, we set `token=None` so it's considered done.
+            if !verification.challenges.contains_key(acc_type) {
+                let token = if *is_done || matches!(account, Account::Display(_)) {
+                    None
+                } else {
+                    Some(Token::generate().await.show())
+                };
+                verification.add_challenge(acc_type, name.clone(), token);
+            }
         }
 
-        // save new state
+        // save the updated or reused verification state back to Redis
         conn.save_verification_state(network, &request.payload, &verification)
             .await?;
 
+        // everything below is unchanged: hashing, building JSON response, etc.
         let hash = self.hash_identity_info(&registration.info);
 
-        // convert to response format
         let fields = conn.extract_info(network, &request.payload).await?;
         let pending_challenges = conn.get_challenges(network, &request.payload).await?;
 
@@ -666,8 +678,8 @@ impl Listener {
                     .await
             }
             _ => Err(anyhow!(
-                    "Unsupported message type: {}",
-                    message.message_type
+                "Unsupported message type: {}",
+                message.message_type
             )),
         }
     }
