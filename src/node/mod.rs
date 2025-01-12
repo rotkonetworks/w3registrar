@@ -102,7 +102,8 @@ pub async fn filter_accounts(
         .get_network(network)
         .ok_or_else(|| anyhow!("Network {} not configured", network))?;
 
-    let supported = &network_cfg.services;
+    // supported fields from cfg
+    let supported = &network_cfg.fields;
 
     if accounts.is_empty() {
         provide_judgement(who, reg_index, Judgement::Unknown, &network_cfg.endpoint).await?;

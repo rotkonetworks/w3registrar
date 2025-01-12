@@ -6,7 +6,6 @@ mod token;
 
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
-
 use crate::api::{spawn_node_listener, spawn_ws_serv};
 use crate::config::{Config, GLOBAL_CONFIG};
 use tracing::{error, info};
@@ -14,7 +13,7 @@ use tracing::{error, info};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::INFO)
         .with_line_number(true)
         .with_target(true)
         .with_span_events(FmtSpan::CLOSE)
@@ -23,55 +22,58 @@ async fn main() -> anyhow::Result<()> {
     let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
     let config = Config::load_from(&config_path)?;
     GLOBAL_CONFIG
-        .set(config)
+        .set(config.clone())
         .expect("GLOBAL_CONFIG already initialized");
 
     info!("Starting services...");
-
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+    let mut handles = Vec::new();
 
-    let matrix_handle = {
+    if config.spawned_services.matrix {
         let shutdown_rx = shutdown_tx.subscribe();
-        tokio::spawn(async move {
+        handles.push(tokio::spawn(async move {
             info!("Spawning matrix bot...");
             if let Err(e) = matrix::start_bot(shutdown_rx).await {
                 error!("Matrix bot error: {}", e);
             }
-        })
-    };
+        }));
+    }
 
-    let node_handle = {
+    if config.spawned_services.nodelistener {
         let shutdown_rx = shutdown_tx.subscribe();
-        tokio::spawn(async move {
+        handles.push(tokio::spawn(async move {
             info!("Spawning node listener...");
             if let Err(e) = spawn_node_listener(shutdown_rx).await {
                 error!("Node listener error: {}", e);
             }
-        })
-    };
+        }));
+    }
 
-    let ws_handle = {
+    if config.spawned_services.websocket {
         let shutdown_rx = shutdown_tx.subscribe();
-        tokio::spawn(async move {
+        handles.push(tokio::spawn(async move {
             info!("Spawning websocket server...");
             if let Err(e) = spawn_ws_serv(shutdown_rx).await {
                 error!("WebSocket server error: {}", e);
             }
-        })
-    };
+        }));
+    }
 
-    info!("All services spawned successfully");
+    if handles.is_empty() {
+        error!("No services were configured to run!");
+        return Ok(());
+    }
 
-    // wait for kill signal
+    info!("All configured services spawned successfully");
+
     tokio::signal::ctrl_c().await?;
     info!("Shutdown signal received, stopping services...");
-
+    
     let _ = shutdown_tx.send(());
-
+    
     let shutdown_timeout = tokio::time::Duration::from_secs(5);
-
-    let all_tasks = futures::future::join_all(vec![node_handle, matrix_handle, ws_handle]);
-
+    let all_tasks = futures::future::join_all(handles);
+    
     match tokio::time::timeout(shutdown_timeout, all_tasks).await {
         Ok(results) => {
             for result in results {

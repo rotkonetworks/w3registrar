@@ -4,3 +4,7 @@ config.toml
 .vscode
 .DS_Store
 TODO*
+.keyfile
+.keyfile.kusama
+.keyfile.polkadot
+.keyfile.paseo

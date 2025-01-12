@@ -4,13 +4,18 @@
 endpoint = "wss://dev.rotko.net/people-rococo/"
 registrar_index = 0
 keystore_path = "./keyfile"
-services = ["email","matrix", "twitter", "discord", "display_name"]
+fields = ["email","matrix", "twitter", "discord", "display_name"]
 
 [registrar.polkadot]
 endpoint = "wss://polkadot.dotters.network"
 registrar_index = 0
 keystore_path = "./keyfile.polkadot"
-services = ["email","matrix", "twitter", "discord", "display_name"]
+fields = ["email","matrix", "twitter", "discord", "display_name"]
+
+[spawned_services]
+matrix = false
+websocket = true
+nodelistener = true
 
 [websocket]
 host = "127.0.0.1"

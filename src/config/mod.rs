@@ -9,12 +9,20 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use tokio::sync::OnceCell;
 use url::Url;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub matrix: MatrixConfig,
     pub websocket: WebsocketConfig,
     pub registrar: RegistrarConfigs,
     pub redis: RedisConfig,
+    pub spawned_services: SpawnConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SpawnConfig {
+    pub matrix: bool,
+    pub websocket: bool,
+    pub nodelistener: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -42,7 +50,7 @@ pub struct RegistrarConfig {
     pub endpoint: String,
     pub registrar_index: RegistrarIndex,
     pub keystore_path: String,
-    pub services: Vec<String>,
+    pub fields: Vec<String>,
 }
 
 impl Config {
@@ -123,7 +131,7 @@ impl RedisConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct WebsocketConfig {
     pub host: String,
     pub port: u16,
