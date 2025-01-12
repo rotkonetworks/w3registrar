@@ -49,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
 
+    // TODO: fix graceful shutdown to work with redis connections(hangs now)
     if config.spawned_services.websocket {
         let shutdown_rx = shutdown_tx.subscribe();
         handles.push(tokio::spawn(async move {
