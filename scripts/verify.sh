@@ -8,9 +8,10 @@ VERIFY_MSG=$(cat << EOF | jq -c .
     "version": "1.0",
     "type": "VerifyIdentity",
     "payload": {
+        "network": "rococo",
         "account": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
         "field": "Discord",
-        "challenge": "QB5A6EpiTv"
+        "challenge": "38PVKJR8"
     }
 }
 EOF
