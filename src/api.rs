@@ -7,8 +7,7 @@ use futures::stream::SplitSink;
 use futures::stream::SplitStream;
 use futures::StreamExt;
 use futures_util::SinkExt;
-use redis::{self, RedisError};
-use redis::{Client as RedisClient, Commands};
+use redis::{self, Client as RedisClient, Commands};
 use serde::{Deserialize, Serialize};
 use sp_core::blake2_256;
 use sp_core::Encode;
@@ -21,7 +20,7 @@ use subxt::SubstrateConfig;
 use tokio::{net::TcpStream, sync::Mutex};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
-use tracing::{debug, error, info, span, Instrument, Level};
+use tracing::{debug, error, info, span, Level};
 
 use crate::config::GLOBAL_CONFIG;
 
@@ -510,7 +509,7 @@ impl Listener {
             network,
         ).await?;
 
-        // Create verification state
+        // create verification state
         let mut verification = AccountVerification::new(network.to_string());
         for (account, is_done) in &accounts {
             let (acc_type, name) = match account {
@@ -534,33 +533,14 @@ impl Listener {
             verification.add_challenge(acc_type, name.clone(), token);
         }
 
-        // Save new state
+        // save new state
         conn.save_verification_state(network, &request.payload, &verification).await?;
 
-        // Convert verification state to legacy format for backwards compatibility
-        let mut verification_fields = VerificationFields::default();
-        let mut pending_challenges = Vec::new();
-
-        for (acc_type, challenge) in &verification.challenges {
-            if challenge.done {
-                match acc_type.as_str() {
-                    "discord" => verification_fields.discord = true,
-                    "twitter" => verification_fields.twitter = true,
-                    "matrix" => verification_fields.matrix = true,
-                    "display_name" => verification_fields.display_name = true,
-                    "email" => verification_fields.email = true,
-                    "github" => verification_fields.github = true,
-                    "legal" => verification_fields.legal = true,
-                    "web" => verification_fields.web = true,
-                    "pgp_fingerprint" => verification_fields.pgp_fingerprint = true,
-                    _ => {}
-                }
-            } else if let Some(token) = &challenge.token {
-                pending_challenges.push(vec![acc_type.clone(), token.clone()]);
-            }
-        }
-
         let hash = self.hash_identity_info(&registration.info);
+
+        // convert to response format
+        let fields = conn.extract_info(network, &request.payload).await?;
+        let pending_challenges = conn.get_challenges(network, &request.payload).await?;
 
         Ok(serde_json::json!({
             "type": "JsonResult",
@@ -572,7 +552,7 @@ impl Listener {
                         "network": network,
                         "hashed_info": hash,
                         "verification_state": {
-                            "fields": verification_fields
+                            "fields": fields
                         },
                         "pending_challenges": pending_challenges
                     }
@@ -1547,66 +1527,60 @@ impl RedisConnection {
 
     /// Get all pending challenges of `wallet_id` as a [Vec<Vec<String>>]
     /// Returns pairs of [account_type, challenge_token]
-    pub fn get_challenges(&mut self, wallet_id: &AccountId32) -> anyhow::Result<Vec<Vec<String>>> {
-        let wallet_id_str = serde_json::to_string(wallet_id)?;
+    pub async fn get_challenges(
+        &mut self,
+        network: &str,
+        account_id: &AccountId32,
+    ) -> anyhow::Result<Vec<Vec<String>>> {
+        let state = match self.get_verification_state(network, account_id).await? {
+            Some(s) => s,
+            None => return Ok(Vec::new())
+        };
 
-        println!("Wallet ID string: {}", wallet_id_str);
-
-        let pending_accounts = self.get_accounts_from_done(wallet_id, false);
-        println!("Pending accounts: {:?}", pending_accounts);
-
-        Ok(pending_accounts
-            .into_iter()
-            .filter_map(|account| {
-                let info = format!(
-                    "{}:{}",
-                    format!("{}:{}", account.account_type(), account.inner()),
-                    wallet_id.to_string()
-                );
-                println!("Checking challenge for info key: {}", info);
-
-                match self.get_challenge_token_from_account_info(&info) {
-                    Ok(Some(token)) => {
-                        println!("Found challenge token: {}", token.show());
-                        Some(vec![account.account_type().to_string(), token.show()])
-                    }
-                    Ok(None) => {
-                        println!("No challenge token found for account");
-                        None
-                    }
-                    Err(e) => {
-                        println!("Error retrieving challenge token: {:?}", e);
-                        None
-                    }
-                }
+        let pending = state.challenges.iter()
+            .filter(|(_, challenge)| !challenge.done)
+            .filter_map(|(acc_type, challenge)| {
+                challenge.token.as_ref().map(|token| {
+                    vec![acc_type.clone(), token.clone()]
+                })
             })
-        .collect())
+        .collect();
+
+        Ok(pending)
     }
 
     /// constructing [VerificationFields] object from the registration done of all the accounts
     /// under `wallet_id`
-    pub fn extract_info(&mut self, wallet_id: &AccountId32) -> anyhow::Result<VerificationFields> {
-        let accounts: String = self.conn.hget(wallet_id.to_string(), "accounts")?;
-        let accounts: HashMap<Account, bool> = serde_json::from_str(&accounts)?;
-        let mut verif_state = VerificationFields::default();
+    pub async fn extract_info(
+        &mut self,
+        network: &str,
+        account_id: &AccountId32,
+    ) -> anyhow::Result<VerificationFields> {
+        let state = match self.get_verification_state(network, account_id).await? {
+            Some(s) => s,
+            None => return Ok(VerificationFields::default())
+        };
 
-        for (account, acc_state) in accounts {
-            if acc_state {
-                match account {
-                    Account::Discord(_) => verif_state.discord = true,
-                    Account::Display(_) => verif_state.display_name = true,
-                    Account::Email(_) => verif_state.email = true,
-                    Account::Twitter(_) => verif_state.twitter = true,
-                    Account::Matrix(_) => verif_state.matrix = true,
-                    Account::Github(_) => verif_state.github = true,
-                    Account::Legal(_) => verif_state.legal = true,
-                    Account::Web(_) => verif_state.web = true,
-                    Account::PGPFingerprint(_) => verif_state.pgp_fingerprint = true,
+        let mut fields = VerificationFields::default();
+
+        for (acc_type, challenge) in &state.challenges {
+            if challenge.done {
+                match acc_type.as_str() {
+                    "discord" => fields.discord = true,
+                    "twitter" => fields.twitter = true,
+                    "matrix" => fields.matrix = true,
+                    "display_name" => fields.display_name = true,
+                    "email" => fields.email = true,
+                    "github" => fields.github = true,
+                    "legal" => fields.legal = true,
+                    "web" => fields.web = true,
+                    "pgp_fingerprint" => fields.pgp_fingerprint = true,
+                    _ => {}
                 }
             }
         }
 
-        Ok(verif_state)
+        Ok(fields)
     }
 
     /// Get the challenge [Token] from a hashset with `account` as a name, `token`
@@ -1623,53 +1597,22 @@ impl RedisConnection {
     ///     AccountType::Twitter,
     /// );
     /// ```
-    pub fn get_challenge_token_from_account_type(
+    pub async fn get_challenge_token_from_account_type(
         &mut self,
-        wallet_id: &AccountId32,
+        network: &str,  
+        account_id: &AccountId32,
         acc_type: &AccountType,
     ) -> anyhow::Result<Option<Token>> {
-        // helper closure to create account key
-        let make_info = |account: &Account| -> anyhow::Result<String> {
-            Ok(format!(
-                    "{}:{}",
-                    format!("{}:{}", account.account_type(), account.inner()),
-                    wallet_id.to_string()
-            ))
+        let state = match self.get_verification_state(network, account_id).await? {
+            Some(s) => s,
+            None => return Ok(None)
         };
 
-        let accounts: Vec<Account> = self
-            .get_accounts(&wallet_id)?
-            .unwrap_or(HashMap::default())
-            .keys()
-            .cloned()
-            .collect();
-
-        let matching_account = accounts.into_iter().find(move |account| {
-            matches!(
-                (acc_type, account),
-                (AccountType::Discord, Account::Discord(_))
-                | (AccountType::Display, Account::Display(_))
-                | (AccountType::Email, Account::Email(_))
-                | (AccountType::Matrix, Account::Matrix(_))
-                | (AccountType::Twitter, Account::Twitter(_))
-                | (AccountType::Github, Account::Github(_))
-                | (AccountType::Legal, Account::Legal(_))
-                | (AccountType::Web, Account::Web(_))
-                | (AccountType::PGPFingerprint, Account::PGPFingerprint(_))
-            )
-        });
-
-        // if we found a matching account, get its token
-        match matching_account {
-            Some(account) if matches!(account, Account::Display(_)) => {
-                // NOTE:For display names, we only check they exists onchain
-                Ok(None)
-            }
-            Some(account) => {
-                let info = make_info(&account)?;
-                Ok(self.get_challenge_token_from_account_info(&info)?)
-            }
-            None => Ok(None),
+        let type_key = acc_type.to_string();
+        
+        match state.challenges.get(&type_key) {
+            Some(challenge) => Ok(challenge.token.clone().map(Token::new)),
+            None => Ok(None)
         }
     }
 
@@ -1687,166 +1630,26 @@ impl RedisConnection {
     /// get_challenge_token_from_account(
     ///     &format!(
     ///         "{}:{}",
-    ///         serde_json::to_string(&Account::Twitter("asdf")).?,
-    ///         serde_json::to_string(AccountId32([0u8; 32]))?,
+    ///         &Account::Twitter("asdf"),
+    ///         AccountId32([0u8; 32]),
     ///     );
     /// )
     /// ```
-    pub fn get_challenge_token_from_account_info(
+    pub async fn get_challenge_token_from_account_info(
         &mut self,
-        account: &str,
+        network: &str,
+        account_id: &AccountId32,
+        account_type: &str,
     ) -> anyhow::Result<Option<Token>> {
-        match self
-            .conn
-            .hget::<&str, &str, Option<String>>(account, "token")
-            {
-                Ok(Some(token)) => Ok(Some(Token::new(token))),
-                Ok(None) => Ok(None),
-                Err(e) => Err(anyhow!(
-                        "Couldn't retrive challenge for {}\nError {:?}",
-                        account,
-                        e
-                )),
-            }
-    }
+        let state = match self.get_verification_state(network, account_id).await? {
+            Some(s) => s,
+            None => return Ok(None)
+        };
 
-    /// Get the [AccountId32] from a hashset with `account` as a name, `wallet_id`
-    /// as the key paire of the desired wallet id
-    ///
-    /// # Note:
-    /// The `account` should be in the "[Account]:[AccountId32]" format
-    pub fn get_wallet_id(&mut self, account: &str) -> AccountId32 {
-        let account = self
-            .conn
-            .hget::<&str, &str, String>(account, "wallet_id")
-            .unwrap();
-        serde_json::from_str(&account).unwrap()
-    }
-
-    /// Get the done [Verifdone] from a hashset with `account` as a name, `done`
-    /// as the key paire of the desired done
-    ///
-    /// # Note:
-    /// The `account` should be in the "[Account]:[AccountId32]" format
-    ///
-    /// # Return
-    /// `Ok(Some(Verifdone))` - Account exist and no error occured
-    /// `Ok(None)` - Account does not exist exist and no error occured
-    /// `Err(e)` - Error occured
-    pub fn get_done(&mut self, account: &str) -> anyhow::Result<Option<bool>> {
-        match self
-            .conn
-            .hget::<&str, &str, Option<String>>(account, "done")
-            {
-                Ok(Some(done)) => Ok(Some(serde_json::from_str::<bool>(&done)?)),
-                Ok(None) => Ok(None),
-                Err(e) => Err(anyhow!(
-                        "Error getting done for {}\nError: {:?}",
-                        account,
-                        e
-                )),
-            }
-    }
-
-    /// Set the `done` value of a redis hashset of name `account` to the value of
-    /// `done` param, and synchronizing with it's corresponding `wallet_id` hashset
-    ///
-    /// # Note:
-    /// The `account` should be in the "[Account]:[AccountId32]" format
-    ///
-    /// # Example
-    /// ```ignore
-    /// // TODO
-    /// ```
-    pub fn set_done(&mut self, account: &str, done: bool) -> anyhow::Result<()> {
-        info!("setting {}, 'done' to {}", account, done);
-        self.conn
-            .hset::<&str, &str, String, ()>(account, "done", done.to_string())?;
-
-        let wallet_id = self.conn.hget::<&str, &str, String>(account, "wallet_id")?;
-        let wallet_id: AccountId32 = serde_json::from_str(&wallet_id)?;
-        info!("{:?}", account.rsplit_once(':'));
-        let account = serde_json::from_str::<Account>(account.rsplit_once(':').unwrap().0)?;
-        self.set_acc_done(&wallet_id, &account)?;
-        Ok(())
-    }
-
-    /// Checks if all accounts under the hashset of the `id` key is verified
-    pub fn is_all_verified(&mut self, id: &AccountId32) -> anyhow::Result<bool> {
-        let metadata: String = self.conn.hget(&serde_json::to_string(id)?, "accounts")?;
-        let metadata: HashMap<Account, bool> = serde_json::from_str(&metadata)?;
-        Ok(metadata.values().all(|&done| done))
-    }
-
-    /// Set the done field of a hashset with `id` as a name to [Verifdone::Done]
-    ///
-    /// # NOTE:
-    /// The `account` should be in the "[Account]:[AccountId32]" format
-    pub fn signal_done(&mut self, wallet_id: &AccountId32) -> anyhow::Result<()> {
-        self.conn.hset::<String, &str, String, ()>(
-            wallet_id.to_string(),
-            "done",
-            true.to_string(),
-        )?;
-        Ok(())
-    }
-
-    /// sets the done of the `account` under the hashset of name `wallet_id` to [Verifdone::Done]
-    fn set_acc_done(&mut self, wallet_id: &AccountId32, account: &Account) -> anyhow::Result<()> {
-        let metadata: String = self
-            .conn
-            .hget(&serde_json::to_string(wallet_id)?, "accounts")?;
-        let mut metadata: HashMap<Account, bool> = serde_json::from_str(&metadata)?;
-        metadata.insert(account.to_owned(), true);
-
-        self.conn.hset::<String, &str, String, ()>(
-            serde_json::to_string(&wallet_id)?,
-            "accounts",
-            serde_json::to_string(&metadata)?,
-        )?;
-        Ok(())
-    }
-
-    /// Get all known accounts linked to the `wallet_id` without regard to its registration  done
-    ///
-    /// # Note
-    /// This DOES NOT query anything from the people chain,
-    /// rather it gets its info from locally on the `redis` server
-    pub fn get_accounts(
-        &mut self,
-        wallet_id: &AccountId32,
-    ) -> anyhow::Result<Option<HashMap<Account, bool>>, RedisError> {
-        self.conn
-            .hget::<&str, &str, String>(&serde_json::to_string(wallet_id)?, "accounts")
-            .map(|metadata| {
-                serde_json::from_str::<Option<HashMap<Account, bool>>>(&metadata).unwrap_or(None)
-            })
-    }
-
-    /// Get all known accounts linked to the `wallet_id` with a rgistration done equal to `done`
-    ///
-    /// # Note
-    /// This DOES NOT query anything from the peoples network, rather it gets its info from the
-    /// `redis` server
-    pub fn get_accounts_from_done(&mut self, wallet_id: &AccountId32, done: bool) -> Vec<Account> {
-        match self
-            .conn
-            .hget::<&str, &str, String>(&serde_json::to_string(wallet_id).unwrap(), "accounts")
-            {
-                Ok(metadata) => {
-                    let mut result = vec![];
-                    let metadata: HashMap<Account, bool> = serde_json::from_str(&metadata).unwrap();
-                    for (acc, current_done) in metadata {
-                        if current_done == done {
-                            result.push(acc);
-                        }
-                    }
-                    return result;
-                }
-                _ => {
-                    vec![]
-                }
-            }
+        match state.challenges.get(account_type) {
+            Some(challenge) => Ok(challenge.token.clone().map(Token::new)),
+            None => Ok(None)
+        }
     }
 
     async fn clear_all_related_to(
@@ -1864,143 +1667,6 @@ impl RedisConnection {
             redis::pipe().cmd("DEL").arg(account).exec(&mut self.conn)?;
         }
         Ok(())
-    }
-
-    /// Check if the `account` is verified, this is done only through checking
-    /// the `done` field of the hashset of name `account`
-    ///
-    /// # Note:
-    /// The `account` param should be in the "[Account]:[AccountId32]" format
-    ///
-    /// # Return
-    /// `Ok(Some(true))` - Account exist and is verified
-    /// `Ok(Some(false))` - Account exist and is not verified
-    /// `Ok(None)` - Account does not exist
-    /// `Err(e)` - Error occurred
-    pub fn is_verified(&mut self, account: &str) -> anyhow::Result<Option<bool>> {
-        self.get_done(account)
-    }
-
-    /// Checks if the done of a given account is consistent between the Redis hashset
-    /// and the local metadata stored under the associated wallet ID.
-    ///
-    /// Returns:
-    /// - `Ok(Some(true))`: If the donees match.
-    /// - `Ok(Some(false))`: If the donees do not match.
-    /// - `Ok(None)`: If the account or wallet ID is not found.
-    pub fn is_consistent(&mut self, account: &str) -> anyhow::Result<Option<bool>> {
-        if let Some((acc, wallet_id)) = account.rsplit_once(':') {
-            let wallet_id = serde_json::from_str(wallet_id)?;
-            let acc = serde_json::from_str::<Account>(acc)?;
-
-            if let Some(ldone) = self.get_accounts(&wallet_id)?.unwrap_or_default().get(&acc) {
-                let rdone: String = self.conn.hget(account, "done")?;
-                let rdone: bool = serde_json::from_str(&rdone)?;
-
-                return Ok(Some(rdone == *ldone));
-            }
-        }
-        Ok(None)
-    }
-
-    async fn save_accounts(
-        &mut self,
-        network: &str,
-        who: &AccountId32,
-        accounts: HashMap<Account, bool>,
-    ) -> anyhow::Result<()> {
-        for (account, done) in accounts {
-            match done {
-                true => {
-                    self.save_account(network, who, &account, None, true)
-                        .await?
-                }
-                false => {
-                    self.save_account(network, who, &account, Some(Token::generate().await), false)
-                        .await?;
-                    }
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn save_account(
-        &mut self,
-        network: &str,
-        who: &AccountId32,
-        account: &Account,
-        token: Option<Token>,
-        done: bool,
-    ) -> anyhow::Result<(), RedisError> {
-        let span = span!(Level::DEBUG, "save_account", network = %network, account_id = %who);
-
-        async move {
-            info!("Saving account information to Redis");
-            debug!(token = ?token, "Challenge token details");
-
-            let key = format!("{}:{}:{}", network, account.account_type(), account.inner());
-
-            debug!("Generated Redis key: {}", key);
-
-            let mut cmd = redis::cmd("HSET");
-            cmd.arg(&key)
-                .arg("network")
-                .arg(network)
-                .arg("done")
-                .arg(done.to_string())
-                .arg("wallet_id")
-                .arg(who.to_string());
-
-            let validation_mode = account.determine();
-
-            if matches!(
-                validation_mode,
-                ValidationMode::Inbound | ValidationMode::Outbound
-            ) {
-                if let Some(token_value) = token {
-                    info!("Token provided for account: {}", token_value.show());
-                    cmd.arg("token").arg(token_value.show());
-                } else {
-                    info!("No token provided for an Inbound/Outbound account.");
-                }
-            }
-
-            let result = cmd.exec(&mut self.conn);
-
-            match &result {
-                Ok(_) => {
-                    debug!("Saved account information for key: {}", key);
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to save account information for key: {}, Error: {:?}",
-                        key, e
-                    );
-                }
-            }
-
-            Ok(())
-        }
-        .instrument(span)
-            .await
-    }
-
-    async fn save_owner(
-        &mut self,
-        network: &str,
-        who: &AccountId32,
-        accounts: &HashMap<Account, bool>,
-    ) -> anyhow::Result<(), RedisError> {
-        redis::pipe()
-            .cmd("HSET")
-            .arg(format!("{}:{}", network, who.to_string()))
-            .arg("network")
-            .arg(network)
-            .arg("accounts")
-            .arg(serde_json::to_string(&accounts)?)
-            .arg("done")
-            .arg(false.to_string())
-            .exec(&mut self.conn)
     }
 
     pub async fn save_verification_state(

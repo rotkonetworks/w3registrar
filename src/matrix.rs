@@ -17,7 +17,7 @@ use matrix_sdk::{
     },
     Client,
 };
-use redis::{self};
+use redis;
 use serde_json::Value;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
@@ -29,7 +29,6 @@ use std::path::Path;
 use crate::{
     api::Account,
     config::{MatrixConfig, RedisConfig, GLOBAL_CONFIG},
-    token::AuthToken,
 };
 use crate::{api::RedisConnection, config::RegistrarConfig, node::register_identity};
 
@@ -42,6 +41,7 @@ async fn verify_device(device: &Device) -> anyhow::Result<()> {
         Err(_) => Err(anyhow::Error::msg("Can't verify your device")),
     }
 }
+
 
 /// Preform the login to the matrix account specified in the [Config], while
 /// checking for previous sessions info in from the `<state_dir>/session.json`
@@ -260,9 +260,8 @@ async fn on_room_message(
     }
 }
 
-// TODO: this signature looks ugly
 async fn handle_incoming(
-    acc: Account,
+    acc: Account, 
     text_content: &TextMessageEventContent,
     _room: &Room,
     redis_cfg: &RedisConfig,
@@ -271,26 +270,41 @@ async fn handle_incoming(
 ) -> anyhow::Result<()> {
     info!("\nAcc: {:#?}\nContent: {:#?}", acc, text_content);
     let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
-    // since an account could be registred by more than wallet, we need to poll each
-    // instance of that account
+
+    // Parse the account information to extract account type
+    let account_type = acc.account_type().to_string();
+    let network = "rococo"; // or get from configuration
+
+    // Handle each instance of the account
     let accounts = redis_connection.search(format!("{}:*", serde_json::to_string(&acc)?))?;
-    // TODO: handle the account VerifStatus in the HahsMap of accounts under the wallet_id
+    
     if accounts.is_empty() {
         return Ok(());
     }
 
-    for acc in accounts {
-        info!("Account: {}", acc);
-        if handle_content(
-            text_content,
-            &mut redis_connection,
-            &acc,
-            reg_index,
-            endpoint,
-        )
-        .await?
-        {
-            break;
+    for acc_str in accounts {
+        info!("Account: {}", acc_str);
+        
+        // extract account ID from the account string
+        let parts: Vec<&str> = acc_str.split(':').collect();
+        if parts.len() < 2 {
+            continue;
+        }
+        
+        if let Ok(account_id) = AccountId32::from_str(parts[parts.len()-1]) {
+            if handle_content(
+                text_content,
+                &mut redis_connection,
+                network,
+                &account_id,
+                &account_type,
+                reg_index,
+                endpoint,
+            )
+            .await?
+            {
+                break;
+            }
         }
     }
     Ok(())
@@ -303,34 +317,49 @@ async fn handle_incoming(
 async fn handle_content(
     text_content: &TextMessageEventContent,
     redis_connection: &mut RedisConnection,
-    account: &str,
+    network: &str,
+    account_id: &AccountId32,
+    account_type: &str,
     reg_index: u32,
     endpoint: &str,
 ) -> anyhow::Result<bool> {
-    if let Ok(Some(false)) = redis_connection.is_verified(&account) {
-        let challenge = redis_connection
-            .get_challenge_token_from_account_info(&account)?
-            .unwrap();
-        if text_content.body.eq(&challenge.show()) {
-            redis_connection.set_done(&account, true)?;
-            let id = redis_connection.get_wallet_id(&account);
-            signal_done_if_needed(redis_connection, id, reg_index, endpoint).await?;
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
+    // get the current state
+    let state = match redis_connection.get_verification_state(network, account_id).await? {
+        Some(state) => state,
+        None => return Ok(false),
+    };
 
-async fn signal_done_if_needed(
-    redis_connection: &mut RedisConnection,
-    id: AccountId32,
-    reg_index: u32,
-    endpoint: &str,
-) -> anyhow::Result<()> {
-    if redis_connection.is_all_verified(&id)? {
-        register_identity(&id, reg_index, endpoint).await?;
-        redis_connection.signal_done(&id)?;
-        info!("All requested accounts from {:?} are now verified", id);
+    // get the challenge for the account type
+    let challenge = match state.challenges.get(account_type) {
+        Some(challenge) => challenge,
+        None => return Ok(false),
+    };
+
+    // challenge is already completed
+    if challenge.done {
+        return Ok(false);
     }
-    Ok(())
+
+    // verify the token
+    let token = match &challenge.token {
+        Some(token) => token,
+        None => return Ok(false),
+    };
+
+    // check if the message matches the token (fixed comparison)
+    if text_content.body != *token {
+        return Ok(false);
+    }
+
+    // update challenge status
+    redis_connection
+        .update_challenge_status(network, account_id, account_type)
+        .await?;
+
+    // register identity if all challenges are completed
+    if state.all_done {
+        register_identity(account_id, reg_index, endpoint).await?;
+    }
+
+    Ok(true)
 }
