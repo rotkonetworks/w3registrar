@@ -268,7 +268,6 @@ async fn on_room_message(
                                     Ok(acc) => handle_incoming(
                                         acc,
                                         &text_content,
-                                        &_room,
                                         &ctx.0 .0,
                                         ctx.0 .1.registrar_index,
                                         &ctx.0 .1.endpoint,
@@ -295,7 +294,6 @@ async fn on_room_message(
 async fn handle_incoming(
     acc: Account,
     text_content: &TextMessageEventContent,
-    _room: &Room,
     redis_cfg: &RedisConfig,
     reg_index: u32,
     endpoint: &str,
