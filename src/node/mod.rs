@@ -126,6 +126,7 @@ pub async fn filter_accounts(
 
 /// This will provide a [Reasonable] judgement for the account id `who` from the registrar with
 /// index `regi_index`
+// TODO: Takea RegistrarConfig instead?
 pub async fn register_identity<'a>(
     who: &AccountId32,
     reg_index: u32,

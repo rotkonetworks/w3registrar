@@ -137,7 +137,7 @@ pub async fn start_bot(mut shutdown_rx: broadcast::Receiver<()>) -> anyhow::Resu
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
     let redis_cfg = cfg.redis.clone();
-    let matrix_cfg = cfg.matrix.clone();
+    let matrix_cfg = cfg.adapter.matrix.clone();
     let registrar_cfg = cfg.registrar.clone();
 
     let client = login(matrix_cfg).await?;
@@ -251,6 +251,7 @@ async fn on_room_message(
         match x {
             RawSyncOrStrippedState::Sync(s) => {
                 // converting the casted value to a jsob object to access it's property
+                // TODO: unnest this :)
                 let obj: Value = serde_json::from_str(s.json().get()).unwrap();
                 let identifiers = obj
                     .get("content")
@@ -344,6 +345,8 @@ async fn handle_incoming(
 /// challenge. If matched, it sets done=true for the account. This also checks if all
 /// accounts under a given `wallet_id` are registered - if so, it marks the `wallet_id`
 /// as done (given in concatenation with the account identifier)
+// TODO: Generalize this, since it's being used also in `email.rs` but in a slightly 
+// different form
 async fn handle_content(
     text_content: &TextMessageEventContent,
     redis_connection: &mut RedisConnection,

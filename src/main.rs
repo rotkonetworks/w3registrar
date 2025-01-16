@@ -3,6 +3,7 @@ mod config;
 mod matrix;
 mod node;
 mod token;
+mod email;
 
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;

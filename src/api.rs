@@ -82,6 +82,7 @@ impl AccountVerification {
         self.update_all_done();
     }
 
+    // TODO: change the name of this method!!!
     fn update_all_done(&mut self) {
         self.all_done = !self.challenges.is_empty() && self.challenges.values().all(|c| c.done);
     }

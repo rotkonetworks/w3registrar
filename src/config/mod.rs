@@ -10,12 +10,28 @@ use tokio::sync::OnceCell;
 use url::Url;
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct Config {
+pub struct Adapter {
     pub matrix: MatrixConfig,
+    pub email: EmailConfig,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Config {
     pub websocket: WebsocketConfig,
     pub registrar: RegistrarConfigs,
     pub redis: RedisConfig,
     pub spawned_services: SpawnConfig,
+    pub adapter: Adapter,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmailConfig {
+    pub username: String,
+    pub password: String,
+    pub name: String,
+    pub port: u16,
+    pub email: String,
+    pub mailbox: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
