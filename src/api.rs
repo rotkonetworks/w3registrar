@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use sp_core::blake2_256;
 use sp_core::Encode;
 use std::fmt;
+use std::fmt::Display;
 use std::str::FromStr;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use subxt::events::EventDetails;
@@ -46,6 +47,7 @@ pub struct AccountVerification {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub network: String,
+    /// AccountType: challengeInfo
     pub challenges: HashMap<String, ChallengeInfo>,
     pub all_done: bool,
 }
@@ -120,7 +122,23 @@ pub enum Account {
     PGPFingerprint([u8; 20]),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Copy)]
+impl Display for Account {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Account::Twitter(name) => write!(f, "twitter:{}", name),
+            Account::Discord(name) => write!(f, "discord:{}", name),
+            Account::Matrix(name) => write!(f, "matrix:{}", name),
+            Account::Display(name) => write!(f, "display:{}", name),
+            Account::Legal(name) => write!(f, "legal:{}", name),
+            Account::Web(name) => write!(f, "web:{}", name),
+            Account::Email(name) => write!(f, "email:{}", name),
+            Account::Github(name) => write!(f, "github:{}", name),
+            Account::PGPFingerprint(name) => write!(f, "pgp_fingerprint:{:?}", name),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Copy, Hash)]
 pub enum AccountType {
     Discord,
     #[serde(rename = "display_name")]
@@ -558,7 +576,7 @@ impl Listener {
         }
 
         // save new state
-        conn.save_verification_state(network, &request.payload, &verification)
+        conn.init_verification_state(network, &request.payload, &verification, &accounts)
             .await?;
 
         let hash = self.hash_identity_info(&registration.info);
@@ -667,8 +685,8 @@ impl Listener {
                     .await
             }
             _ => Err(anyhow!(
-                    "Unsupported message type: {}",
-                    message.message_type
+                "Unsupported message type: {}",
+                message.message_type
             )),
         }
     }
@@ -970,7 +988,7 @@ impl Listener {
                     info!(parent: span, subscriber_id = %id, "New subscriber registered");
                     let mut cloned_self = self.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = cloned_self.spawn_redis_listener(sender, id).await {
+                        if let Err(e) = cloned_self.spawn_redis_listener(sender, id, response).await {
                             error!(error = %e, "Redis listener error");
                         }
                     });
@@ -1014,7 +1032,7 @@ impl Listener {
             info!(parent: span, subscriber_id = %id, "New subscriber registered");
             let mut cloned_self = self.clone();
             tokio::spawn(async move {
-                if let Err(e) = cloned_self.spawn_redis_listener(sender, id).await {
+                if let Err(e) = cloned_self.spawn_redis_listener(sender, id, response).await {
                     error!(error = %e, "Redis listener error");
                 }
             });
@@ -1121,6 +1139,7 @@ impl Listener {
         &mut self,
         mut sender: Sender<serde_json::Value>,
         account: AccountId32,
+        response: serde_json::Value,
     ) -> anyhow::Result<()> {
         let redis_cfg = self.redis_cfg.clone();
         info!("Starting Redis listener task!");
@@ -1135,8 +1154,10 @@ impl Listener {
             };
 
             let mut pubsub = redis_conn.as_pubsub();
+            let network = &response["payload"]["message"]["AccountState"]["network"];
             let channel = format!(
-                "__keyspace@0__:{}",
+                "__keyspace@0__:{}:{}",
+                network.as_str().unwrap_or_default(),
                 serde_json::to_string(&account).unwrap()
             );
 
@@ -1319,7 +1340,7 @@ impl NodeListener {
             verification.add_challenge(acc_type, name.clone(), token);
         }
 
-        conn.save_verification_state(network, who, &verification)
+        conn.init_verification_state(network, who, &verification, &accounts)
             .await?;
         Ok(())
     }
@@ -1447,6 +1468,7 @@ impl NodeListener {
     ///
     /// # Note
     /// For now, we only handle registration requests from `Matrix`, `Twitter` and `Discord`
+    /// # TODO: remove this
     pub async fn handle_registration_request(
         conn: &mut RedisConnection,
         network: &str,
@@ -1477,8 +1499,9 @@ impl NodeListener {
             verification.add_challenge(acc_type, name.clone(), token);
         }
 
-        conn.save_verification_state(network, who, &verification)
-            .await
+        Ok(())
+        // conn.save_verification_state(network, who, &verification, &accounts)
+        //     .await
     }
 
     /// Cancels the pending registration requests issued by `who` by removing it's occurance on
@@ -1569,7 +1592,7 @@ impl RedisConnection {
         account_id: &AccountId32,
     ) -> anyhow::Result<redis::PubSub> {
         //        let related_keys = self.search(format!("*:{}", serde_json::to_string(&account_id)?))?;
-        let related_keys = self.search(format!("*:{}", account_id.to_string()))?;
+        let related_keys = self.search(&format!("*:{}", account_id.to_string()))?;
         let mut pubsub = self.conn.as_pubsub();
 
         for key in related_keys {
@@ -1581,10 +1604,10 @@ impl RedisConnection {
     }
 
     /// Search through the redis for keys that are similar to the `pattern`
-    pub fn search(&mut self, pattern: String) -> anyhow::Result<Vec<String>> {
+    pub fn search(&mut self, pattern: &str) -> anyhow::Result<Vec<String>> {
         Ok(self
             .conn
-            .scan_match::<&str, String>(&pattern)?
+            .scan_match::<&str, String>(pattern)?
             .collect::<Vec<String>>())
     }
 
@@ -1728,14 +1751,35 @@ impl RedisConnection {
             .arg(&format!("{}:{}", network, who.to_string()))
             .exec(&mut self.conn)?;
 
-        let accounts = self.search(format!("{}:*:{}", network, who))?;
+        let accounts = self.search(&format!("{}:*:{}", network, who))?;
         for account in accounts {
             redis::pipe().cmd("DEL").arg(account).exec(&mut self.conn)?;
         }
         Ok(())
     }
 
-    pub async fn save_verification_state(
+    pub async fn save_account(
+        &mut self,
+        network: &str,
+        account_id: &AccountId32,
+        state: &AccountVerification,
+        accounts: &HashMap<Account, bool>,
+    ) -> anyhow::Result<()> {
+        let mut pipe = redis::pipe();
+        for (account, _) in accounts {
+            let key = format!("{}:{}:{}", network, account, account_id);
+            let mut pipe = pipe.cmd("HSET").arg(&key);
+            if let Some(challenge_info) = state.challenges.get(&account.account_type().to_string())
+            {
+                pipe.arg("info")
+                    .arg(&serde_json::to_string(&challenge_info)?);
+            }
+        }
+        pipe.exec(&mut self.conn);
+        Ok(())
+    }
+
+    pub async fn save_state(
         &mut self,
         network: &str,
         account_id: &AccountId32,
@@ -1753,12 +1797,58 @@ impl RedisConnection {
         Ok(())
     }
 
+    pub async fn update_verification_state(
+        &mut self,
+        network: &str,
+        account_id: &AccountId32,
+        state: &AccountVerification,
+    ) -> anyhow::Result<()> {
+        self.save_state(network, account_id, state).await?;
+        let mut pipe = redis::pipe();
+        for (acc_type, info) in state.challenges.clone() {
+            let pipe = pipe.cmd("HSET");
+            // TODO: deal with this clowns
+            let acc_key = match acc_type.as_str() {
+                "discord" => Account::Discord(info.name.clone()),
+                "twitter" => Account::Twitter(info.name.clone()),
+                "web" => Account::Web(info.name.clone()),
+                "github" => Account::Github(info.name.clone()),
+                "email" => Account::Email(info.name.clone()),
+                "legal" => Account::Legal(info.name.clone()),
+                "Matrix" => Account::Matrix(info.name.clone()),
+                "pgp_fingerprint" => todo!(),
+                _ => unreachable!(),
+            };
+            let key = format!("{}:{}:{}", acc_type, acc_key, account_id);
+            pipe.arg(&key)
+                .arg("info")
+                .arg(&serde_json::to_string(&info)?);
+        }
+        pipe.exec(&mut self.conn)?;
+        Ok(())
+    }
+
+    pub async fn init_verification_state(
+        &mut self,
+        network: &str,
+        account_id: &AccountId32,
+        state: &AccountVerification,
+        accounts: &HashMap<Account, bool>,
+    ) -> anyhow::Result<()> {
+        self.save_state(network, account_id, state).await?;
+        self.save_account(network, account_id, state, accounts)
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn get_verification_state(
         &mut self,
         network: &str,
         account_id: &AccountId32,
     ) -> anyhow::Result<Option<AccountVerification>> {
         let key = format!("{}:{}", network, account_id);
+        info!("key: {}", key);
         let value: Option<String> = self.conn.get(&key)?;
 
         match value {
@@ -1775,7 +1865,7 @@ impl RedisConnection {
     ) -> anyhow::Result<bool> {
         if let Some(mut state) = self.get_verification_state(network, account_id).await? {
             if state.mark_challenge_done(account_type) {
-                self.save_verification_state(network, account_id, &state)
+                self.update_verification_state(network, account_id, &state)
                     .await?;
                 Ok(true)
             } else {

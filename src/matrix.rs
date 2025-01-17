@@ -27,11 +27,11 @@ use tracing::info;
 
 use std::path::Path;
 
+use crate::{api::RedisConnection, config::RegistrarConfig, node::register_identity};
 use crate::{
-    api::Account,
+    api::{Account, AccountType},
     config::{MatrixConfig, RedisConfig, GLOBAL_CONFIG},
 };
-use crate::{api::RedisConnection, config::RegistrarConfig, node::register_identity};
 
 const STATE_DIR: &str = "/tmp/matrix_";
 
@@ -53,7 +53,7 @@ async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
     info!("Creating matrix client");
     let client = Client::builder()
         .homeserver_url(cfg.homeserver)
-        .store_config(StoreConfig::new())
+        .store_config(StoreConfig::default())
         .request_config(
             RequestConfig::new()
                 .timeout(Duration::from_secs(60))
@@ -307,7 +307,7 @@ async fn handle_incoming(
     let network = "rococo"; // or get from configuration
 
     // Handle each instance of the account
-    let accounts = redis_connection.search(format!("{}:*", serde_json::to_string(&acc)?))?;
+    let accounts = redis_connection.search(&format!("{}:{}:*", network, acc))?;
 
     if accounts.is_empty() {
         return Ok(());
@@ -317,12 +317,13 @@ async fn handle_incoming(
         info!("Account: {}", acc_str);
 
         // extract account ID from the account string
-        let parts: Vec<&str> = acc_str.split(':').collect();
-        if parts.len() < 2 {
+        let parts: Option<(&str, &str)> = acc_str.rsplit_once(':');
+        if None == parts {
             continue;
         }
 
-        if let Ok(account_id) = AccountId32::from_str(parts[parts.len() - 1]) {
+        // this unwrap is fine, we checked above
+        if let Ok(account_id) = AccountId32::from_str(parts.unwrap().1) {
             if handle_content(
                 text_content,
                 &mut redis_connection,
@@ -345,7 +346,7 @@ async fn handle_incoming(
 /// challenge. If matched, it sets done=true for the account. This also checks if all
 /// accounts under a given `wallet_id` are registered - if so, it marks the `wallet_id`
 /// as done (given in concatenation with the account identifier)
-// TODO: Generalize this, since it's being used also in `email.rs` but in a slightly 
+// TODO: Generalize this, since it's being used also in `email.rs` but in a slightly
 // different form
 async fn handle_content(
     text_content: &TextMessageEventContent,

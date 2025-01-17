@@ -10,6 +10,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use crate::api::{spawn_node_listener, spawn_ws_serv};
 use crate::config::{Config, GLOBAL_CONFIG};
 use tracing::{error, info};
+use crate::email::start_mailserver;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -61,6 +62,15 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
 
+    if config.spawned_services.email {
+        let shutdown_rx = shutdown_tx.subscribe();
+        handles.push(tokio::spawn(async move {
+            info!("Spawning mailserve...");
+            if let Err(e) = start_mailserver().await {
+                error!("Mailserver error: {}", e);
+            }
+        }));
+    }
     if handles.is_empty() {
         error!("No services were configured to run!");
         return Ok(());

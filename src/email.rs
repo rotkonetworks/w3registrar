@@ -41,12 +41,14 @@ impl Mail {
             Some(state) => state,
             None => return Ok(()),
         };
+        info!("Verification state: {:?}", state);
 
         // TODO: hardcoded?
         let challenge = match state.challenges.get(&account_type) {
             Some(challenge) => challenge,
             None => return Ok(()),
         };
+        info!("Challenge: {:?}", challenge);
 
         if challenge.done {
             return Ok(());
@@ -56,8 +58,10 @@ impl Mail {
             Some(token) => token,
             None => return Ok(()),
         };
+        info!("Token: {:?}", token);
 
         if self.body.ne(&Some(token.to_owned())) {
+            info!("Wrong token, got {:?} but expected {:?}", self.body, token);
             return Ok(());
         }
 
@@ -66,6 +70,7 @@ impl Mail {
             .await?;
 
         if state.all_done {
+            info!("All challenges are done!");
             let cfg = GLOBAL_CONFIG.get().expect("Unable to get config");
             let network = &cfg
                 .registrar
@@ -82,24 +87,34 @@ impl Mail {
 
         let account_type = AccountType::Email;
         let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
-        let accounts =
-            redis_connection.search(format!("{}:*", serde_json::to_string(&account)?))?;
+        let search_querry = format!("*:{}:*", account);
+        let accounts = redis_connection.search(&search_querry)?;
 
         if accounts.is_empty() {
+            info!("No account found for {}", search_querry);
             return Ok(());
         }
 
         for acc_str in accounts {
             info!("Account: {}", acc_str);
+            let info: Vec<&str> = acc_str.split(":").collect();
+            if info.len() != 4 {
+                continue;
+            }
+
+            let network = info.get(0).unwrap();
+            // let acc_type = info.get(1).unwrap();
+            // let acc_name = info.get(2).unwrap();
+            let id = info.get(info.len() - 1).unwrap();
             // // NOTE: this will change after this is merged (if-let chaining)
             // // https://github.com/rust-lang/rust/pull/132833
-            if let Some((network, id)) = acc_str.rsplit_once(":") {
-                if let Ok(account_id) = AccountId32::from_str(id) {
-                    // TODO: make the network name enum instead of str
-                    self.handle_content_(&mut redis_connection, &account_id, network)
-                        .await?;
-                }
+            // if let Some((network, id)) = acc_str.rsplit_once(":") {
+            if let Ok(account_id) = AccountId32::from_str(id) {
+                // TODO: make the network name enum instead of str
+                self.handle_content_(&mut redis_connection, &account_id, network)
+                    .await?;
             }
+            // }
         }
         Ok(())
     }
