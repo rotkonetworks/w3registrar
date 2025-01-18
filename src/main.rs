@@ -5,12 +5,12 @@ mod node;
 mod token;
 mod email;
 
-use tracing::Level;
-use tracing_subscriber::fmt::format::FmtSpan;
 use crate::api::{spawn_node_listener, spawn_ws_serv};
 use crate::config::{Config, GLOBAL_CONFIG};
+use tracing::Level;
 use tracing::{error, info};
 use crate::email::start_mailserver;
+use tracing_subscriber::fmt::format::FmtSpan;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -80,12 +80,12 @@ async fn main() -> anyhow::Result<()> {
 
     tokio::signal::ctrl_c().await?;
     info!("Shutdown signal received, stopping services...");
-    
+
     let _ = shutdown_tx.send(());
-    
+
     let shutdown_timeout = tokio::time::Duration::from_secs(5);
     let all_tasks = futures::future::join_all(handles);
-    
+
     match tokio::time::timeout(shutdown_timeout, all_tasks).await {
         Ok(results) => {
             for result in results {

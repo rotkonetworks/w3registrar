@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use anyhow::anyhow;
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use futures::channel::mpsc::{self, Sender};
 use futures::stream::SplitSink;
@@ -9,6 +10,7 @@ use futures::StreamExt;
 use futures_util::SinkExt;
 use redis::{self, Client as RedisClient, Commands};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sp_core::blake2_256;
 use sp_core::Encode;
 use std::fmt;
@@ -541,8 +543,17 @@ impl Listener {
         let registration = node::get_registration(&client, &request.payload).await?;
 
         let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
-        conn.clear_all_related_to(network, &request.payload).await?;
 
+        // 1) attempt to load existing verification state, if any
+        let existing_verification = conn
+            .get_verification_state(network, &request.payload)
+            .await?;
+
+        // 2) if none found, create a fresh AccountVerification
+        let mut verification =
+            existing_verification.unwrap_or_else(|| AccountVerification::new(network.to_string()));
+
+        // get the accounts from the chain’s identity info
         let accounts = filter_accounts(
             &registration.info,
             &request.payload,
@@ -551,8 +562,8 @@ impl Listener {
         )
         .await?;
 
-        // create verification state
-        let mut verification = AccountVerification::new(network.to_string());
+        // 3) for each discovered account, only create a token if we do not
+        //    already have one stored. Otherwise, reuse the old token/challenge.
         for (account, is_done) in &accounts {
             let (acc_type, name) = match account {
                 Account::Discord(name) => ("discord", name),
@@ -566,22 +577,25 @@ impl Listener {
                 Account::PGPFingerprint(bytes) => ("pgp_fingerprint", &hex::encode(bytes)),
             };
 
-            let token = if *is_done || matches!(account, Account::Display(_)) {
-                None
-            } else {
-                Some(Token::generate().await.show())
-            };
-
-            verification.add_challenge(acc_type, name.clone(), token);
+            // only add a new challenge if not already present.
+            // if *is_done or it's a display_name, we set `token=None` so it's considered done.
+            if !verification.challenges.contains_key(acc_type) {
+                let token = if *is_done || matches!(account, Account::Display(_)) {
+                    None
+                } else {
+                    Some(Token::generate().await.show())
+                };
+                verification.add_challenge(acc_type, name.clone(), token);
+            }
         }
 
         // save new state
         conn.init_verification_state(network, &request.payload, &verification, &accounts)
             .await?;
 
+        // everything below is unchanged: hashing, building JSON response, etc.
         let hash = self.hash_identity_info(&registration.info);
 
-        // convert to response format
         let fields = conn.extract_info(network, &request.payload).await?;
         let pending_challenges = conn.get_challenges(network, &request.payload).await?;
 
@@ -691,36 +705,48 @@ impl Listener {
         }
     }
 
-    async fn _handle_incoming(
+    pub async fn _handle_incoming(
         &mut self,
-        message: tokio_tungstenite::tungstenite::Message,
+        message: Message,
         subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<serde_json::Value> {
-        if let Message::Text(text) = message {
-            match serde_json::from_str::<VersionedMessage>(&text) {
-                Ok(versioned_msg) => match versioned_msg.version.as_str() {
-                    "1.0" => match self.process_v1(versioned_msg, subscriber).await {
-                        Ok(response) => Ok(response),
-                        Err(e) => Ok(serde_json::json!({
-                            "type": "error",
-                            "message": e.to_string()
-                        })),
-                    },
-                    _ => Ok(serde_json::json!({
-                        "type": "error",
-                        "message": format!("Unsupported version: {}", versioned_msg.version)
-                    })),
-                },
-                Err(e) => Ok(serde_json::json!({
+    ) -> Result<serde_json::Value> {
+        // 1) ensure the message is text
+        let text = match message {
+            Message::Text(t) => t,
+            _ => {
+                return Ok(json!({
+                    "type": "error",
+                    "message": "Unsupported message format"
+                }))
+            }
+        };
+
+        // 2) attempt to parse the JSON into a VersionedMessage
+        let versioned_msg: VersionedMessage = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                return Ok(json!({
                     "type": "error",
                     "message": format!("Failed to parse message: {}", e)
-                })),
+                }))
             }
-        } else {
-            Ok(serde_json::json!({
+        };
+
+        // 3) check the version
+        if versioned_msg.version.as_str() != "1.0" {
+            return Ok(json!({
                 "type": "error",
-                "message": "Unsupported message format"
-            }))
+                "message": format!("Unsupported version: {}", versioned_msg.version),
+            }));
+        }
+
+        // 4) handle the v1 version
+        match self.process_v1(versioned_msg, subscriber).await {
+            Ok(response) => Ok(response),
+            Err(e) => Ok(json!({
+                "type": "error",
+                "message": e.to_string()
+            })),
         }
     }
 
@@ -1545,11 +1571,11 @@ impl Default for VerificationFields {
     }
 }
 
+// TODO: move this to another file?
 pub struct RedisConnection {
     conn: redis::Connection,
 }
 
-// TODO: move this to another file?
 impl RedisConnection {
     pub fn create_conn(addr: &RedisConfig) -> anyhow::Result<Self> {
         let span = span!(Level::INFO, "redis_connection", url = %addr.url()?);
@@ -1672,20 +1698,6 @@ impl RedisConnection {
         Ok(fields)
     }
 
-    /// Get the challenge [Token] from a hashset with `account` as a name, `token`
-    /// as the key paire of the desired token
-    ///
-    /// # Note:
-    /// The `account` should be in the "[Account]:[AccountId32]" format since an
-    /// `account` could be verified by differnt `wallet`s
-    ///
-    /// # Example
-    /// ``` ignore
-    /// get_challenge_token_from_account(
-    ///     AccountId32([0u8; 32]),
-    ///     AccountType::Twitter,
-    /// );
-    /// ```
     pub async fn get_challenge_token_from_account_type(
         &mut self,
         network: &str,
@@ -1705,25 +1717,6 @@ impl RedisConnection {
         }
     }
 
-    /// Get the challenge [Token] from a hashset with `account` as a name, `token`
-    /// as the key paire of the desired token
-    ///
-    /// # Note:
-    /// The `account` should be in the "[Account]:[AccountId32]" format since an
-    /// `account` could be verified by differnt `wallet`s
-    ///
-    /// <Discord-Twitter>:{account_name}:{wallet_id}
-    ///
-    /// # Example
-    /// ``` ignore
-    /// get_challenge_token_from_account(
-    ///     &format!(
-    ///         "{}:{}",
-    ///         &Account::Twitter("asdf"),
-    ///         AccountId32([0u8; 32]),
-    ///     );
-    /// )
-    /// ```
     pub async fn get_challenge_token_from_account_info(
         &mut self,
         network: &str,

@@ -37,3 +37,4 @@ admins = [
     "@sara:matrix.org",
     "@bill:matrix.org",
 ]
+state_dir = "/tmp/matrix"
