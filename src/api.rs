@@ -1184,7 +1184,7 @@ impl Listener {
             let channel = format!(
                 "__keyspace@0__:{}:{}",
                 network.as_str().unwrap_or_default(),
-                serde_json::to_string(&account).unwrap()
+                account,
             );
 
             info!("Subscribing to channel: {}", channel);
