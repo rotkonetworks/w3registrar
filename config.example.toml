@@ -13,6 +13,7 @@ keystore_path = "./keyfile.polkadot"
 fields = ["email","matrix", "twitter", "discord", "display_name"]
 
 [spawned_services]
+email = true
 matrix = true
 websocket = true
 nodelistener = true
@@ -38,3 +39,10 @@ admins = [
     "@bill:matrix.org",
 ]
 state_dir = "/tmp/matrix"
+
+[email]
+name = "mail.example.com"
+port = 143 
+username = "user"
+password = "pwgen64"
+mailbox = "INBOX"
