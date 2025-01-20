@@ -229,6 +229,6 @@ impl MailServer {
     }
 }
 
-pub async fn start_mailserver() -> anyhow::Result<()> {
+pub async fn watch_mailserver() -> anyhow::Result<()> {
     MailServer::new().await?.listen().await
 }
