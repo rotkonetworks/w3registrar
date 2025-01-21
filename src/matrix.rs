@@ -143,6 +143,17 @@ pub async fn start_bot(mut shutdown_rx: broadcast::Receiver<()>) -> anyhow::Resu
 
     let client = login(matrix_cfg).await?;
 
+    let mut room = RoomEventFilter::default();
+    room.lazy_load_options = LazyLoadOptions::Enabled {
+        include_redundant_members: true,
+    };
+    let mut room_ev = RoomFilter::default();
+    room_ev.state = room;
+    let mut filter = FilterDefinition::default();
+    filter.room = room_ev;
+    let mut settings = SyncSettings::new().filter(filter.into());
+
+    client.sync_once(settings).await?;
     client.add_event_handler_context((redis_cfg.to_owned(), registrar_cfg.to_owned()));
 
     // Store the handler handles
