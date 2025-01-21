@@ -85,7 +85,6 @@ impl Mail {
     async fn handle_content(&self, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
         let account = Account::Email(self.sender.clone());
 
-        let account_type = AccountType::Email;
         let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
         // <<type>:<name>>:<network>:<wallet_id>
         let search_querry = format!("{}:*", account);
