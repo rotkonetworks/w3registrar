@@ -1183,8 +1183,8 @@ impl Listener {
             let network = &response["payload"]["message"]["AccountState"]["network"];
             let channel = format!(
                 "__keyspace@0__:{}:{}",
-                network.as_str().unwrap_or_default(),
                 account,
+                network.as_str().unwrap_or_default(),
             );
 
             info!("Subscribing to channel: {}", channel);
@@ -1739,15 +1739,16 @@ impl RedisConnection {
         network: &str,
         who: &AccountId32,
     ) -> anyhow::Result<()> {
-        redis::pipe()
-            .cmd("DEL")
-            .arg(&format!("{}:{}", network, who.to_string()))
-            .exec(&mut self.conn)?;
+        let mut pipe = redis::pipe();
+        pipe.cmd("DEL")
+            .arg(&format!("{}:{}", who.to_string(), network));
 
-        let accounts = self.search(&format!("{}:*:{}", network, who))?;
+        let accounts = self.search(&format!("*:{}:{}", network, who))?;
         for account in accounts {
-            redis::pipe().cmd("DEL").arg(account).exec(&mut self.conn)?;
+            pipe.cmd("DEL").arg(account);
         }
+
+        pipe.exec(&mut self.conn)?;
         Ok(())
     }
 
@@ -1760,12 +1761,11 @@ impl RedisConnection {
     ) -> anyhow::Result<()> {
         let mut pipe = redis::pipe();
         for (account, _) in accounts {
-            let key = format!("{}:{}:{}", network, account, account_id);
-            let mut pipe = pipe.cmd("HSET").arg(&key);
+            let key = format!("{}:{}:{}", account, network, account_id);
+            let mut pipe = pipe.cmd("SET").arg(&key);
             if let Some(challenge_info) = state.challenges.get(&account.account_type().to_string())
             {
-                pipe.arg("info")
-                    .arg(&serde_json::to_string(&challenge_info)?);
+                pipe.arg(&serde_json::to_string(&challenge_info)?);
             }
         }
         pipe.exec(&mut self.conn);
@@ -1778,7 +1778,7 @@ impl RedisConnection {
         account_id: &AccountId32,
         state: &AccountVerification,
     ) -> anyhow::Result<()> {
-        let key = format!("{}:{}", network, account_id);
+        let key = format!("{}:{}", account_id, network);
         let value = serde_json::to_string(&state)?;
 
         redis::pipe()
@@ -1799,7 +1799,7 @@ impl RedisConnection {
         self.save_state(network, account_id, state).await?;
         let mut pipe = redis::pipe();
         for (acc_type, info) in state.challenges.clone() {
-            let pipe = pipe.cmd("HSET");
+            let pipe = pipe.cmd("SET");
             // TODO: deal with this clowns
             let acc_key = match acc_type.as_str() {
                 "discord" => Account::Discord(info.name.clone()),
@@ -1812,10 +1812,8 @@ impl RedisConnection {
                 "pgp_fingerprint" => todo!(),
                 _ => unreachable!(),
             };
-            let key = format!("{}:{}:{}", acc_type, acc_key, account_id);
-            pipe.arg(&key)
-                .arg("info")
-                .arg(&serde_json::to_string(&info)?);
+            let key = format!("{}:{}:{}", acc_key, network, account_id);
+            pipe.arg(&key).arg(&serde_json::to_string(&info)?);
         }
         pipe.exec(&mut self.conn)?;
         Ok(())
@@ -1840,7 +1838,7 @@ impl RedisConnection {
         network: &str,
         account_id: &AccountId32,
     ) -> anyhow::Result<Option<AccountVerification>> {
-        let key = format!("{}:{}", network, account_id);
+        let key = format!("{}:{}", account_id, network);
         info!("key: {}", key);
         let value: Option<String> = self.conn.get(&key)?;
 
@@ -1874,7 +1872,7 @@ impl RedisConnection {
         network: &str,
         account_id: &AccountId32,
     ) -> anyhow::Result<()> {
-        let key = format!("{}:{}", network, account_id);
+        let key = format!("{}:{}", account_id, network);
         let _: () = self.conn.del(&key)?;
         Ok(())
     }
@@ -1905,7 +1903,7 @@ impl RedisConnection {
         };
 
         // parse network and account ID
-        let (network, account_id) = match key.split_once(':') {
+        let (account_id, network) = match key.split_once(':') {
             Some(parts) => parts,
             None => return Ok(None),
         };

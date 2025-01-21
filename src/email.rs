@@ -87,7 +87,8 @@ impl Mail {
 
         let account_type = AccountType::Email;
         let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
-        let search_querry = format!("*:{}:*", account);
+        // <<type>:<name>>:<network>:<wallet_id>
+        let search_querry = format!("{}:*", account);
         let accounts = redis_connection.search(&search_querry)?;
 
         if accounts.is_empty() {
@@ -102,19 +103,14 @@ impl Mail {
                 continue;
             }
 
-            let network = info.get(0).unwrap();
-            // let acc_type = info.get(1).unwrap();
-            // let acc_name = info.get(2).unwrap();
-            let id = info.get(info.len() - 1).unwrap();
-            // // NOTE: this will change after this is merged (if-let chaining)
-            // // https://github.com/rust-lang/rust/pull/132833
-            // if let Some((network, id)) = acc_str.rsplit_once(":") {
-            if let Ok(account_id) = AccountId32::from_str(id) {
+            let network = info[2];
+            // let account = Account::from_str(&format!("{}:{}", info[0], info[1]))?;
+            let id = info[3];
+            if let Ok(wallet_id) = AccountId32::from_str(id) {
                 // TODO: make the network name enum instead of str
-                self.handle_content_(&mut redis_connection, &account_id, network)
+                self.handle_content_(&mut redis_connection, &wallet_id, network)
                     .await?;
             }
-            // }
         }
         Ok(())
     }

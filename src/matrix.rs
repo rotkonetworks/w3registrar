@@ -9,6 +9,7 @@ use matrix_sdk::{
     room::Room,
     ruma::{
         self,
+        api::client::filter::{FilterDefinition, LazyLoadOptions, RoomEventFilter, RoomFilter},
         events::room::{
             create::RoomCreateEventContent,
             member::StrippedRoomMemberEvent,
@@ -233,11 +234,7 @@ async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client
     });
 }
 
-async fn on_room_message(
-    ev: OriginalSyncRoomMessageEvent,
-    _room: Room,
-    ctx: Ctx<(RedisConfig, RegistrarConfig)>,
-) {
+async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
     let MessageType::Text(text_content) = ev.content.msgtype else {
         return;
     };
@@ -264,17 +261,15 @@ async fn on_room_message(
                             Value::Array(arr) => {
                                 // extract's the sender src ['Discord:user_x']
                                 let sender = arr.first().unwrap().to_string();
+                                let sender = sender
+                                    .strip_prefix('"')
+                                    .and_then(|s| s.strip_suffix('"'))
+                                    .unwrap_or("");
                                 // creating an account from the extracted sender
                                 match Account::from_str(&sender) {
-                                    Ok(acc) => handle_incoming(
-                                        acc,
-                                        &text_content,
-                                        &ctx.0 .0,
-                                        ctx.0 .1.registrar_index,
-                                        &ctx.0 .1.endpoint,
-                                    )
-                                    .await
-                                    .unwrap(),
+                                    Ok(account) => {
+                                        handle_incoming(account, &text_content).await.unwrap();
+                                    }
                                     Err(e) => info!(
                                         "Couldn't create Account object from {:?}: {:?}",
                                         sender, e
@@ -295,43 +290,43 @@ async fn on_room_message(
 async fn handle_incoming(
     acc: Account,
     text_content: &TextMessageEventContent,
-    redis_cfg: &RedisConfig,
-    reg_index: u32,
-    endpoint: &str,
 ) -> anyhow::Result<()> {
     info!("\nAcc: {:#?}\nContent: {:#?}", acc, text_content);
-    let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
+    let cfg = GLOBAL_CONFIG.get().unwrap();
+    let redis_cfg = cfg.redis.clone();
+    let mut redis_connection = RedisConnection::create_conn(&redis_cfg)?;
 
     // Parse the account information to extract account type
     let account_type = acc.account_type().to_string();
-    let network = "rococo"; // or get from configuration
 
     // Handle each instance of the account
-    let accounts = redis_connection.search(&format!("{}:{}:*", network, acc))?;
+    let accounts_key = redis_connection.search(&format!("{}:*", acc))?;
 
-    if accounts.is_empty() {
+    if accounts_key.is_empty() {
         return Ok(());
     }
 
-    for acc_str in accounts {
+    for acc_str in accounts_key {
         info!("Account: {}", acc_str);
 
         // extract account ID from the account string
-        let parts: Option<(&str, &str)> = acc_str.rsplit_once(':');
-        if None == parts {
+        // <acc:name>:<acc_type>:<wallet_id>
+        let parts: Vec<&str> = acc_str.splitn(4, ':').collect();
+        if parts.len() != 4 {
             continue;
         }
 
+        let account = Account::from_str(&format!("{}:{}",parts[0], parts[1]))?;
+        let network = parts[2];
+
         // this unwrap is fine, we checked above
-        if let Ok(account_id) = AccountId32::from_str(parts.unwrap().1) {
+        if let Ok(account_id) = AccountId32::from_str(parts[3]) {
             if handle_content(
                 text_content,
                 &mut redis_connection,
                 network,
                 &account_id,
-                &account_type,
-                reg_index,
-                endpoint,
+                &account,
             )
             .await?
             {
@@ -353,10 +348,16 @@ async fn handle_content(
     redis_connection: &mut RedisConnection,
     network: &str,
     account_id: &AccountId32,
-    account_type: &str,
-    reg_index: u32,
-    endpoint: &str,
+    account: &Account,
 ) -> anyhow::Result<bool> {
+    let cfg = GLOBAL_CONFIG.get().unwrap();
+    let account_type = &account.account_type().to_string();
+
+    let network_setting = match cfg.registrar.networks.get(network) {
+        Some(setting) => setting,
+        None => return Ok(false),
+    };
+
     // get the current state
     let state = match redis_connection
         .get_verification_state(network, account_id)
@@ -395,7 +396,12 @@ async fn handle_content(
 
     // register identity if all challenges are completed
     if state.all_done {
-        register_identity(account_id, reg_index, endpoint).await?;
+        register_identity(
+            account_id,
+            network_setting.registrar_index,
+            &network_setting.endpoint,
+        )
+        .await?;
     }
 
     Ok(true)
