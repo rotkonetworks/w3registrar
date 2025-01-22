@@ -20,6 +20,7 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use subxt::events::EventDetails;
 use subxt::utils::AccountId32;
 use subxt::SubstrateConfig;
+use tokio::sync::broadcast;
 use tokio::{net::TcpStream, sync::Mutex};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
@@ -1571,6 +1572,47 @@ impl Default for VerificationFields {
         }
     }
 }
+
+pub async fn spawn_redis_subscriber(
+    redis_cfg: RedisConfig, 
+    mut shutdown_rx: broadcast::Receiver<()>
+) -> anyhow::Result<()> {
+    let span = span!(Level::INFO, "redis_subscriber");
+    info!(parent: &span, "Starting Redis subscriber service");
+
+    let mut redis_conn = RedisConnection::create_conn(&redis_cfg)?;
+    let mut pubsub = redis_conn.as_pubsub();
+
+    tokio::select! {
+        _ = shutdown_rx.recv() => {
+            info!(parent: &span, "Received shutdown signal, stopping Redis subscriber");
+            Ok(())
+        }
+        _ = async {
+            while let Ok(msg) = pubsub.get_message() {
+                if let Err(e) = handle_redis_message(&redis_cfg, &msg).await {
+                    error!(parent: &span, error = %e, "Failed to handle Redis message");
+                    continue; 
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        } => {
+            info!(parent: &span, "Redis subscription ended");
+            Ok(())
+        }
+    }
+}
+
+async fn handle_redis_message(
+    redis_cfg: &RedisConfig,
+    msg: &redis::Msg,
+) -> anyhow::Result<()> {
+    if let Ok(Some((id, value))) = RedisConnection::process_state_change(redis_cfg, msg).await {
+        info!("Processed state change for {}: {:?}", id, value);
+    }
+    Ok(())
+}
+
 
 // TODO: move this to another file?
 pub struct RedisConnection {

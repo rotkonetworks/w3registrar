@@ -11,6 +11,7 @@ use crate::email::watch_mailserver;
 use tracing::Level;
 use tracing::{error, info};
 use tracing_subscriber::fmt::format::FmtSpan;
+use crate::api::spawn_redis_subscriber;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -30,6 +31,15 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting services...");
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
     let mut handles = Vec::new();
+
+    if config.spawned_services.redis {
+        let shutdown_rx = shutdown_tx.subscribe();
+        handles.push(tokio::spawn(async move {
+            if let Err(e) = spawn_redis_subscriber(config.redis.clone(), shutdown_rx).await {
+                error!("Redis subscriber error: {}", e);
+            }
+        }));
+    }
 
     if config.spawned_services.matrix {
         let shutdown_rx = shutdown_tx.subscribe();
@@ -51,7 +61,6 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
 
-    // TODO: fix graceful shutdown to work with redis connections(hangs now)
     if config.spawned_services.websocket {
         let shutdown_rx = shutdown_tx.subscribe();
         handles.push(tokio::spawn(async move {

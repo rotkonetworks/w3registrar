@@ -40,6 +40,7 @@ pub struct SpawnConfig {
     pub websocket: bool,
     pub nodelistener: bool,
     pub email: bool,
+    pub redis: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
