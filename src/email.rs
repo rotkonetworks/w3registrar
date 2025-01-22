@@ -15,6 +15,8 @@ use tracing::info;
 
 use crate::config::GLOBAL_CONFIG;
 
+/// Represents an email message with optional body content and sender information
+/// Used for processing incoming verification emails
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Mail {
     pub body: Option<String>,
@@ -22,12 +24,20 @@ pub struct Mail {
 }
 
 impl Mail {
+    /// Creates a new Mail instance with the given sender and optional body
     fn new(sender: String, body: Option<String>) -> Self {
         Self { body, sender }
     }
-
-    // TOOO: refactor this, there is a similar func in the `Matrix` module with similar logic
+/// Processes the content of an email message for account verification
+    /// Checks if the email body matches the expected verification token and updates
+    /// verification state in Redis accordingly
+    /// 
+    /// # Arguments
+    /// * `redis_connection` - Active Redis connection for state management
+    /// * `account_id` - The account ID being verified
+    /// * `network` - The network identifier (e.g., "polkadot", "kusama")
     async fn handle_content_(
+    // TOOO: refactor this use same trait with matrix?
         &self,
         redis_connection: &mut RedisConnection,
         account_id: &AccountId32,
@@ -82,6 +92,8 @@ impl Mail {
         return Ok(());
     }
 
+    /// Entry point for processing incoming emails
+    /// Looks up associated accounts and delegates to handle_content_ for verification
     async fn handle_content(&self, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
         let account = Account::Email(self.sender.clone());
 
@@ -115,6 +127,7 @@ impl Mail {
     }
 }
 
+/// IMAP mail server connection manager that handles email verification messages
 pub struct MailServer {
     session: Session<TlsStream<TcpStream>>,
     redis_cfg: RedisConfig,
@@ -147,6 +160,8 @@ impl imap::Authenticator for MailOath {
 }
 
 impl MailServer {
+    /// Creates a new MailServer instance by establishing IMAP connection
+    /// Uses TLS for secure communication and authenticates using provided credentials
     async fn new() -> anyhow::Result<Self> {
         let cfg = GLOBAL_CONFIG
             .get()
@@ -179,6 +194,8 @@ impl MailServer {
         })
     }
 
+    /// Starts listening for incoming emails on the configured mailbox
+    /// Spawns a background task that continuously checks for new messages
     async fn listen(mut self) -> anyhow::Result<()> {
         self.session
             .select(self.mailbox.clone())
@@ -192,6 +209,7 @@ impl MailServer {
         Ok(())
     }
 
+    /// Marks an email as seen and removes it from the unread queue
     async fn flag_seen(&mut self, id: u32) -> anyhow::Result<()> {
         self.session
             .uid_store(format!("{}", id), "+FLAGS (\\SEEN)")?;
@@ -199,6 +217,8 @@ impl MailServer {
         Ok(())
     }
 
+    /// Retrieves and parses an email message by its ID
+    /// Extracts sender address and message body
     async fn get_mail(&mut self, id: u32) -> anyhow::Result<Mail> {
         let mail = self.session.uid_fetch(format!("{}", id), "RFC822")?;
         let mail = mail.get(0).expect("smth went wrong uwu");
@@ -210,6 +230,8 @@ impl MailServer {
         Ok(Mail::new(address, x))
     }
 
+    /// Polls mailbox for new unread messages and processes them
+    /// Uses IMAP IDLE for efficient notification of new messages
     async fn check_mailbox(&mut self) -> anyhow::Result<()> {
         let idle_handle = self.session.idle()?;
         idle_handle.wait()?;

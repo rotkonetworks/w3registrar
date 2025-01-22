@@ -4,15 +4,16 @@
 endpoint = "wss://dev.rotko.net/people-rococo/"
 registrar_index = 0
 keystore_path = "./keyfile"
-fields = ["email","matrix", "twitter", "discord", "display_name"]
+fields = ["email", "matrix", "twitter", "discord", "display_name"]
 
 [registrar.polkadot]
 endpoint = "wss://polkadot.dotters.network"
 registrar_index = 0
 keystore_path = "./keyfile.polkadot"
-fields = ["email","matrix", "twitter", "discord", "display_name"]
+fields = ["email", "matrix", "twitter", "discord", "display_name"]
 
 [spawned_services]
+email = true
 matrix = true
 websocket = true
 nodelistener = true
@@ -28,13 +29,20 @@ port = 6379
 # username = "asdf"
 # password = "abc"
 
-[matrix]
+[adapter]
+[adapter.matrix]
+
 homeserver = "https://matrix.org"
 username = "regbot"
 password = "abc123"
 security_key = "EfT0 1WXL nIi8 v1Zx 15c8 B8Ux bKdS fLUZ 5uVk zje7 KYFj ZiLf"
-admins = [
-    "@sara:matrix.org",
-    "@bill:matrix.org",
-]
-state_dir = "/tmp/matrix"
+admins = ["@sara:matrix.org", "@bill:matrix.org"]
+state_dir = "/tmp/matrix_"
+
+[adapter.email]
+email = "w3reg@rotko.net"
+username = "w3reg"
+password = "pw"
+name = "w3registrar"
+port = 143                # IMAPS port
+mailbox = "INBOX"

@@ -1,4 +1,4 @@
-{ pkgs ? import <nixpkgs> {} }:
+{ pkgs ? import <nixpkgs> { } }:
 
 pkgs.mkShell {
   buildInputs = with pkgs; [
@@ -11,7 +11,6 @@ pkgs.mkShell {
     clang
     llvm
     libiconv
-    neovim
   ];
 
   LD_LIBRARY_PATH = with pkgs; lib.makeLibraryPath [
@@ -22,6 +21,7 @@ pkgs.mkShell {
 
   shellHook = ''
     export PATH=$PATH:$HOME/.cargo/bin
+    alias vi=nvim
     rustup install nightly
     rustup default nightly
     export RUSTFLAGS="-Z unstable-options"

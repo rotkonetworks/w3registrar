@@ -1014,7 +1014,8 @@ impl Listener {
                     info!(parent: span, subscriber_id = %id, "New subscriber registered");
                     let mut cloned_self = self.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = cloned_self.spawn_redis_listener(sender, id, response).await {
+                        if let Err(e) = cloned_self.spawn_redis_listener(sender, id, response).await
+                        {
                             error!(error = %e, "Redis listener error");
                         }
                     });
@@ -1762,13 +1763,13 @@ impl RedisConnection {
         let mut pipe = redis::pipe();
         for (account, _) in accounts {
             let key = format!("{}:{}:{}", account, network, account_id);
-            let mut pipe = pipe.cmd("SET").arg(&key);
+            let pipe = pipe.cmd("SET").arg(&key);
             if let Some(challenge_info) = state.challenges.get(&account.account_type().to_string())
             {
                 pipe.arg(&serde_json::to_string(&challenge_info)?);
             }
         }
-        pipe.exec(&mut self.conn);
+        let _ = pipe.exec(&mut self.conn);
         Ok(())
     }
 
@@ -1808,7 +1809,7 @@ impl RedisConnection {
                 "github" => Account::Github(info.name.clone()),
                 "email" => Account::Email(info.name.clone()),
                 "legal" => Account::Legal(info.name.clone()),
-                "Matrix" => Account::Matrix(info.name.clone()),
+                "matrix" => Account::Matrix(info.name.clone()),
                 "pgp_fingerprint" => todo!(),
                 _ => unreachable!(),
             };

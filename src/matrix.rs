@@ -4,7 +4,6 @@ use matrix_sdk::{
     config::{RequestConfig, StoreConfig, SyncSettings},
     deserialized_responses::RawSyncOrStrippedState,
     encryption::{identities::Device, BackupDownloadStrategy, EncryptionSettings},
-    event_handler::Ctx,
     matrix_auth::MatrixSession,
     room::Room,
     ruma::{
@@ -18,6 +17,7 @@ use matrix_sdk::{
     },
     Client,
 };
+use crate::config::MatrixConfig;
 use redis;
 use serde_json::Value;
 use std::str::FromStr;
@@ -28,15 +28,12 @@ use tracing::info;
 
 use std::path::Path;
 
-use crate::{api::RedisConnection, config::RegistrarConfig, node::register_identity};
-use crate::{
-    api::{Account, AccountType},
-    config::{MatrixConfig, RedisConfig, GLOBAL_CONFIG},
-};
+use crate::api::Account;
+use crate::{api::RedisConnection, node::register_identity};
+use crate::GLOBAL_CONFIG;
 
-const STATE_DIR: &str = "/tmp/matrix_";
-
-/// Verifies a [Device] with the `.verify` method
+/// Verifies a Matrix device for secure communication
+/// This is required for end-to-end encryption functionality
 async fn verify_device(device: &Device) -> anyhow::Result<()> {
     match device.verify().await {
         Ok(_) => Ok(()),
@@ -44,9 +41,12 @@ async fn verify_device(device: &Device) -> anyhow::Result<()> {
     }
 }
 
-/// Preform the login to the matrix account specified in the [Config], while
-/// checking for previous sessions info in from the `<state_dir>/session.json`
-/// and if found, it will attempt to use it.
+/// Establishes authenticated connection to Matrix server
+/// Handles session persistence and restoration from disk
+/// Sets up encryption and verifies device if needed
+/// 
+/// # Arguments
+/// * `cfg` - Matrix configuration including server details and credentials
 async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
     let state_dir = Path::new(&cfg.state_dir);
     let session_path = state_dir.join("session.json");
@@ -106,12 +106,12 @@ async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
         Some(d) => {
             if d.is_verified() {
                 info!(
-                    "Seession {:?}:{:?} is verified!",
+                    "Session {:?}:{:?} is verified!",
                     d.display_name(),
                     d.device_id()
                 );
             } else {
-                info!("Seession is NOT verified!");
+                info!("Session is NOT verified!");
                 info!(
                     "Verifying session {:?}:{:?}",
                     d.display_name(),
@@ -122,21 +122,28 @@ async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
             }
         }
         None => {
-            info!("Could not retrive the device from client, {:?}", client);
+            info!("Could not retrieve the device from client, {:?}", client);
         }
     }
 
     Ok(client)
 }
+
 struct MatrixBot {
     redis_conn: redis::Connection,
 }
 
-/// Spanws a Matrix client to handle incoming messages from beeper
+/// Initializes and runs the Matrix bot
+/// Sets up event handlers for room invites and messages
+/// Manages clean shutdown on signal
+/// 
+/// # Arguments
+/// * `shutdown_rx` - Channel for receiving shutdown signal
 pub async fn start_bot(mut shutdown_rx: broadcast::Receiver<()>) -> anyhow::Result<()> {
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
+    
     let redis_cfg = cfg.redis.clone();
     let matrix_cfg = cfg.adapter.matrix.clone();
     let registrar_cfg = cfg.registrar.clone();
@@ -151,12 +158,12 @@ pub async fn start_bot(mut shutdown_rx: broadcast::Receiver<()>) -> anyhow::Resu
     room_ev.state = room;
     let mut filter = FilterDefinition::default();
     filter.room = room_ev;
-    let mut settings = SyncSettings::new().filter(filter.into());
+    let settings = SyncSettings::new().filter(filter.into());
 
     client.sync_once(settings).await?;
     client.add_event_handler_context((redis_cfg.to_owned(), registrar_cfg.to_owned()));
 
-    // Store the handler handles
+    // store the handler handles
     let member_handle = client.add_event_handler(on_stripped_state_member);
     let message_handle = client.add_event_handler(on_room_message);
 
@@ -215,6 +222,9 @@ pub async fn start_bot(mut shutdown_rx: broadcast::Receiver<()>) -> anyhow::Resu
     Ok(())
 }
 
+/// Handles room member state changes (e.g. invites)
+/// Automatically joins rooms when invited
+/// Uses exponential backoff for retrying failed joins
 async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client, room: Room) {
     if event.state_key != client.user_id().unwrap() {
         return;
@@ -245,59 +255,67 @@ async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client
     });
 }
 
+/// Extract sender account from state event
+fn extract_sender_account(state: &RawSyncOrStrippedState<RoomCreateEventContent>) -> Option<Account> {
+    let RawSyncOrStrippedState::Sync(s) = state else {
+        return None;
+    };
+
+    // Parse JSON content
+    let obj = serde_json::from_str::<Value>(s.json().get()).ok()?;
+    
+    // Extract bridge identifiers
+    let arr = obj
+        .get("content")?
+        .get("com.beeper.bridge.identifiers")?
+        .as_array()?;
+
+    // Get first identifier and process it
+    let sender = arr.first()?
+        .as_str()?
+        .strip_prefix('"')?
+        .strip_suffix('"')?;
+
+    Account::from_str(sender).ok()
+}
+
+/// Processes incoming room messages
 async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
     let MessageType::Text(text_content) = ev.content.msgtype else {
         return;
     };
-    for state in _room
+
+    let state_events = match _room
         .get_state_events(ruma::events::StateEventType::RoomMember)
         .await
-        .unwrap()
     {
-        // some blackmagic event casting
-        let x: RawSyncOrStrippedState<RoomCreateEventContent> = state.cast();
-        match x {
-            RawSyncOrStrippedState::Sync(s) => {
-                // converting the casted value to a jsob object to access it's property
-                // TODO: unnest this :)
-                let obj: Value = serde_json::from_str(s.json().get()).unwrap();
-                let identifiers = obj
-                    .get("content")
-                    .unwrap()
-                    // get's the DM identifier smth like ['Discord:user']
-                    .get("com.beeper.bridge.identifiers");
-                match identifiers {
-                    Some(v) => {
-                        match v {
-                            Value::Array(arr) => {
-                                // extract's the sender src ['Discord:user_x']
-                                let sender = arr.first().unwrap().to_string();
-                                let sender = sender
-                                    .strip_prefix('"')
-                                    .and_then(|s| s.strip_suffix('"'))
-                                    .unwrap_or("");
-                                // creating an account from the extracted sender
-                                match Account::from_str(&sender) {
-                                    Ok(account) => {
-                                        handle_incoming(account, &text_content).await.unwrap();
-                                    }
-                                    Err(e) => info!(
-                                        "Couldn't create Account object from {:?}: {:?}",
-                                        sender, e
-                                    ),
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    None => {}
-                }
-            }
-            _ => {}
+        Ok(events) => events,
+        Err(e) => {
+            info!("Failed to get state events: {:?}", e);
+            return;
+        }
+    };
+
+    for state in state_events {
+        let state_cast: RawSyncOrStrippedState<RoomCreateEventContent> = state.cast();
+        
+        let Some(account) = extract_sender_account(&state_cast) else {
+            continue;
+        };
+
+        if let Err(e) = handle_incoming(account.clone(), &text_content).await {
+            info!("Error handling incoming message for account: {:?}", account);
+            continue;
         }
     }
 }
 
+/// Entry point for handling incoming messages
+/// Looks up associated accounts and delegates to handle_content
+/// 
+/// # Arguments
+/// * `acc` - Parsed account information from message
+/// * `text_content` - Content of the message
 async fn handle_incoming(
     acc: Account,
     text_content: &TextMessageEventContent,
@@ -307,10 +325,7 @@ async fn handle_incoming(
     let redis_cfg = cfg.redis.clone();
     let mut redis_connection = RedisConnection::create_conn(&redis_cfg)?;
 
-    // Parse the account information to extract account type
-    let account_type = acc.account_type().to_string();
-
-    // Handle each instance of the account
+    // handle each instance of the account
     let accounts_key = redis_connection.search(&format!("{}:*", acc))?;
 
     if accounts_key.is_empty() {
@@ -327,7 +342,7 @@ async fn handle_incoming(
             continue;
         }
 
-        let account = Account::from_str(&format!("{}:{}",parts[0], parts[1]))?;
+        let account = Account::from_str(&format!("{}:{}", parts[0], parts[1]))?;
         let network = parts[2];
 
         // this unwrap is fine, we checked above
@@ -348,12 +363,16 @@ async fn handle_incoming(
     Ok(())
 }
 
-/// Handles the incoming message as `text_content`, as it checks it against the expected
-/// challenge. If matched, it sets done=true for the account. This also checks if all
-/// accounts under a given `wallet_id` are registered - if so, it marks the `wallet_id`
-/// as done (given in concatenation with the account identifier)
-// TODO: Generalize this, since it's being used also in `email.rs` but in a slightly
-// different form
+/// Processes message content for verification
+/// Validates message against expected challenge token
+/// Updates verification state and triggers registration if all challenges complete
+/// 
+/// # Arguments
+/// * `text_content` - Content to validate
+/// * `redis_connection` - Redis connection for state management
+/// * `network` - Network identifier
+/// * `account_id` - Account being verified
+/// * `account` - Account information
 async fn handle_content(
     text_content: &TextMessageEventContent,
     redis_connection: &mut RedisConnection,
@@ -401,7 +420,7 @@ async fn handle_content(
     }
 
     // update challenge status
-    redis_connection
+    let result = redis_connection
         .update_challenge_status(network, account_id, account_type)
         .await?;
 
@@ -415,5 +434,5 @@ async fn handle_content(
         .await?;
     }
 
-    Ok(true)
+    Ok(result)
 }
