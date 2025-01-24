@@ -17,6 +17,7 @@ email = true
 matrix = true
 websocket = true
 nodelistener = true
+redis = true
 
 [websocket]
 host = "127.0.0.1"
