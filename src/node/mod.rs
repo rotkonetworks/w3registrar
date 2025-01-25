@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 #[subxt::subxt(runtime_metadata_path = "./identity.scale")]
-pub mod api {}
+pub mod substrate {}
 
 use crate::api::AccountType;
 use crate::config::GLOBAL_CONFIG;
@@ -18,19 +18,15 @@ use subxt::SubstrateConfig;
 use tracing::info;
 
 use super::api::Account;
-use api::identity::calls::types::provide_judgement::Identity;
-use api::runtime_types::pallet_identity::types::Judgement;
-use api::runtime_types::pallet_identity::types::Registration;
-use api::runtime_types::people_rococo_runtime::people::IdentityInfo;
+use substrate::identity::calls::types::provide_judgement::Identity;
+use substrate::runtime_types::pallet_identity::types::Judgement;
+use substrate::runtime_types::pallet_identity::types::Registration;
+use substrate::runtime_types::people_rococo_runtime::people::IdentityInfo;
 
-pub use api::*;
-
+pub use substrate::*;
 pub type Client = subxt::OnlineClient<SubstrateConfig>;
-
 pub type Block = subxt::blocks::Block<SubstrateConfig, Client>;
-
 pub type BlockHash = <SubstrateConfig as subxt::Config>::Hash;
-
 type PairSigner = subxt::tx::PairSigner<SubstrateConfig, Sr25519Pair>;
 
 pub async fn get_registration(
@@ -62,7 +58,7 @@ pub async fn provide_judgement<'a>(
     let registration = get_registration(&client, &who).await?;
     let hash = hex::encode(blake2_256(&registration.info.encode()));
 
-    let judgement = api::tx().identity().provide_judgement(
+    let judgement = substrate::tx().identity().provide_judgement(
         reg_index,
         subxt::utils::MultiAddress::Address32(who.to_owned().0),
         judgement,
@@ -153,7 +149,7 @@ pub async fn register_identity<'a>(
     let registration = get_registration(&client, who).await?;
     let hash = hex::encode(blake2_256(&registration.info.encode()));
 
-    let judgement = api::tx().identity().provide_judgement(
+    let judgement = substrate::tx().identity().provide_judgement(
         reg_index,
         subxt::utils::MultiAddress::Address32(who.to_owned().0),
         Judgement::Reasonable,

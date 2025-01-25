@@ -98,16 +98,13 @@ pub async fn initialize_config() {
         .expect("GLOBAL_CONFIG already initialized");
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Nickname(String);
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct MatrixConfig {
     pub homeserver: String,
     pub username: String,
     pub password: String,
     pub security_key: String,
-    pub admins: Vec<Nickname>,
+    pub admins: Vec<String>,
     pub state_dir: String,
 }
 

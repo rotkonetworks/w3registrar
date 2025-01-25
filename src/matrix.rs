@@ -22,7 +22,6 @@ use redis;
 use serde_json::Value;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
-use tokio::sync::broadcast;
 use tokio::time::{sleep, Duration};
 use tracing::info;
 
@@ -135,11 +134,7 @@ struct MatrixBot {
 
 /// Initializes and runs the Matrix bot
 /// Sets up event handlers for room invites and messages
-/// Manages clean shutdown on signal
-/// 
-/// # Arguments
-/// * `shutdown_rx` - Channel for receiving shutdown signal
-pub async fn start_bot(mut shutdown_rx: broadcast::Receiver<()>) -> anyhow::Result<()> {
+pub async fn start_bot() -> anyhow::Result<()> {
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
@@ -150,6 +145,7 @@ pub async fn start_bot(mut shutdown_rx: broadcast::Receiver<()>) -> anyhow::Resu
 
     let client = login(matrix_cfg).await?;
 
+    // setup event filters
     let mut room = RoomEventFilter::default();
     room.lazy_load_options = LazyLoadOptions::Enabled {
         include_redundant_members: true,
@@ -160,12 +156,11 @@ pub async fn start_bot(mut shutdown_rx: broadcast::Receiver<()>) -> anyhow::Resu
     filter.room = room_ev;
     let settings = SyncSettings::new().filter(filter.into());
 
+    // initial sync and handler setup
     client.sync_once(settings).await?;
     client.add_event_handler_context((redis_cfg.to_owned(), registrar_cfg.to_owned()));
-
-    // store the handler handles
-    let member_handle = client.add_event_handler(on_stripped_state_member);
-    let message_handle = client.add_event_handler(on_room_message);
+    client.add_event_handler(on_stripped_state_member);
+    client.add_event_handler(on_room_message);
 
     info!(
         "Encryption Status: {:#?}",
@@ -177,48 +172,9 @@ pub async fn start_bot(mut shutdown_rx: broadcast::Receiver<()>) -> anyhow::Resu
         info!("Logged in with device ID {:#?}", device_id);
     }
 
-    // start sync in a separate task
-    let sync_client = client.clone();
     let settings = SyncSettings::default().timeout(Duration::from_secs(30));
+    client.sync(settings).await?;
 
-    let (sync_stop_tx, mut sync_stop_rx) = tokio::sync::mpsc::channel(1);
-    let sync_task = tokio::spawn(async move {
-        tokio::select! {
-            sync_result = sync_client.sync(settings) => {
-                match sync_result {
-                    Ok(_) => info!("Matrix sync completed successfully"),
-                    Err(e) => tracing::error!("Matrix sync error: {:#?}", e),
-                }
-            }
-            _ = sync_stop_rx.recv() => {
-                info!("Sync stop signal received");
-            }
-        }
-    });
-
-    // wait for shutdown signal or sync completion
-    tokio::select! {
-        _ = shutdown_rx.recv() => {
-            info!("Received shutdown signal, stopping Matrix bot");
-
-            // remove event handlers
-            client.remove_event_handler(member_handle);
-            client.remove_event_handler(message_handle);
-
-            // stop the sync
-            let _ = sync_stop_tx.send(()).await;
-            drop(client);
-
-            // set a timeout for clean shutdown
-            sleep(Duration::from_secs(5)).await;
-            info!("Clean shutdown timeout reached");
-        }
-        _ = sync_task => {
-            info!("Matrix sync ended unexpectedly");
-        }
-    }
-
-    info!("Matrix bot stopped");
     Ok(())
 }
 
@@ -304,7 +260,7 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
         };
 
         if let Err(e) = handle_incoming(account.clone(), &text_content).await {
-            info!("Error handling incoming message for account: {:?}", account);
+            info!("Error handling incoming message for account {:?}: {:?}", account, e);
             continue;
         }
     }

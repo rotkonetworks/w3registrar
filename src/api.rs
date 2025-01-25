@@ -20,19 +20,17 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use subxt::events::EventDetails;
 use subxt::utils::AccountId32;
 use subxt::SubstrateConfig;
-use tokio::sync::broadcast;
 use tokio::{net::TcpStream, sync::Mutex};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 use tracing::{debug, error, info, span, Level};
 
-use crate::config::GLOBAL_CONFIG;
 
 use crate::{
-    config::RedisConfig,
+    config::{RedisConfig, GLOBAL_CONFIG,RegistrarConfig},
     node::{
         self,
-        api::runtime_types::{
+        substrate::runtime_types::{
             pallet_identity::types::{Data as IdentityData, Judgement},
             people_rococo_runtime::people::IdentityInfo,
         },
@@ -427,20 +425,9 @@ pub enum NotifyAccountState {
     NotifyAccountState,
 }
 // --------------------------------------
-pub async fn spawn_node_listener(
-    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
-) -> anyhow::Result<()> {
+pub async fn spawn_node_listener() -> anyhow::Result<()> {
     let node_listener = NodeListener::new().await?;
-
-    tokio::select! {
-        _ = shutdown_rx.recv() => {
-            info!("Received shutdown signal, stopping Node listener");
-            Ok(())
-        }
-        result = node_listener.listen() => {
-            result
-        }
-    }
+    node_listener.listen().await
 }
 
 /// Converts the inner of [IdentityData] to a [String]
@@ -756,21 +743,43 @@ impl Listener {
     pub async fn check_node(
         id: AccountId32,
         accounts: Vec<Account>,
-    ) -> anyhow::Result<(), anyhow::Error> {
-        let client = NodeClient::from_url("wss://dev.rotko.net/people-rococo").await?;
-        let registration = node::get_registration(&client, &id).await;
+        network: &str,
+    ) -> anyhow::Result<()> {
+        let cfg = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG is not initialized");
+        let network_cfg = cfg
+            .registrar
+            .get_network(network)
+            .ok_or_else(|| anyhow!("Network {} not configured", network))?;
+
+        let client = NodeClient::from_url(&network_cfg.endpoint).await?;
+        let registration = node::get_registration(&client, &id).await?;
+
         info!("registration: {:#?}", registration);
-        match registration {
-            Ok(reg) => {
-                Self::is_complete(&reg, &accounts)?;
-                Self::has_paid_fee(reg.judgements.0)?;
-                Ok(())
+
+        Self::is_complete(&registration, &accounts)?;
+        Self::has_paid_fee(registration.judgements.0)?;
+        Self::validate_account_types(&accounts, network_cfg)?;
+
+        Ok(())
+    }
+
+    fn validate_account_types(accounts: &[Account], network_cfg: &RegistrarConfig) -> anyhow::Result<()> {
+        for account in accounts {
+            let acc_type = account.account_type();
+            let supported = network_cfg.fields.iter().any(|field| {
+                AccountType::from_str(field)
+                    .map(|f| f == acc_type)
+                    .unwrap_or(false)
+            });
+
+            if !supported {
+                return Err(anyhow!(
+                        "Account type {} is not supported on this network",
+                        acc_type,
+                ));
             }
-            Err(_) => Err(anyhow!(
-                "coudn't get registration of {} from the BC node",
-                id
-            )),
         }
+        Ok(())
     }
 
     /// Checks if fee is paid
@@ -829,21 +838,6 @@ impl Listener {
             }
         }
         Ok(())
-    }
-
-    async fn monitor_hash_changes(client: RedisClient, key: String) -> Option<String> {
-        let mut pubsub = client.get_async_pubsub().await.unwrap();
-        let channel = format!("__keyspace@0__:{}", key);
-        pubsub.subscribe(channel).await.unwrap();
-        while let Some(_) = pubsub.on_message().next().await {
-            let mut con = client.get_connection().unwrap();
-            let done: String = con.hget(&key, String::from("done")).unwrap();
-            let done: bool = serde_json::from_str(&done).unwrap();
-            if done {
-                return Some(String::from("Done"));
-            }
-        }
-        return None;
     }
 
     pub async fn filter_message(message: &Message) -> Option<AccountId32> {
@@ -1238,12 +1232,10 @@ impl Listener {
 }
 
 /// Spawns a websocket server to listen for incoming registration requests
-pub async fn spawn_ws_serv(
-    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
-) -> anyhow::Result<()> {
+pub async fn spawn_ws_serv() -> anyhow::Result<()> {
     let listener = Listener::new().await;
-
     let addr = listener.socket_addr;
+    
     let tcp_listener = tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| {
@@ -1254,31 +1246,19 @@ pub async fn spawn_ws_serv(
     info!("WebSocket server listening on {}", addr);
 
     loop {
-        tokio::select! {
-            _ = shutdown_rx.recv() => {
-                info!("Received shutdown signal, stopping WebSocket server");
-                break;
+        match tcp_listener.accept().await {
+            Ok((stream, addr)) => {
+                info!("Incoming connection from {:?}...", addr);
+                let mut clone = listener.clone();
+                tokio::spawn(async move {
+                    clone.handle_connection(stream.into_std().unwrap()).await;
+                });
             }
-            accept_result = tcp_listener.accept() => {
-                match accept_result {
-                    Ok((stream, addr)) => {
-                        info!("Incoming connection from {:?}...", addr);
-                        let mut clone = listener.clone();
-                        tokio::spawn(async move {
-                            clone.handle_connection(stream.into_std().unwrap()).await;
-                        });
-                        info!("Connection handler spawned");
-                    }
-                    Err(e) => {
-                        error!("Failed to accept connection: {}", e);
-                    }
-                }
+            Err(e) => {
+                error!("Failed to accept connection: {}", e);
             }
         }
     }
-
-    info!("WebSocket server stopped");
-    Ok(())
 }
 
 /// Used to listen/interact with BC events on the substrate node
@@ -1321,6 +1301,7 @@ impl NodeListener {
         let cfg = GLOBAL_CONFIG
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
+
         let network_cfg = cfg
             .registrar
             .get_network(network)
@@ -1332,31 +1313,36 @@ impl NodeListener {
             .ok_or_else(|| anyhow!("No client for network {}", network))?;
 
         let registration = node::get_registration(&client, who).await?;
-        Listener::has_paid_fee(registration.judgements.0)?;
+        let accounts = Account::into_accounts(&registration.info);
+
+        // validation
+        Listener::check_node(who.clone(), accounts.clone(), network).await?;
 
         let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
         conn.clear_all_related_to(network, who).await?;
 
-        let accounts = filter_accounts(
+        // filter accounts and create verification state
+        let filtered_accounts = filter_accounts(
             &registration.info,
             who,
             network_cfg.registrar_index,
             network,
-        )
-        .await?;
+        ).await?;
 
         let mut verification = AccountVerification::new(network.to_string());
-        for (account, is_done) in &accounts {
+
+        // set up verification challenges
+        for (account, is_done) in &filtered_accounts {
             let (acc_type, name) = match account {
-                Account::Discord(name) => ("discord", name),
-                Account::Twitter(name) => ("twitter", name),
-                Account::Matrix(name) => ("matrix", name),
-                Account::Display(name) => ("display_name", name),
-                Account::Email(name) => ("email", name),
-                Account::Github(name) => ("github", name),
-                Account::Legal(name) => ("legal", name),
-                Account::Web(name) => ("web", name),
-                Account::PGPFingerprint(bytes) => ("pgp_fingerprint", &hex::encode(bytes)),
+                Account::Discord(name) => ("discord", name.clone()),
+                Account::Twitter(name) => ("twitter", name.clone()),
+                Account::Matrix(name) => ("matrix", name.clone()),
+                Account::Display(name) => ("display_name", name.clone()),
+                Account::Email(name) => ("email", name.clone()),
+                Account::Github(name) => ("github", name.clone()),
+                Account::Legal(name) => ("legal", name.clone()),
+                Account::Web(name) => ("web", name.clone()),
+                Account::PGPFingerprint(bytes) => ("pgp_fingerprint", hex::encode(bytes)),
             };
 
             let token = if *is_done {
@@ -1365,11 +1351,13 @@ impl NodeListener {
                 Some(Token::generate().await.show())
             };
 
-            verification.add_challenge(acc_type, name.clone(), token);
+            verification.add_challenge(acc_type, name, token);
         }
 
-        conn.init_verification_state(network, who, &verification, &accounts)
+        // Save verification state to Redis
+        conn.init_verification_state(network, who, &verification, &filtered_accounts)
             .await?;
+
         Ok(())
     }
 
@@ -1527,9 +1515,14 @@ impl NodeListener {
             verification.add_challenge(acc_type, name.clone(), token);
         }
 
+        // convert accounts slice to HashMap
+        let accounts_map: HashMap<Account, bool> = accounts.iter().cloned().collect();
+
+        // save verification state to Redis
+        conn.init_verification_state(network, who, &verification, &accounts_map)
+            .await?;
+
         Ok(())
-        // conn.save_verification_state(network, who, &verification, &accounts)
-        //     .await
     }
 
     /// Cancels the pending registration requests issued by `who` by removing it's occurance on
@@ -1573,34 +1566,22 @@ impl Default for VerificationFields {
     }
 }
 
-pub async fn spawn_redis_subscriber(
-    redis_cfg: RedisConfig, 
-    mut shutdown_rx: broadcast::Receiver<()>
-) -> anyhow::Result<()> {
+pub async fn spawn_redis_subscriber(redis_cfg: RedisConfig) -> anyhow::Result<()> {
     let span = span!(Level::INFO, "redis_subscriber");
     info!(parent: &span, "Starting Redis subscriber service");
 
     let mut redis_conn = RedisConnection::create_conn(&redis_cfg)?;
     let mut pubsub = redis_conn.as_pubsub();
 
-    tokio::select! {
-        _ = shutdown_rx.recv() => {
-            info!(parent: &span, "Received shutdown signal, stopping Redis subscriber");
-            Ok(())
-        }
-        _ = async {
-            while let Ok(msg) = pubsub.get_message() {
-                if let Err(e) = handle_redis_message(&redis_cfg, &msg).await {
-                    error!(parent: &span, error = %e, "Failed to handle Redis message");
-                    continue; 
-                }
-            }
-            Ok::<(), anyhow::Error>(())
-        } => {
-            info!(parent: &span, "Redis subscription ended");
-            Ok(())
+    while let Ok(msg) = pubsub.get_message() {
+        if let Err(e) = handle_redis_message(&redis_cfg, &msg).await {
+            error!(parent: &span, error = %e, "Failed to handle Redis message");
+            continue;
         }
     }
+
+    info!(parent: &span, "Redis subscription ended");
+    Ok(())
 }
 
 async fn handle_redis_message(
