@@ -1,7 +1,9 @@
 #![allow(unused)]
 
+use anyhow::anyhow;
 use std::net::TcpStream;
 use std::str::FromStr;
+use std::time::Duration;
 
 use crate::{
     api::{Account, AccountType, RedisConnection},
@@ -28,16 +30,16 @@ impl Mail {
     fn new(sender: String, body: Option<String>) -> Self {
         Self { body, sender }
     }
-/// Processes the content of an email message for account verification
+    /// Processes the content of an email message for account verification
     /// Checks if the email body matches the expected verification token and updates
     /// verification state in Redis accordingly
-    /// 
+    ///
     /// # Arguments
     /// * `redis_connection` - Active Redis connection for state management
     /// * `account_id` - The account ID being verified
     /// * `network` - The network identifier (e.g., "polkadot", "kusama")
     async fn handle_content_(
-    // TOOO: refactor this use same trait with matrix?
+        // TOOO: refactor this use same trait with matrix?
         &self,
         redis_connection: &mut RedisConnection,
         account_id: &AccountId32,
@@ -169,23 +171,60 @@ impl MailServer {
 
         let email_cfg = cfg.adapter.email.clone();
         info!("trying to connect..");
-        let tls_connector = TlsConnector::builder().build().unwrap();
-        let mut client = imap::connect_starttls(
-            (email_cfg.name.clone(), email_cfg.port),
-            email_cfg.name.clone(),
-            &tls_connector,
-        )
-        .unwrap();
-        info!("connected!");
-        client.debug = false;
+
+        let tls_connector = TlsConnector::builder()
+            .build()
+            .map_err(|e| anyhow!("Failed to build TLS connector: {}", e))?;
+
+        let client = tokio::time::timeout(Duration::from_secs(10), async {
+            imap::connect_starttls(
+                (email_cfg.server.clone(), email_cfg.port),
+                email_cfg.server.clone(),
+                &tls_connector,
+            )
+        })
+        .await
+        .map_err(|_| anyhow!("Timeout while connecting to email server"))??;
+
+        info!("Email connected!");
+        //client.debug = false;
         info!(
-            "trying to login as {:?}:{:?}",
+            "trying to login as {:?}",
             email_cfg.username.clone(),
-            email_cfg.password.clone()
         );
-        let session = client
-            .login(email_cfg.username.clone(), email_cfg.password.clone())
-            .expect("Unable to login!");
+
+        let mut session = tokio::time::timeout(Duration::from_secs(10), async {
+            client.login(email_cfg.username.clone(), email_cfg.password.clone())
+        })
+        .await
+        .map_err(|_| anyhow!("Timeout during login"))?
+        .expect("Unable to login!");
+
+        // for debugging print last mail
+        //session
+        //    .select(email_cfg.mailbox.clone())
+        //    .expect("Unable to select mailbox");
+        //
+        //let msgs = session.search("ALL")?;
+        //if let Some(max_uid) = msgs.iter().max() {
+        //    // If there's at least one message, we try to fetch & parse it
+        //    let fetches = session.uid_fetch(format!("{}", max_uid), "RFC822")?;
+        //    if let Some(msg) = fetches.get(0) {
+        //        let parsed = mail_parser::MessageParser::default()
+        //            .parse(msg.body().unwrap_or_default())
+        //            .unwrap_or_default();
+        //        let from = parsed.return_address().unwrap_or("(no sender)").to_string();
+        //        let subject = parsed.subject().unwrap_or("(no subject)").to_string();
+        //        info!(
+        //            "Last email in mailbox => from: {}, subject: {}",
+        //            from, subject
+        //        );
+        //    }
+        //} else {
+        //    info!("No messages found in mailbox.");
+        //}
+
+        info!("succesful_login");
 
         Ok(Self {
             redis_cfg: cfg.redis.clone(),
@@ -234,7 +273,9 @@ impl MailServer {
     /// Uses IMAP IDLE for efficient notification of new messages
     async fn check_mailbox(&mut self) -> anyhow::Result<()> {
         let idle_handle = self.session.idle()?;
-        idle_handle.wait()?;
+        tokio::time::timeout(Duration::from_secs(300), async { idle_handle.wait() })
+            .await
+            .map_err(|_| anyhow!("Timeout while waiting for new emails"))??;
         let mail_id = self.session.search("UNSEEN")?;
         for id in mail_id {
             let mail = self.get_mail(id).await?;

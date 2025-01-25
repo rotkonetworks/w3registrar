@@ -8,7 +8,7 @@ identity_proxied = false
 fields = ["email","matrix", "twitter", "discord", "display_name"]
 
 [registrar.paseo]
-endpoint = "wss://people-rococo.dotters.network"
+endpoint = "wss://people-paseo.dotters.network"
 registrar_index = 1
 keystore_path = "./keyfile.paseo"
 identity_proxied = true
@@ -39,5 +39,6 @@ email = "w3reg@rotko.net"
 username = "w3reg"
 password = "pw"
 name = "w3registrar"
-port = 143                # IMAPS port
 mailbox = "INBOX"
+server = "mail.rotko.net"
+port = 143                # IMAPS port

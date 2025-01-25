@@ -25,18 +25,16 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 use tracing::{debug, error, info, span, Level};
 
-
 use crate::{
-    config::{RedisConfig, GLOBAL_CONFIG,RegistrarConfig},
+    config::{RedisConfig, RegistrarConfig, GLOBAL_CONFIG},
     node::{
-        self,
+        self, filter_accounts,
+        identity::events::{JudgementRequested, JudgementUnrequested},
+        runtime_types::pallet_identity::types::Registration,
         substrate::runtime_types::{
             pallet_identity::types::{Data as IdentityData, Judgement},
             people_rococo_runtime::people::IdentityInfo,
         },
-        filter_accounts,
-        identity::events::{JudgementRequested, JudgementUnrequested},
-        runtime_types::pallet_identity::types::Registration,
         Client as NodeClient,
     },
     token::AuthToken,
@@ -745,7 +743,9 @@ impl Listener {
         accounts: Vec<Account>,
         network: &str,
     ) -> anyhow::Result<()> {
-        let cfg = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG is not initialized");
+        let cfg = GLOBAL_CONFIG
+            .get()
+            .expect("GLOBAL_CONFIG is not initialized");
         let network_cfg = cfg
             .registrar
             .get_network(network)
@@ -763,7 +763,10 @@ impl Listener {
         Ok(())
     }
 
-    fn validate_account_types(accounts: &[Account], network_cfg: &RegistrarConfig) -> anyhow::Result<()> {
+    fn validate_account_types(
+        accounts: &[Account],
+        network_cfg: &RegistrarConfig,
+    ) -> anyhow::Result<()> {
         for account in accounts {
             let acc_type = account.account_type();
             let supported = network_cfg.fields.iter().any(|field| {
@@ -774,8 +777,8 @@ impl Listener {
 
             if !supported {
                 return Err(anyhow!(
-                        "Account type {} is not supported on this network",
-                        acc_type,
+                    "Account type {} is not supported on this network",
+                    acc_type,
                 ));
             }
         }
@@ -1235,7 +1238,7 @@ impl Listener {
 pub async fn spawn_ws_serv() -> anyhow::Result<()> {
     let listener = Listener::new().await;
     let addr = listener.socket_addr;
-    
+
     let tcp_listener = tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| {
@@ -1327,7 +1330,8 @@ impl NodeListener {
             who,
             network_cfg.registrar_index,
             network,
-        ).await?;
+        )
+        .await?;
 
         let mut verification = AccountVerification::new(network.to_string());
 
@@ -1584,16 +1588,12 @@ pub async fn spawn_redis_subscriber(redis_cfg: RedisConfig) -> anyhow::Result<()
     Ok(())
 }
 
-async fn handle_redis_message(
-    redis_cfg: &RedisConfig,
-    msg: &redis::Msg,
-) -> anyhow::Result<()> {
+async fn handle_redis_message(redis_cfg: &RedisConfig, msg: &redis::Msg) -> anyhow::Result<()> {
     if let Ok(Some((id, value))) = RedisConnection::process_state_change(redis_cfg, msg).await {
         info!("Processed state change for {}: {:?}", id, value);
     }
     Ok(())
 }
-
 
 // TODO: move this to another file?
 pub struct RedisConnection {

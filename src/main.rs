@@ -5,9 +5,10 @@ mod matrix;
 mod node;
 mod token;
 
-use crate::api::{spawn_node_listener, spawn_ws_serv, spawn_redis_subscriber};
+use crate::api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv};
 use crate::config::{Config, GLOBAL_CONFIG};
 use crate::email::watch_mailserver;
+use tokio::time::Duration;
 use tracing::Level;
 use tracing::{error, info};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -62,21 +63,37 @@ async fn main() -> anyhow::Result<()> {
         }
     }));
 
-    // init matrix adapter
-    handles.push(tokio::spawn(async move {
-        info!("Spawning matrix bot...");
-        if let Err(e) = matrix::start_bot().await {
-            error!("Matrix bot error: {}", e);
-        }
-    }));
+    // mail watcher
+    let needs_email = config
+        .registrar
+        .networks
+        .values()
+        .any(|r| r.fields.contains(&"email".to_string()));
 
-    // init email adapter
-    handles.push(tokio::spawn(async move {
-        info!("Spawning mailserver...");
-        if let Err(e) = watch_mailserver().await {
-            error!("Mailserver error: {}", e);
-        }
-    }));
+    if needs_email {
+        handles.push(tokio::spawn(async move {
+            info!("Spawning mailserver...");
+            if let Err(e) = watch_mailserver().await {
+                error!("Mailserver error: {}", e);
+            }
+        }));
+    }
+
+    // matrix bot (spawn only once if *any* network needs matrix/discord/twitter)
+    let needs_matrix_bot = config.registrar.networks.values().any(|r| {
+        r.fields.contains(&"matrix".to_string())
+            || r.fields.contains(&"discord".to_string())
+            || r.fields.contains(&"twitter".to_string())
+    });
+
+    if needs_matrix_bot {
+        handles.push(tokio::spawn(async move {
+            info!("Spawning matrix bot...");
+            if let Err(e) = matrix::start_bot().await {
+                error!("Matrix bot error: {}", e);
+            }
+        }));
+    }
 
     info!("gl hf! All services spawned successfully");
 

@@ -31,6 +31,7 @@ pub struct EmailConfig {
     pub port: u16,
     pub email: String,
     pub mailbox: String,
+    pub server: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

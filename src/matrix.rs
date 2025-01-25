@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::config::MatrixConfig;
 use matrix_sdk::{
     config::{RequestConfig, StoreConfig, SyncSettings},
     deserialized_responses::RawSyncOrStrippedState,
@@ -17,7 +18,6 @@ use matrix_sdk::{
     },
     Client,
 };
-use crate::config::MatrixConfig;
 use redis;
 use serde_json::Value;
 use std::str::FromStr;
@@ -28,8 +28,8 @@ use tracing::info;
 use std::path::Path;
 
 use crate::api::Account;
-use crate::{api::RedisConnection, node::register_identity};
 use crate::GLOBAL_CONFIG;
+use crate::{api::RedisConnection, node::register_identity};
 
 /// Verifies a Matrix device for secure communication
 /// This is required for end-to-end encryption functionality
@@ -43,7 +43,7 @@ async fn verify_device(device: &Device) -> anyhow::Result<()> {
 /// Establishes authenticated connection to Matrix server
 /// Handles session persistence and restoration from disk
 /// Sets up encryption and verifies device if needed
-/// 
+///
 /// # Arguments
 /// * `cfg` - Matrix configuration including server details and credentials
 async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
@@ -138,7 +138,7 @@ pub async fn start_bot() -> anyhow::Result<()> {
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
-    
+
     let redis_cfg = cfg.redis.clone();
     let matrix_cfg = cfg.adapter.matrix.clone();
     let registrar_cfg = cfg.registrar.clone();
@@ -212,14 +212,16 @@ async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client
 }
 
 /// Extract sender account from state event
-fn extract_sender_account(state: &RawSyncOrStrippedState<RoomCreateEventContent>) -> Option<Account> {
+fn extract_sender_account(
+    state: &RawSyncOrStrippedState<RoomCreateEventContent>,
+) -> Option<Account> {
     let RawSyncOrStrippedState::Sync(s) = state else {
         return None;
     };
 
     // Parse JSON content
     let obj = serde_json::from_str::<Value>(s.json().get()).ok()?;
-    
+
     // Extract bridge identifiers
     let arr = obj
         .get("content")?
@@ -227,7 +229,8 @@ fn extract_sender_account(state: &RawSyncOrStrippedState<RoomCreateEventContent>
         .as_array()?;
 
     // Get first identifier and process it
-    let sender = arr.first()?
+    let sender = arr
+        .first()?
         .as_str()?
         .strip_prefix('"')?
         .strip_suffix('"')?;
@@ -254,13 +257,16 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
 
     for state in state_events {
         let state_cast: RawSyncOrStrippedState<RoomCreateEventContent> = state.cast();
-        
+
         let Some(account) = extract_sender_account(&state_cast) else {
             continue;
         };
 
         if let Err(e) = handle_incoming(account.clone(), &text_content).await {
-            info!("Error handling incoming message for account {:?}: {:?}", account, e);
+            info!(
+                "Error handling incoming message for account {:?}: {:?}",
+                account, e
+            );
             continue;
         }
     }
@@ -268,7 +274,7 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
 
 /// Entry point for handling incoming messages
 /// Looks up associated accounts and delegates to handle_content
-/// 
+///
 /// # Arguments
 /// * `acc` - Parsed account information from message
 /// * `text_content` - Content of the message
@@ -322,7 +328,7 @@ async fn handle_incoming(
 /// Processes message content for verification
 /// Validates message against expected challenge token
 /// Updates verification state and triggers registration if all challenges complete
-/// 
+///
 /// # Arguments
 /// * `text_content` - Content to validate
 /// * `redis_connection` - Redis connection for state management
