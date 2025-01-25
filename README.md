@@ -153,9 +153,3 @@ You can test with [`websocat`](https://github.com/vi/websocat) or a custom clien
 
 - See [**w3registrar-www**](https://github.com/rotkonetworks/w3registrar-www) for a React/Vue-based frontend (example).
 - Connects to the same WebSocket to let users see which fields remain unverified, send tokens, etc.
-
----
-
-### License
-
-Dual-licensed under MIT or Apache 2.0. See `LICENSE` for details.
