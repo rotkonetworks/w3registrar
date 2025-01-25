@@ -22,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
         .with_span_events(FmtSpan::CLOSE)
         .init();
 
-    // Load configuration
+    // init global configs
     let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
     let config = Config::load_from(&config_path)?;
     GLOBAL_CONFIG
@@ -33,57 +33,52 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting services...");
     let mut handles = Vec::new();
 
-    // TODO: rm spawned services config
-    if config.spawned_services.redis {
-        handles.push(tokio::spawn(async move {
-            if let Err(e) = spawn_redis_subscriber(config.redis.clone()).await {
+    // init redis
+    let redis_handle = tokio::spawn({
+        let redis_config = config.redis.clone();
+        async move {
+            if let Err(e) = spawn_redis_subscriber(redis_config).await {
                 error!("Redis subscriber error: {}", e);
             }
-        }));
-    }
+        }
+    });
+    handles.push(redis_handle);
+    // increase cloud bills
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
-    if config.spawned_services.matrix {
-        handles.push(tokio::spawn(async move {
-            info!("Spawning matrix bot...");
-            if let Err(e) = matrix::start_bot().await {
-                error!("Matrix bot error: {}", e);
-            }
-        }));
-    }
+    // init node connections
+    handles.push(tokio::spawn(async move {
+        info!("Spawning node listener...");
+        if let Err(e) = spawn_node_listener().await {
+            error!("Node listener error: {}", e);
+        }
+    }));
 
-    if config.spawned_services.nodelistener {
-        handles.push(tokio::spawn(async move {
-            info!("Spawning node listener...");
-            if let Err(e) = spawn_node_listener().await {
-                error!("Node listener error: {}", e);
-            }
-        }));
-    }
+    // init api
+    handles.push(tokio::spawn(async move {
+        info!("Spawning websocket server...");
+        if let Err(e) = spawn_ws_serv().await {
+            error!("WebSocket server error: {}", e);
+        }
+    }));
 
-    if config.spawned_services.websocket {
-        handles.push(tokio::spawn(async move {
-            info!("Spawning websocket server...");
-            if let Err(e) = spawn_ws_serv().await {
-                error!("WebSocket server error: {}", e);
-            }
-        }));
-    }
+    // init matrix adapter
+    handles.push(tokio::spawn(async move {
+        info!("Spawning matrix bot...");
+        if let Err(e) = matrix::start_bot().await {
+            error!("Matrix bot error: {}", e);
+        }
+    }));
 
-    if config.spawned_services.email {
-        handles.push(tokio::spawn(async move {
-            info!("Spawning mailserver...");
-            if let Err(e) = watch_mailserver().await {
-                error!("Mailserver error: {}", e);
-            }
-        }));
-    }
+    // init email adapter
+    handles.push(tokio::spawn(async move {
+        info!("Spawning mailserver...");
+        if let Err(e) = watch_mailserver().await {
+            error!("Mailserver error: {}", e);
+        }
+    }));
 
-    if handles.is_empty() {
-        error!("No services were configured to run!");
-        return Ok(());
-    }
-
-    info!("All configured services spawned successfully");
+    info!("gl hf! All services spawned successfully");
 
     // signal handling and exit
     tokio::select! {

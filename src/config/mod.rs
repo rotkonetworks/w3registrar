@@ -20,7 +20,6 @@ pub struct Config {
     pub websocket: WebsocketConfig,
     pub registrar: RegistrarConfigs,
     pub redis: RedisConfig,
-    pub spawned_services: SpawnConfig,
     pub adapter: Adapter,
 }
 
@@ -32,15 +31,6 @@ pub struct EmailConfig {
     pub port: u16,
     pub email: String,
     pub mailbox: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SpawnConfig {
-    pub matrix: bool,
-    pub websocket: bool,
-    pub nodelistener: bool,
-    pub email: bool,
-    pub redis: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -3,21 +3,16 @@
 [registrar.rococo]
 endpoint = "wss://dev.rotko.net/people-rococo/"
 registrar_index = 0
-keystore_path = "./keyfile"
-fields = ["email", "matrix", "twitter", "discord", "display_name"]
+keystore_path = "./keyfile.rococo"
+identity_proxied = false
+fields = ["email","matrix", "twitter", "discord", "display_name"]
 
-[registrar.polkadot]
-endpoint = "wss://polkadot.dotters.network"
-registrar_index = 0
-keystore_path = "./keyfile.polkadot"
-fields = ["email", "matrix", "twitter", "discord", "display_name"]
-
-[spawned_services]
-email = true
-matrix = true
-websocket = true
-nodelistener = true
-redis = true
+[registrar.paseo]
+endpoint = "wss://people-rococo.dotters.network"
+registrar_index = 1
+keystore_path = "./keyfile.paseo"
+identity_proxied = true
+fields = ["email","matrix", "twitter", "discord", "display_name"]
 
 [websocket]
 host = "127.0.0.1"
@@ -32,7 +27,6 @@ port = 6379
 
 [adapter]
 [adapter.matrix]
-
 homeserver = "https://matrix.org"
 username = "regbot"
 password = "abc123"
