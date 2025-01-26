@@ -30,8 +30,8 @@ use crate::{
     node::{
         self, filter_accounts,
         identity::events::{JudgementRequested, JudgementUnrequested},
-        runtime_types::pallet_identity::types::Registration,
         substrate::runtime_types::{
+            pallet_identity::types::Registration,
             pallet_identity::types::{Data as IdentityData, Judgement},
             people_paseo_runtime::people::IdentityInfo,
         },
