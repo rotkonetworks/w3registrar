@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
-#[subxt::subxt(runtime_metadata_path = "./identity.scale")]
+// TODO: own mod for each network because lets say paseo updates it will break polkadot
+#[subxt::subxt(runtime_metadata_path = "./metadata/people_paseo.scale")]
 pub mod substrate {}
 
 use crate::api::AccountType;
