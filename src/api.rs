@@ -106,6 +106,7 @@ pub enum ValidationMode {
     Direct,
     Inbound,
     Outbound,
+    Unsupported,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -190,20 +191,22 @@ impl Account {
     pub fn determine(&self) -> ValidationMode {
         match self {
             // Direct: verified directly without user action
-            Account::Display(_) | Account::Web(_) => ValidationMode::Direct,
-            // Inbound: receive challenge via websocket
-            Account::Email(_) | Account::PGPFingerprint(_) => ValidationMode::Inbound,
+            Account::Display(_) // onchain check that not empty/0x
+            | Account::Web(_) => ValidationMode::Direct, // dig/dns record query
+            // Inbound: receive challenge/callback via websocket
+            Account::Github(_) // oauth callback ws/rest?
+            | Account::PGPFingerprint(_) => ValidationMode::Inbound, // not sure if direct?
             // Outbound: send challenge via websocket
-            Account::Discord(_)
-            | Account::Github(_)
-            | Account::Legal(_)
-            | Account::Matrix(_)
-            | Account::Twitter(_) => ValidationMode::Outbound,
+            Account::Discord(_) // ws out -> matrix read
+            | Account::Matrix(_) // ws out -> matrix read
+            | Account::Email(_) // ws out -> imap read
+            | Account::Twitter(_) => ValidationMode::Outbound, // ws out -> matrix read
+            Account::Legal(_) => ValidationMode::Unsupported,
         }
     }
 
     pub fn should_skip_token(&self, is_done: bool) -> bool {
-        is_done || self.determine() == ValidationMode::Direct
+        is_done || self.determine() != ValidationMode::Outbound
     }
 
     pub fn account_type(&self) -> AccountType {
