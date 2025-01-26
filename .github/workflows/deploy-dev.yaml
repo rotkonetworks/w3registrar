@@ -28,6 +28,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             protobuf-compiler \
+            rsync \
             cmake \
             pkg-config \
             clang \
@@ -38,12 +39,14 @@ jobs:
           cargo build --release --target x86_64-unknown-linux-gnu
           ls -la target/x86_64-unknown-linux-gnu/release/
 
-      - name: Deploy binary to server
+      - name: Add key
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p ${{ env.SERVER_PORT }} ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy binary to server
+        run: |
           rsync -avz -e "ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }}" \
             target/x86_64-unknown-linux-gnu/release/w3registrar ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/${{ env.SERVICE_NAME }}
 
