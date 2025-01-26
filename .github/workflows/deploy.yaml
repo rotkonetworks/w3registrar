@@ -1,0 +1,61 @@
+name: Build and Deploy
+on:
+  push:
+    branches:
+      - main
+jobs:
+  build-and-deploy:
+    name: Build and Deploy to Server
+    runs-on: ubuntu-latest
+    env:
+      SERVER_USER: w3reg
+      SERVER_HOST: api.w3reg.org
+      SERVER_PORT: 22
+      DEPLOY_PATH: /home/w3reg/api.w3reg.org
+      SERVICE_NAME: w3registrar
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            protobuf-compiler \
+            cmake \
+            pkg-config \
+            clang \
+            llvm
+
+      - name: Build binary
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Prepare binary for deployment
+        run: |
+          mkdir -p deployment
+          cp target/x86_64-unknown-linux-gnu/release/${{ env.SERVICE_NAME }} deployment/
+
+      - name: Deploy binary to server
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+        run: |
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          rsync -avz -e "ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }}" \
+            deployment/ ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}
+
+      - name: Restart service
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
+            sudo systemctl daemon-reload
+            sudo systemctl restart ${{ env.SERVICE_NAME }}
+            sudo systemctl status ${{ env.SERVICE_NAME }} --no-pager
+          EOF
+
