@@ -33,7 +33,7 @@ use crate::{
         runtime_types::pallet_identity::types::Registration,
         substrate::runtime_types::{
             pallet_identity::types::{Data as IdentityData, Judgement},
-            people_rococo_runtime::people::IdentityInfo,
+            people_paseo_runtime::people::IdentityInfo,
         },
         Client as NodeClient,
     },
@@ -200,6 +200,10 @@ impl Account {
             | Account::Matrix(_)
             | Account::Twitter(_) => ValidationMode::Outbound,
         }
+    }
+
+    pub fn should_skip_token(&self, is_done: bool) -> bool {
+        is_done || self.determine() == ValidationMode::Direct
     }
 
     pub fn account_type(&self) -> AccountType {
@@ -566,7 +570,7 @@ impl Listener {
             // only add a new challenge if not already present.
             // if *is_done or it's a display_name, we set `token=None` so it's considered done.
             if !verification.challenges.contains_key(acc_type) {
-                let token = if *is_done || matches!(account, Account::Display(_)) {
+                let token = if account.should_skip_token(*is_done) {
                     None
                 } else {
                     Some(Token::generate().await.show())
@@ -1349,13 +1353,12 @@ impl NodeListener {
                 Account::PGPFingerprint(bytes) => ("pgp_fingerprint", hex::encode(bytes)),
             };
 
-            let token = if *is_done {
+            let token = if account.should_skip_token(*is_done) {
                 None
             } else {
                 Some(Token::generate().await.show())
             };
-
-            verification.add_challenge(acc_type, name, token);
+            verification.add_challenge(acc_type, name.clone(), token);
         }
 
         // Save verification state to Redis
@@ -1510,12 +1513,11 @@ impl NodeListener {
                 Account::PGPFingerprint(bytes) => ("pgp_fingerprint", &hex::encode(bytes)),
             };
 
-            let token = if *is_done {
+            let token = if account.should_skip_token(*is_done) {
                 None
             } else {
                 Some(Token::generate().await.show())
             };
-
             verification.add_challenge(acc_type, name.clone(), token);
         }
 
