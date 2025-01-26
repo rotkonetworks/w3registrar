@@ -47,9 +47,7 @@ pub async fn get_registration(
 }
 
 /// Setup client and load network configuration
-async fn setup_network(
-    network: &str,
-) -> anyhow::Result<(Client, crate::config::RegistrarConfig)> {
+async fn setup_network(network: &str) -> anyhow::Result<(Client, crate::config::RegistrarConfig)> {
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
@@ -77,38 +75,46 @@ pub async fn provide_judgement<'a>(
     network: &str,
 ) -> anyhow::Result<&'a str> {
     let (client, network_cfg) = setup_network(network).await?;
-    
+
     info!("Using registrar index: {}", network_cfg.registrar_index);
-    
+
     let registration = get_registration(&client, who).await?;
     let hash = hex::encode(blake2_256(&registration.info.encode()));
     info!("Generated identity hash: {}", hash);
 
     // Create the inner identity call
-    let inner_call = substrate::runtime_types::pallet_identity::pallet::Call::provide_judgement { 
-        reg_index: network_cfg.registrar_index, 
-        target: subxt::utils::MultiAddress::Id(who.clone()), 
-        judgement, 
-        identity: Identity::from_str(&hash)?
+    let inner_call = substrate::runtime_types::pallet_identity::pallet::Call::provide_judgement {
+        reg_index: network_cfg.registrar_index,
+        target: subxt::utils::MultiAddress::Id(who.clone()),
+        judgement,
+        identity: Identity::from_str(&hash)?,
     };
 
     // Wrap in proxy call
     let tx = substrate::tx().proxy().proxy(
         subxt::utils::MultiAddress::Id(AccountId32::from_str(&network_cfg.registrar_account)?),
         Some(ProxyType::IdentityJudgement),
-        RuntimeCall::Identity(inner_call)
+        RuntimeCall::Identity(inner_call),
     );
 
     // Load proxy account only when we need to sign
     let signer = {
         info!("Reading keystore from: {}", network_cfg.keystore_path);
-        let seed = std::fs::read_to_string(&network_cfg.keystore_path)
-            .map_err(|e| anyhow!("Failed to read keystore at {}: {}", network_cfg.keystore_path, e))?;
+        let seed = std::fs::read_to_string(&network_cfg.keystore_path).map_err(|e| {
+            anyhow!(
+                "Failed to read keystore at {}: {}",
+                network_cfg.keystore_path,
+                e
+            )
+        })?;
         info!("Creating signer from seed");
         let acc = Sr25519Pair::from_string(&seed.trim(), None)?;
         let signer = PairSigner::new(acc);
         let ss58_address = signer.account_id().to_string();
-        info!("Signer account (just default hex, not index0): {}", ss58_address);
+        info!(
+            "Signer account (just default hex, not index0): {}",
+            ss58_address
+        );
         info!("Signer account (raw): {:?}", signer.account_id());
 
         signer
@@ -123,9 +129,9 @@ pub async fn provide_judgement<'a>(
     //    .tip(0)
     //    .mortal(latest_block.header(), 100) // Set mortality to 100 blocks
     //    .build();
-    
+
     info!("Submitting transaction...");
-    
+
     // Submit and watch transaction
     let mut tx_progress = client
         .tx()
@@ -140,7 +146,7 @@ pub async fn provide_judgement<'a>(
                     in_block.extrinsic_hash(),
                     in_block.block_hash()
                 );
-                
+
                 // Wait for success and get events
                 let events = in_block.wait_for_success().await?;
                 info!("Transaction successful: {:?}", events);
@@ -213,10 +219,12 @@ mod tests {
 
     async fn init_config() {
         INIT.call_once(|| {
-            let config = Config::load_from("config.toml")
-                .expect("Failed to load config from config.toml");
+            let config =
+                Config::load_from("config.toml").expect("Failed to load config from config.toml");
             info!("Loaded config: {:?}", config);
-            GLOBAL_CONFIG.set(config).expect("Failed to set global config");
+            GLOBAL_CONFIG
+                .set(config)
+                .expect("Failed to set global config");
         });
     }
 
@@ -230,25 +238,22 @@ mod tests {
         info!("Starting judgment test");
         init_config().await;
 
-        let target_account = AccountId32::from_str(
-            "1Qrotkokp6taAeLThuwgzR7Mu3YQonZohwrzixwGnrD1QDT"
-        )?;
+        let target_account =
+            AccountId32::from_str("1Qrotkokp6taAeLThuwgzR7Mu3YQonZohwrzixwGnrD1QDT")?;
         info!("Target account: {:?}", target_account);
 
         let (client, network_cfg) = setup_network("paseo").await?;
-        info!("Network config loaded: endpoint={}, registrar_index={}", 
-            network_cfg.endpoint, network_cfg.registrar_index);
+        info!(
+            "Network config loaded: endpoint={}, registrar_index={}",
+            network_cfg.endpoint, network_cfg.registrar_index
+        );
 
         match get_registration(&client, &target_account).await {
             Ok(reg) => info!("Found registration: {:?}", reg),
             Err(e) => warn!("Registration check failed: {}", e),
         }
 
-        let result = provide_judgement(
-            &target_account,
-            Judgement::Reasonable,
-            "paseo"
-        ).await?;
+        let result = provide_judgement(&target_account, Judgement::Reasonable, "paseo").await?;
 
         info!("Judgment result: {}", result);
         assert_eq!(result, "Judgment submitted through proxy");
