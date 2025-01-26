@@ -3,15 +3,15 @@
 [registrar.rococo]
 endpoint = "wss://dev.rotko.net/people-rococo/"
 registrar_index = 0
-keystore_path = "./keyfile.rococo"
-identity_proxied = false
+keystore_path = "./keyfile.rococo" # IdentityJudgement proxy's pneumonic/private keypath
+registrar_account = "5CiPPseXPECbkjWCa6MnjNokrgYjMqmKndv2rSnekmSK2DjL" # ferdie as registrar
 fields = ["email","matrix", "twitter", "discord", "display_name"]
 
 [registrar.paseo]
 endpoint = "wss://people-paseo.dotters.network"
 registrar_index = 1
 keystore_path = "./keyfile.paseo"
-identity_proxied = true
+registrar_account = "12BtBrcorHAvSeTLYo6YTq8kdiRG948vkvmxHEmSzZjwZ97u"
 fields = ["email","matrix", "twitter", "discord", "display_name"]
 
 [websocket]

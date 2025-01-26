@@ -58,6 +58,7 @@ impl RegistrarConfigs {
 pub struct RegistrarConfig {
     pub endpoint: String,
     pub registrar_index: RegistrarIndex,
+    pub registrar_account: String,
     pub keystore_path: String,
     pub fields: Vec<String>,
 }
