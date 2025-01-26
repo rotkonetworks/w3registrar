@@ -12,7 +12,6 @@ use sp_core::Encode;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
-use subxt::config::Header;
 use subxt::ext::sp_core::sr25519::Pair as Sr25519Pair;
 use subxt::ext::sp_core::Pair;
 use subxt::utils::AccountId32;
@@ -104,14 +103,17 @@ pub async fn provide_judgement<'a>(
     let signer = load_signer(&network_cfg)?;
     let mut resubmit_count = 0;
     let mut current_fee_multiplier = 1.0;
+    let mut current_nonce = client.tx().account_nonce(signer.account_id()).await?;
 
     'tx_loop: while resubmit_count < MAX_RESUBMIT_ATTEMPTS {
         let start_time = Instant::now();
         let latest_block = client.blocks().at_latest().await?;
 
-        // build transaction params
+        // build transaction params with current nonce
         let tx_params = subxt::config::substrate::SubstrateExtrinsicParamsBuilder::new()
             .mortal(latest_block.header(), 10)
+            .nonce(current_nonce)
+            .tip((100_000_f64 * current_fee_multiplier) as u128)
             .build();
 
         // submit and watch transaction
@@ -139,7 +141,6 @@ pub async fn provide_judgement<'a>(
                     match in_block.wait_for_success().await {
                         Ok(events) => {
                             info!("Transaction successful: {:?}", events);
-                            // TODO: cleanup our redis
                             return Ok("Judgment submitted through proxy");
                         }
                         Err(e) if e.to_string().contains("out of gas") => {
@@ -165,7 +166,7 @@ pub async fn provide_judgement<'a>(
                 subxt::tx::TxStatus::Error { message } => {
                     if message.contains("nonce") {
                         warn!("Nonce error detected, fetching latest nonce");
-                        let new_nonce = fetch_latest_nonce(&client, signer.account_id()).await?;
+                        current_nonce = fetch_latest_nonce(&client, signer.account_id()).await?;
                         resubmit_count += 1;
                         tokio::time::sleep(exponential_backoff(resubmit_count)).await;
                         continue 'tx_loop;
@@ -230,15 +231,12 @@ fn exponential_backoff(attempt: u32) -> Duration {
 }
 
 /// Fetch the latest nonce for an account
-async fn fetch_latest_nonce(client: &Client, account: &AccountId32) -> Result<u32> {
-    let nonce = client
+async fn fetch_latest_nonce(client: &Client, account: &AccountId32) -> Result<u64> {
+    client
         .tx()
         .account_nonce(account)
         .await
-        .map_err(|e| anyhow!("Failed to fetch nonce: {}", e))?;
-    Ok(nonce
-        .try_into()
-        .map_err(|e| anyhow!("Nonce too large for u32: {}", e))?)
+        .map_err(|e| anyhow!("Failed to fetch nonce: {}", e))
 }
 
 /// Provides succesful judgement
@@ -310,7 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_provide_judgement_via_proxy() -> anyhow::Result<()> {
-        let subscriber = tracing_subscriber::FmtSubscriber::builder()
+        tracing_subscriber::FmtSubscriber::builder()
             .with_max_level(tracing::Level::DEBUG)
             .with_test_writer()
             .init();
