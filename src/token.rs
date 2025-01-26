@@ -51,9 +51,7 @@ impl AuthToken for Token {
                 OLC_ALPHABET.chars().nth(idx).unwrap()
             })
             .collect();
-        Token {
-            expected_message: s,
-        }
+        Token::new(s)
     }
 
     fn show(&self) -> String {
