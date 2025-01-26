@@ -21,7 +21,7 @@ use super::api::Account;
 use substrate::identity::calls::types::provide_judgement::Identity;
 use substrate::runtime_types::pallet_identity::types::Judgement;
 use substrate::runtime_types::pallet_identity::types::Registration;
-use substrate::runtime_types::people_rococo_runtime::people::IdentityInfo;
+use substrate::runtime_types::people_paseo_runtime::people::IdentityInfo;
 
 pub use substrate::*;
 pub type Client = subxt::OnlineClient<SubstrateConfig>;
