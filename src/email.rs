@@ -6,9 +6,10 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use crate::{
-    api::{Account, AccountType, RedisConnection},
+    api::{Account, AccountType},
     config::RedisConfig,
     node::register_identity,
+    redis::RedisConnection,
 };
 use imap::Session;
 use native_tls::{TlsConnector, TlsStream};

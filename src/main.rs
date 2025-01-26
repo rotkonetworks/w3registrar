@@ -4,10 +4,11 @@ mod email;
 mod matrix;
 mod node;
 mod token;
+mod common;
+mod ws;
+mod redis;
 
-use crate::api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv};
 use crate::config::{Config, GLOBAL_CONFIG};
-use crate::email::watch_mailserver;
 use tokio::time::Duration;
 use tracing::Level;
 use tracing::{error, info};
@@ -38,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     let redis_handle = tokio::spawn({
         let redis_config = config.redis.clone();
         async move {
-            if let Err(e) = spawn_redis_subscriber(redis_config).await {
+            if let Err(e) = redis::spawn_redis_subscriber(redis_config).await {
                 error!("Redis subscriber error: {}", e);
             }
         }
@@ -50,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
     // init node connections
     handles.push(tokio::spawn(async move {
         info!("Spawning node listener...");
-        if let Err(e) = spawn_node_listener().await {
+        if let Err(e) = node::spawn_node_listener().await {
             error!("Node listener error: {}", e);
         }
     }));
@@ -58,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     // init api
     handles.push(tokio::spawn(async move {
         info!("Spawning websocket server...");
-        if let Err(e) = spawn_ws_serv().await {
+        if let Err(e) = ws::spawn_ws_serv().await {
             error!("WebSocket server error: {}", e);
         }
     }));
@@ -73,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
     if needs_email {
         handles.push(tokio::spawn(async move {
             info!("Spawning mailserver...");
-            if let Err(e) = watch_mailserver().await {
+            if let Err(e) = email::watch_mailserver().await {
                 error!("Mailserver error: {}", e);
             }
         }));
