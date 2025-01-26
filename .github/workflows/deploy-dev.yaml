@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SERVER_USER: w3reg
-      SERVER_HOST: 172.67.169.139
+      SERVER_HOST: 135.181.202.179
       SERVER_PORT: 22
       DEPLOY_PATH: /home/w3reg/dapi.w3reg.org
       SERVICE_NAME: w3registrar-dapi
