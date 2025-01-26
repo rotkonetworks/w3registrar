@@ -13,7 +13,7 @@ use crate::{
 use imap::Session;
 use native_tls::{TlsConnector, TlsStream};
 use subxt::utils::AccountId32;
-use tracing::info;
+use tracing::{error, info, span, Level};
 
 use crate::config::GLOBAL_CONFIG;
 
@@ -218,7 +218,11 @@ impl MailServer {
 
         tokio::spawn(async move {
             loop {
-                self.check_mailbox().await.unwrap();
+                let conn_span = span!(Level::INFO, "email", mailbox= %self.mailbox);
+                match self.check_mailbox().await {
+                    Ok(_) => info!("Mailbox content processed successfully"),
+                    Err(e) => error!(parent: &conn_span, error = %e, "Error process"),
+                }
             }
         });
         Ok(())
