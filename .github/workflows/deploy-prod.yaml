@@ -37,7 +37,8 @@ jobs:
       - name: Restart service
         run: |
           ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
-            sudo systemctl daemon-reload
-            sudo systemctl restart ${{ env.SERVICE_NAME }}
-            sudo systemctl status ${{ env.SERVICE_NAME }} --no-pager
+            mkdir -p ~/.config/systemd/user
+            systemctl --user daemon-reload
+            systemctl --user restart ${{ env.SERVICE_NAME }}
+            systemctl --user status ${{ env.SERVICE_NAME }} --no-pager
           EOF
