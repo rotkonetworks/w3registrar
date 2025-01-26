@@ -188,10 +188,7 @@ impl MailServer {
 
         info!("Email connected!");
         //client.debug = false;
-        info!(
-            "trying to login as {:?}",
-            email_cfg.username.clone(),
-        );
+        info!("trying to login as {:?}", email_cfg.username.clone(),);
 
         let mut session = tokio::time::timeout(Duration::from_secs(10), async {
             client.login(email_cfg.username.clone(), email_cfg.password.clone())
