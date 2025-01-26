@@ -11,12 +11,13 @@ use sp_core::blake2_256;
 use sp_core::Encode;
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 use subxt::config::Header;
 use subxt::ext::sp_core::sr25519::Pair as Sr25519Pair;
 use subxt::ext::sp_core::Pair;
 use subxt::utils::AccountId32;
 use subxt::SubstrateConfig;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::api::Account;
 use substrate::identity::calls::types::provide_judgement::Identity;
@@ -31,6 +32,11 @@ pub type Client = subxt::OnlineClient<SubstrateConfig>;
 pub type Block = subxt::blocks::Block<SubstrateConfig, Client>;
 pub type BlockHash = <SubstrateConfig as subxt::Config>::Hash;
 type PairSigner = subxt::tx::PairSigner<SubstrateConfig, Sr25519Pair>;
+
+// consts
+const MAX_RESUBMIT_ATTEMPTS: u32 = 3;
+const FINALIZATION_TIMEOUT: Duration = Duration::from_secs(180);
+const BASE_DELAY: Duration = Duration::from_secs(1);
 
 /// Fetch current on-chain identity data
 pub async fn get_registration(
@@ -69,20 +75,19 @@ async fn setup_network(network: &str) -> anyhow::Result<(Client, crate::config::
     Ok((client, network_cfg.clone()))
 }
 
+/// Handles transaction submission with retries and error handling
 pub async fn provide_judgement<'a>(
     who: &AccountId32,
     judgement: Judgement<u128>,
     network: &str,
-) -> anyhow::Result<&'a str> {
+) -> Result<&'a str> {
     let (client, network_cfg) = setup_network(network).await?;
-
     info!("Using registrar index: {}", network_cfg.registrar_index);
 
     let registration = get_registration(&client, who).await?;
     let hash = hex::encode(blake2_256(&registration.info.encode()));
     info!("Generated identity hash: {}", hash);
 
-    // Create the inner identity call
     let inner_call = substrate::runtime_types::pallet_identity::pallet::Call::provide_judgement {
         reg_index: network_cfg.registrar_index,
         target: subxt::utils::MultiAddress::Id(who.clone()),
@@ -90,78 +95,153 @@ pub async fn provide_judgement<'a>(
         identity: Identity::from_str(&hash)?,
     };
 
-    // Wrap in proxy call
     let tx = substrate::tx().proxy().proxy(
         subxt::utils::MultiAddress::Id(AccountId32::from_str(&network_cfg.registrar_account)?),
         Some(ProxyType::IdentityJudgement),
         RuntimeCall::Identity(inner_call),
     );
 
-    // Load proxy account only when we need to sign
-    let signer = {
-        info!("Reading keystore from: {}", network_cfg.keystore_path);
-        let seed = std::fs::read_to_string(&network_cfg.keystore_path).map_err(|e| {
-            anyhow!(
-                "Failed to read keystore at {}: {}",
-                network_cfg.keystore_path,
-                e
-            )
-        })?;
-        info!("Creating signer from seed");
-        let acc = Sr25519Pair::from_string(&seed.trim(), None)?;
-        let signer = PairSigner::new(acc);
-        let ss58_address = signer.account_id().to_string();
-        info!(
-            "Signer account (just default hex, not index0): {}",
-            ss58_address
-        );
-        info!("Signer account (raw): {:?}", signer.account_id());
+    let signer = load_signer(&network_cfg)?;
+    let mut resubmit_count = 0;
+    let mut current_fee_multiplier = 1.0;
 
-        signer
-    };
+    'tx_loop: while resubmit_count < MAX_RESUBMIT_ATTEMPTS {
+        let start_time = Instant::now();
+        let latest_block = client.blocks().at_latest().await?;
 
-    // Get latest block for mortality calculation
-    let latest_block = client.blocks().at_latest().await?;
-    info!("Latest block: {:?}", latest_block.header().hash());
+        // build transaction params
+        let tx_params = subxt::config::substrate::SubstrateExtrinsicParamsBuilder::new()
+            .mortal(latest_block.header(), 10)
+            .build();
 
-    // Build transaction parameters with explicit SubstrateConfig
-    //let tx_params = subxt::config::substrate::SubstrateExtrinsicParamsBuilder::<SubstrateConfig>::new()
-    //    .tip(0)
-    //    .mortal(latest_block.header(), 100) // Set mortality to 100 blocks
-    //    .build();
+        // submit and watch transaction
+        let mut tx_progress = client
+            .tx()
+            .sign_and_submit_then_watch(&tx, &signer, tx_params)
+            .await?;
 
-    info!("Submitting transaction...");
-
-    // Submit and watch transaction
-    let mut tx_progress = client
-        .tx()
-        .sign_and_submit_then_watch_default(&tx, &signer)
-        .await?;
-
-    while let Some(status) = tx_progress.next().await {
-        match status? {
-            subxt::tx::TxStatus::InFinalizedBlock(in_block) => {
-                info!(
-                    "Transaction {:?} is finalized in block {:?}",
-                    in_block.extrinsic_hash(),
-                    in_block.block_hash()
-                );
-
-                // Wait for success and get events
-                let events = in_block.wait_for_success().await?;
-                info!("Transaction successful: {:?}", events);
-                return Ok("Judgment submitted through proxy");
+        while let Some(status) = tx_progress.next().await {
+            if start_time.elapsed() > FINALIZATION_TIMEOUT {
+                warn!("Transaction timed out waiting for finalization");
+                resubmit_count += 1;
+                tokio::time::sleep(exponential_backoff(resubmit_count)).await;
+                continue 'tx_loop;
             }
-            other => {
-                info!("Transaction status: {:?}", other);
+
+            match status? {
+                subxt::tx::TxStatus::InFinalizedBlock(in_block) => {
+                    info!(
+                        "Transaction {:?} is finalized in block {:?}",
+                        in_block.extrinsic_hash(),
+                        in_block.block_hash()
+                    );
+
+                    match in_block.wait_for_success().await {
+                        Ok(events) => {
+                            info!("Transaction successful: {:?}", events);
+                            // TODO: cleanup our redis
+                            return Ok("Judgment submitted through proxy");
+                        }
+                        Err(e) if e.to_string().contains("out of gas") => {
+                            warn!("Transaction failed due to out of gas: {}", e);
+                            return Err(anyhow!("Transaction failed: insufficient gas"));
+                        }
+                        Err(e) => {
+                            warn!("Transaction failed in block: {}", e);
+                            return Err(anyhow!("Transaction failed in block: {}", e));
+                        }
+                    }
+                }
+                subxt::tx::TxStatus::NoLongerInBestBlock => {
+                    info!(
+                        "Transaction no longer in best block, attempting resubmission {}/{}",
+                        resubmit_count + 1,
+                        MAX_RESUBMIT_ATTEMPTS
+                    );
+                    resubmit_count += 1;
+                    tokio::time::sleep(exponential_backoff(resubmit_count)).await;
+                    continue 'tx_loop;
+                }
+                subxt::tx::TxStatus::Error { message } => {
+                    if message.contains("nonce") {
+                        warn!("Nonce error detected, fetching latest nonce");
+                        let new_nonce = fetch_latest_nonce(&client, signer.account_id()).await?;
+                        resubmit_count += 1;
+                        tokio::time::sleep(exponential_backoff(resubmit_count)).await;
+                        continue 'tx_loop;
+                    }
+                    return Err(anyhow!("Transaction failed with error: {}", message));
+                }
+                subxt::tx::TxStatus::Invalid { message } => {
+                    return Err(anyhow!("Transaction is invalid: {}", message));
+                }
+                subxt::tx::TxStatus::Dropped { message } => {
+                    if message.contains("low priority") || message.contains("fee too low") {
+                        warn!(
+                            "Transaction dropped due to low fee, increasing fee multiplier to {}",
+                            current_fee_multiplier * 1.5
+                        );
+                        current_fee_multiplier *= 1.5;
+                        resubmit_count += 1;
+                        tokio::time::sleep(exponential_backoff(resubmit_count)).await;
+                        continue 'tx_loop;
+                    }
+                    return Err(anyhow!("Transaction was dropped: {}", message));
+                }
+                subxt::tx::TxStatus::Validated => {
+                    info!("Transaction validated and added to the pool");
+                }
+                subxt::tx::TxStatus::Broadcasted { num_peers } => {
+                    info!("Transaction broadcasted to {} peers", num_peers);
+                }
+                subxt::tx::TxStatus::InBestBlock(in_block) => {
+                    info!(
+                        "Transaction {:?} included in block {:?}",
+                        in_block.extrinsic_hash(),
+                        in_block.block_hash()
+                    );
+                }
             }
         }
     }
 
-    Err(anyhow!("Transaction failed to finalize"))
+    Err(anyhow!(
+        "Transaction failed to finalize after {} attempts",
+        MAX_RESUBMIT_ATTEMPTS
+    ))
 }
 
-/// Maintain backward compatibility
+/// Load signer from keystore path
+fn load_signer(network_cfg: &crate::config::RegistrarConfig) -> Result<PairSigner> {
+    info!("Reading keystore from: {}", network_cfg.keystore_path);
+    let seed = std::fs::read_to_string(&network_cfg.keystore_path)
+        .map_err(|e| anyhow!("Failed to read keystore: {}", e))?;
+
+    let acc = Sr25519Pair::from_string(&seed.trim(), None)?;
+    let signer = PairSigner::new(acc);
+
+    info!("Signer account: {}", signer.account_id());
+    Ok(signer)
+}
+
+/// Calculate exponential backoff delay
+fn exponential_backoff(attempt: u32) -> Duration {
+    BASE_DELAY * 2u32.pow(attempt - 1)
+}
+
+/// Fetch the latest nonce for an account
+async fn fetch_latest_nonce(client: &Client, account: &AccountId32) -> Result<u32> {
+    let nonce = client
+        .tx()
+        .account_nonce(account)
+        .await
+        .map_err(|e| anyhow!("Failed to fetch nonce: {}", e))?;
+    Ok(nonce
+        .try_into()
+        .map_err(|e| anyhow!("Nonce too large for u32: {}", e))?)
+}
+
+/// Provides succesful judgement
 pub async fn register_identity<'a>(
     who: &AccountId32,
     _reg_index: u32,
