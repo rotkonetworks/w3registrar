@@ -231,9 +231,7 @@ fn extract_sender_account(
     // Get first identifier and process it
     let sender = arr
         .first()?
-        .as_str()?
-        .strip_prefix('"')?
-        .strip_suffix('"')?;
+        .as_str()?;
 
     Account::from_str(sender).ok()
 }
