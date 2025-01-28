@@ -872,8 +872,8 @@ impl Listener {
 
     async fn process_websocket(
         &mut self,
-        write: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
-        mut read: SplitStream<WebSocketStream<TcpStream>>,
+        ws_write: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+        mut ws_read: SplitStream<WebSocketStream<TcpStream>>,
         span: tracing::Span,
     ) {
         let mut subscriber: Option<AccountId32> = None;
@@ -882,19 +882,19 @@ impl Listener {
         loop {
             tokio::select! {
                 Some(msg) = receiver.next() => {
-                    if !self.handle_channel_message(&write, msg, &span).await {
+                    if !self.handle_channel_message(&ws_write, msg, &span).await {
                         break;
                     }
                 }
 
-                Some(msg_result) = read.next() => {
+                Some(msg_result) = ws_read.next() => {
                     match msg_result {
                         Ok(Message::Close(_)) => {
                             info!(parent: &span, "Received close frame");
                             break;
                         }
                         _ => {
-                            if !self.handle_ws_message(&write, msg_result, &mut subscriber, sender.clone(), &span).await {
+                            if !self.handle_ws_message(&ws_write, msg_result, &mut subscriber, sender.clone(), &span).await {
                                 break;
                             }
                         }
