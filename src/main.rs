@@ -12,16 +12,26 @@ use tokio::time::Duration;
 use tracing::Level;
 use tracing::{error, info};
 use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize logging
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| {
+            EnvFilter::new("info,matrix_sdk=warn,matrix_sdk_crypto=warn,matrix_sdk_base=warn")
+        });
+
     tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
+        .with_env_filter(env_filter)
         .with_line_number(true)
-        .with_target(true)
-        .with_span_events(FmtSpan::CLOSE)
         .init();
+    //tracing_subscriber::fmt()
+    //    .with_max_level(Level::INFO)
+    //    .with_line_number(true)
+    //    .with_target(true)
+    //    .with_span_events(FmtSpan::CLOSE)
+    //    .init();
 
     // init global configs
     let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());

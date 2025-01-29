@@ -280,7 +280,7 @@ async fn handle_incoming(
     acc: Account,
     text_content: &TextMessageEventContent,
 ) -> anyhow::Result<()> {
-    info!("\nAcc: {:#?}\nContent: {:#?}", acc, text_content);
+    info!("\nMatrix Message\nSender: {:#?}\nMessage: {}\nRaw Content: {:#?}", acc, text_content.body, text_content);
     let cfg = GLOBAL_CONFIG.get().unwrap();
     let redis_cfg = cfg.redis.clone();
     let mut redis_connection = RedisConnection::create_conn(&redis_cfg)?;
