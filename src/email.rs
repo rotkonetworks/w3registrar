@@ -81,15 +81,19 @@ impl Mail {
             .update_challenge_status(network, account_id, &account_type)
             .await?;
 
+        let state = match redis_connection
+            .get_verification_state(network, account_id)
+            .await?
+        {
+            Some(state) => state,
+            None => return Ok(()),
+        };
+
+        // how this will change if we aready instanced the state?
         if state.all_done {
             info!("All challenges are done!");
-            let cfg = GLOBAL_CONFIG.get().expect("Unable to get config");
-            let network = &cfg
-                .registrar
-                .get_network(network)
-                .expect(&format!("unable to get network from {}", network));
-
-            register_identity(account_id, network.registrar_index, &network.endpoint).await?;
+            let judgement_result = register_identity(account_id, network).await?;
+            info!("Judgement result: {:?}", judgement_result);
         }
         return Ok(());
     }

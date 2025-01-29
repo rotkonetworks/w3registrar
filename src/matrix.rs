@@ -229,9 +229,7 @@ fn extract_sender_account(
         .as_array()?;
 
     // Get first identifier and process it
-    let sender = arr
-        .first()?
-        .as_str()?;
+    let sender = arr.first()?.as_str()?;
 
     Account::from_str(sender).ok()
 }
@@ -343,11 +341,6 @@ async fn handle_content(
     let cfg = GLOBAL_CONFIG.get().unwrap();
     let account_type = &account.account_type().to_string();
 
-    let network_setting = match cfg.registrar.networks.get(network) {
-        Some(setting) => setting,
-        None => return Ok(false),
-    };
-
     // get the current state
     let state = match redis_connection
         .get_verification_state(network, account_id)
@@ -363,6 +356,7 @@ async fn handle_content(
         None => return Ok(false),
     };
 
+    info!("Checking if all challenges are already done...");
     // challenge is already completed
     if challenge.done {
         return Ok(false);
@@ -384,14 +378,17 @@ async fn handle_content(
         .update_challenge_status(network, account_id, account_type)
         .await?;
 
+    let state = match redis_connection
+        .get_verification_state(network, account_id)
+        .await?
+    {
+        Some(state) => state,
+        None => return Ok(false),
+    };
+
     // register identity if all challenges are completed
     if state.all_done {
-        register_identity(
-            account_id,
-            network_setting.registrar_index,
-            &network_setting.endpoint,
-        )
-        .await?;
+        register_identity(account_id, network).await?;
     }
 
     Ok(result)
