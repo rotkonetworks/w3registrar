@@ -9,9 +9,7 @@ use crate::api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv};
 use crate::config::{Config, GLOBAL_CONFIG};
 use crate::email::watch_mailserver;
 use tokio::time::Duration;
-use tracing::Level;
 use tracing::{error, info};
-use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -26,12 +24,6 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(env_filter)
         .with_line_number(true)
         .init();
-    //tracing_subscriber::fmt()
-    //    .with_max_level(Level::INFO)
-    //    .with_line_number(true)
-    //    .with_target(true)
-    //    .with_span_events(FmtSpan::CLOSE)
-    //    .init();
 
     // init global configs
     let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
