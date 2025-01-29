@@ -224,8 +224,8 @@ impl MailServer {
         //} else {
         //    info!("No messages found in mailbox.");
         //}
-
-        info!("succesful_login");
+        
+        info!("Sucessfull login to mail account {}", email_cfg.email);
 
         Ok(Self {
             redis_cfg: cfg.redis.clone(),
@@ -240,12 +240,13 @@ impl MailServer {
         self.session
             .select(self.mailbox.clone())
             .expect("Unable to select mailbox");
-
-        tokio::spawn(async move {
-            loop {
-                self.check_mailbox().await.unwrap();
+        info!("Selected mailbox `{}`", self.mailbox);
+        loop {
+            if let Err(e) = self.check_mailbox().await {
+                error!("Error reading mailbox: {}", e);
+                return Err(anyhow!(e));
             }
-        });
+        }
         Ok(())
     }
 
@@ -274,17 +275,21 @@ impl MailServer {
     /// Uses IMAP IDLE for efficient notification of new messages
     async fn check_mailbox(&mut self) -> anyhow::Result<()> {
         let idle_handle = self.session.idle()?;
-        tokio::time::timeout(Duration::from_secs(300), async { idle_handle.wait() })
-            .await
-            .map_err(|_| anyhow!("Timeout while waiting for new emails"))??;
-        let mail_id = self.session.search("UNSEEN")?;
-        for id in mail_id {
-            let mail = self.get_mail(id).await?;
-            self.flag_seen(id).await?;
-            info!("Mail: {:#?}", mail);
-            mail.handle_content(&self.redis_cfg).await?;
+        info!("Waiting for incoming mails...");
+        match idle_handle.wait() {
+            Ok(()) => {
+                info!("Recived a mail!");
+                let mail_id = self.session.search("UNSEEN")?;
+                for id in mail_id {
+                    let mail = self.get_mail(id).await?;
+                    self.flag_seen(id).await?;
+                    info!("Mail: {:#?}", mail);
+                    mail.handle_content(&self.redis_cfg).await?;
+                }
+                return Ok(());
+            }
+            Err(e) => return Err(anyhow!("Error waiting for mail: {}", e)),
         }
-        Ok(())
     }
 }
 

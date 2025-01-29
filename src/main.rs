@@ -18,6 +18,7 @@ async fn main() -> anyhow::Result<()> {
     // Initialize logging
     tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
+        .log_internal_errors(true)
         .with_line_number(true)
         .with_target(true)
         .with_span_events(FmtSpan::CLOSE)
