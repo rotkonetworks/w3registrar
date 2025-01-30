@@ -285,12 +285,17 @@ async fn handle_incoming(
     let redis_cfg = cfg.redis.clone();
     let mut redis_connection = RedisConnection::create_conn(&redis_cfg)?;
 
+    let search_pattern = format!("{}:*", acc);
+    info!("Searching Redis with pattern: {}", search_pattern);
+
     // handle each instance of the account
     let accounts_key = redis_connection.search(&format!("{}:*", acc))?;
 
     if accounts_key.is_empty() {
         return Ok(());
     }
+
+    info!("Found Redis keys: {:?}", accounts_key);
 
     for acc_str in accounts_key {
         info!("Account: {}", acc_str);
@@ -343,6 +348,8 @@ async fn handle_content(
     let cfg = GLOBAL_CONFIG.get().unwrap();
     let account_type = &account.account_type().to_string();
 
+    info!("Processing verification for {} account: {}", network, account_type);
+
     let network_setting = match cfg.registrar.networks.get(network) {
         Some(setting) => setting,
         None => return Ok(false),
@@ -353,31 +360,48 @@ async fn handle_content(
         .get_verification_state(network, account_id)
         .await?
     {
-        Some(state) => state,
-        None => return Ok(false),
+        Some(state) => {
+            info!("Found verification state for account {}", account_id);
+            state
+        },
+        None => {
+            info!("No verification state found for account {}", account_id);
+            return Ok(false);
+        }
     };
 
     // get the challenge for the account type
     let challenge = match state.challenges.get(account_type) {
         Some(challenge) => challenge,
-        None => return Ok(false),
+        None => {
+            info!("No challenge found for account type {}", account_type);
+            return Ok(false);
+        }
     };
 
     // challenge is already completed
     if challenge.done {
+        info!("Challenge already completed for {} account", account_type);
         return Ok(false);
     }
 
     // verify the token
     let token = match &challenge.token {
         Some(token) => token,
-        None => return Ok(false),
+        None => {
+            info!("No token found for {} challenge", account_type);
+            return Ok(false);
+        }
     };
 
     // check if the message matches the token (fixed comparison)
     if text_content.body != *token {
+        info!("Token mismatch for {} - received: {}, expected: {}", 
+            account_type, text_content.body, token);
         return Ok(false);
     }
+
+    info!("Token verified successfully for {} account", account_type);
 
     // update challenge status
     let result = redis_connection
