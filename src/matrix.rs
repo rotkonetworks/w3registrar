@@ -19,11 +19,12 @@ use matrix_sdk::{
     Client,
 };
 use redis;
+use regex::Regex;
 use serde_json::Value;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
 use tokio::time::{sleep, Duration};
-use tracing::info;
+use tracing::{error, info};
 
 use std::path::Path;
 
@@ -223,13 +224,14 @@ fn extract_sender_account(
     let obj = serde_json::from_str::<Value>(s.json().get()).ok()?;
 
     // Extract bridge identifiers
-    let arr = obj
-        .get("content")?
-        .get("com.beeper.bridge.identifiers")?
-        .as_array()?;
-
-    // Get first identifier and process it
-    let sender = arr.first()?.as_str()?;
+    let sender = match obj.get("content")?.get("com.beeper.bridge.identifiers") {
+        Some(sender) => {
+            let arr = sender.as_array()?;
+            &arr.first()?.as_str()?.replace(":", "|")
+        }
+        None => obj.get("state_key")?.as_str()?,
+    };
+    info!("Sender: {}", sender);
 
     Account::from_str(sender).ok()
 }
@@ -239,6 +241,7 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
     let MessageType::Text(text_content) = ev.content.msgtype else {
         return;
     };
+    info!("Recieved a text message!");
 
     let state_events = match _room
         .get_state_events(ruma::events::StateEventType::RoomMember)
@@ -246,7 +249,7 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
     {
         Ok(events) => events,
         Err(e) => {
-            info!("Failed to get state events: {:?}", e);
+            error!("Failed to get state events: {:?}", e);
             return;
         }
     };
@@ -254,12 +257,14 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
     for state in state_events {
         let state_cast: RawSyncOrStrippedState<RoomCreateEventContent> = state.cast();
 
+        info!("Extracting sender account..");
         let Some(account) = extract_sender_account(&state_cast) else {
             continue;
         };
+        info!("Account: {:?}", account);
 
         if let Err(e) = handle_incoming(account.clone(), &text_content).await {
-            info!(
+            error!(
                 "Error handling incoming message for account {:?}: {:?}",
                 account, e
             );
@@ -282,9 +287,11 @@ async fn handle_incoming(
     let cfg = GLOBAL_CONFIG.get().unwrap();
     let redis_cfg = cfg.redis.clone();
     let mut redis_connection = RedisConnection::create_conn(&redis_cfg)?;
+    let querry = format!("{}|*", acc);
+    info!("Search querry: {}", querry);
 
     // handle each instance of the account
-    let accounts_key = redis_connection.search(&format!("{}:*", acc))?;
+    let accounts_key = redis_connection.search(&querry)?;
 
     if accounts_key.is_empty() {
         return Ok(());
@@ -295,12 +302,12 @@ async fn handle_incoming(
 
         // extract account ID from the account string
         // <acc:name>:<acc_type>:<wallet_id>
-        let parts: Vec<&str> = acc_str.splitn(4, ':').collect();
+        let parts: Vec<&str> = acc_str.splitn(4, '|').collect();
         if parts.len() != 4 {
             continue;
         }
-
-        let account = Account::from_str(&format!("{}:{}", parts[0], parts[1]))?;
+        info!("Parts: {:#?}", parts);
+        let account = Account::from_str(&format!("{}|{}", parts[0], parts[1]))?;
         let network = parts[2];
 
         // this unwrap is fine, we checked above

@@ -11657,6 +11657,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "substrate"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91c8eec9f2f390ba11646f1d4ef718a96314aea7e56a285c7134e2f71b8cfe28"
+
+[[package]]
 name = "substrate-bip39"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12682,10 +12688,12 @@ dependencies = [
  "pretty_assertions",
  "rand",
  "redis",
+ "regex",
  "serde",
  "serde_json",
  "sp-core 35.0.0",
  "strum 0.26.3",
+ "substrate",
  "subxt",
  "subxt-signer",
  "tokio",

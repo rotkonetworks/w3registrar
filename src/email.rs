@@ -13,7 +13,7 @@ use crate::{
 use imap::Session;
 use native_tls::{TlsConnector, TlsStream};
 use subxt::utils::AccountId32;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::config::GLOBAL_CONFIG;
 
@@ -104,8 +104,8 @@ impl Mail {
         let account = Account::Email(self.sender.clone());
 
         let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
-        // <<type>:<name>>:<network>:<wallet_id>
-        let search_querry = format!("{}:*", account);
+        // <<type>|<name>>|<network>|<wallet_id>
+        let search_querry = format!("{}|*", account);
         let accounts = redis_connection.search(&search_querry)?;
 
         if accounts.is_empty() {
@@ -121,7 +121,7 @@ impl Mail {
             }
 
             let network = info[2];
-            // let account = Account::from_str(&format!("{}:{}", info[0], info[1]))?;
+            // let account = Account::from_str(&format!("{}|{}", info[0], info[1]))?;
             let id = info[3];
             if let Ok(wallet_id) = AccountId32::from_str(id) {
                 // TODO: make the network name enum instead of str

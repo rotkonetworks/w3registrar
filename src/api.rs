@@ -9,6 +9,7 @@ use futures::stream::SplitStream;
 use futures::StreamExt;
 use futures_util::SinkExt;
 use redis::{self, Client as RedisClient, Commands};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sp_core::blake2_256;
@@ -125,15 +126,15 @@ pub enum Account {
 impl Display for Account {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Account::Twitter(name) => write!(f, "twitter:{}", name),
-            Account::Discord(name) => write!(f, "discord:{}", name),
-            Account::Matrix(name) => write!(f, "matrix:{}", name),
-            Account::Display(name) => write!(f, "display:{}", name),
-            Account::Legal(name) => write!(f, "legal:{}", name),
-            Account::Web(name) => write!(f, "web:{}", name),
-            Account::Email(name) => write!(f, "email:{}", name),
-            Account::Github(name) => write!(f, "github:{}", name),
-            Account::PGPFingerprint(name) => write!(f, "pgp_fingerprint:{:?}", name),
+            Account::Twitter(name) => write!(f, "twitter|{}", name),
+            Account::Discord(name) => write!(f, "discord|{}", name),
+            Account::Matrix(name) => write!(f, "matrix|{}", name),
+            Account::Display(name) => write!(f, "display|{}", name),
+            Account::Legal(name) => write!(f, "legal|{}", name),
+            Account::Web(name) => write!(f, "web|{}", name),
+            Account::Email(name) => write!(f, "email|{}", name),
+            Account::Github(name) => write!(f, "github|{}", name),
+            Account::PGPFingerprint(name) => write!(f, "pgp_fingerprint|{:?}", name),
         }
     }
 }
@@ -300,15 +301,37 @@ impl FromStr for Account {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (account_type, value) = s
-            .split_once(':')
-            .ok_or_else(|| anyhow::anyhow!("Invalid account format, expected Type:Name"))?;
+        let matrix_regex =
+            Regex::new(r"@(?<name>\w+):(?<domain_name>\w+).(?<top_domain>\w+)").unwrap();
+        info!("Determining that account {s} is a valid format...");
+        match matrix_regex.captures(s) {
+            Some(account) => {
+                info!("This {s} is a matrix account");
+                let acc_name: &str = &account["name"];
+                let domain_name: &str = &account["domain_name"];
+                let top_level: &str = &account["top_domain"];
+                return Ok(Self::Matrix(format!(
+                    "@{}:{}.{}",
+                    acc_name, domain_name, top_level
+                )));
+            }
+            None => {
+                let (account_type, value) = s
+                    .split_once('|')
+                    .ok_or_else(|| anyhow::anyhow!("Invalid account format, expected Type:Name"))?;
+                info!("Account {s} is valid");
+                info!("Account type: {account_type}");
+                info!("Value: {value}");
 
-        let account_type: AccountType = account_type.parse()?;
-        Ok(Self::from_type_and_value(
-            account_type,
-            value.trim().to_owned(),
-        ))
+                info!("Parsing the account type...");
+                let account_type: AccountType = account_type.parse()?;
+                info!("Account type {:?}", account_type);
+                return Ok(Self::from_type_and_value(
+                    account_type,
+                    value.trim().to_owned(),
+                ))
+            }
+        }
     }
 }
 
@@ -317,7 +340,7 @@ impl Serialize for Account {
     where
         S: serde::Serializer,
     {
-        let s = format!("{}:{}", self.account_type(), self.inner());
+        let s = format!("{}|{}", self.account_type(), self.inner());
         serializer.serialize_str(&s)
     }
 }
@@ -928,7 +951,7 @@ impl Listener {
 
         match serde_json::to_string(&msg) {
             Ok(serialized) => {
-                debug!(parent: span, response_type = %resp_type, "Sending response");
+                info!(parent: span, response_type = %resp_type, "Sending response");
                 match Self::send_message(write, serialized).await {
                     Ok(_) => true,
                     Err(e) => {
@@ -1188,7 +1211,7 @@ impl Listener {
             let mut pubsub = redis_conn.as_pubsub();
             let network = &response["payload"]["message"]["AccountState"]["network"];
             let channel = format!(
-                "__keyspace@0__:{}:{}",
+                "__keyspace@0__:{}|{}",
                 account,
                 network.as_str().unwrap_or_default(),
             );
@@ -1199,6 +1222,8 @@ impl Listener {
                 return;
             }
 
+            // TODO: make this kill iteslf when an all_done state is true, since we don't want
+            // to listen for events forever!
             debug!("Starting message processing loop");
             loop {
                 // get message or break on error
@@ -1646,12 +1671,12 @@ impl RedisConnection {
         &mut self,
         account_id: &AccountId32,
     ) -> anyhow::Result<redis::PubSub> {
-        //        let related_keys = self.search(format!("*:{}", serde_json::to_string(&account_id)?))?;
-        let related_keys = self.search(&format!("*:{}", account_id.to_string()))?;
+        let related_keys = self.search(&format!("*|{}", account_id.to_string()))?;
         let mut pubsub = self.conn.as_pubsub();
 
         for key in related_keys {
             let channel = format!("__keyspace@0__:{}", key);
+            info!("Subscribing to channel - {channel}");
             pubsub.subscribe(&channel)?;
         }
 
@@ -1770,9 +1795,9 @@ impl RedisConnection {
     ) -> anyhow::Result<()> {
         let mut pipe = redis::pipe();
         pipe.cmd("DEL")
-            .arg(&format!("{}:{}", who.to_string(), network));
+            .arg(&format!("{}|{}", who.to_string(), network));
 
-        let accounts = self.search(&format!("*:{}:{}", network, who))?;
+        let accounts = self.search(&format!("*|{}|{}", network, who))?;
         for account in accounts {
             pipe.cmd("DEL").arg(account);
         }
@@ -1790,7 +1815,7 @@ impl RedisConnection {
     ) -> anyhow::Result<()> {
         let mut pipe = redis::pipe();
         for (account, _) in accounts {
-            let key = format!("{}:{}:{}", account, network, account_id);
+            let key = format!("{}|{}|{}", account, network, account_id);
             let pipe = pipe.cmd("SET").arg(&key);
             if let Some(challenge_info) = state.challenges.get(&account.account_type().to_string())
             {
@@ -1807,7 +1832,7 @@ impl RedisConnection {
         account_id: &AccountId32,
         state: &AccountVerification,
     ) -> anyhow::Result<()> {
-        let key = format!("{}:{}", account_id, network);
+        let key = format!("{}|{}", account_id, network);
         let value = serde_json::to_string(&state)?;
 
         redis::pipe()
@@ -1841,7 +1866,7 @@ impl RedisConnection {
                 "pgp_fingerprint" => todo!(),
                 _ => unreachable!(),
             };
-            let key = format!("{}:{}:{}", acc_key, network, account_id);
+            let key = format!("{}|{}|{}", acc_key, network, account_id);
             pipe.arg(&key).arg(&serde_json::to_string(&info)?);
         }
         pipe.exec(&mut self.conn)?;
@@ -1867,7 +1892,7 @@ impl RedisConnection {
         network: &str,
         account_id: &AccountId32,
     ) -> anyhow::Result<Option<AccountVerification>> {
-        let key = format!("{}:{}", account_id, network);
+        let key = format!("{}|{}", account_id, network);
         info!("key: {}", key);
         let value: Option<String> = self.conn.get(&key)?;
 
@@ -1901,7 +1926,7 @@ impl RedisConnection {
         network: &str,
         account_id: &AccountId32,
     ) -> anyhow::Result<()> {
-        let key = format!("{}:{}", account_id, network);
+        let key = format!("{}|{}", account_id, network);
         let _: () = self.conn.del(&key)?;
         Ok(())
     }
@@ -1932,7 +1957,7 @@ impl RedisConnection {
         };
 
         // parse network and account ID
-        let (account_id, network) = match key.split_once(':') {
+        let (account_id, network) = match key.split_once('|') {
             Some(parts) => parts,
             None => return Ok(None),
         };
