@@ -36,6 +36,8 @@ strum = { version = "0.26", features = ["derive"] }
 imap = "2.4.1"
 native-tls = "0.2.12"
 mail-parser = "0.9.4"
+substrate = "0.1.0"
+regex = "1.11.1"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
