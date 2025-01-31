@@ -75,7 +75,10 @@ async fn main() -> anyhow::Result<()> {
         handles.push(tokio::spawn(async move {
             info!("Spawning mailserver...");
             if let Err(e) = watch_mailserver().await {
-                error!("Mailserver error: {}", e);
+                error!("Mailserver watcher error: {}", e);
+                return;
+            } else {
+                info!("Mailserver watcher is exiting");
             }
         }));
     }
