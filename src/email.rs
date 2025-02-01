@@ -120,7 +120,7 @@ impl Mail {
 
         for acc_str in accounts {
             info!("Account: {}", acc_str);
-            let info: Vec<&str> = acc_str.split(":").collect();
+            let info: Vec<&str> = acc_str.split("|").collect();
             if info.len() != 4 {
                 continue;
             }
