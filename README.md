@@ -33,6 +33,12 @@ are confirmed.
 git clone https://github.com/rotkonetworks/w3registrar.git
 cd w3registrar
 
+# To get the metadata files, you can get them using following commands:
+git lfs install
+git lfs pull 
+# If you fun into an error such as "git: 'lfs' is not a git command. See 'git --help'."
+#   please refer to https://stackoverflow.com/a/48734334 in odert to get it installed and try again.
+
 # Nix-based build environment (recommended):
 nix-shell
 cargo build --release
