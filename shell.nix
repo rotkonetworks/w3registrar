@@ -11,6 +11,7 @@ pkgs.mkShell {
     clang
     llvm
     libiconv
+    git-lfs
   ];
 
   LD_LIBRARY_PATH = with pkgs; lib.makeLibraryPath [
@@ -31,5 +32,7 @@ pkgs.mkShell {
       pkgs.openssl
       pkgs.stdenv.cc.cc.lib
     ]}:$LD_LIBRARY_PATH
+    git lfs install
+    git lfs pull
   '';
 }
