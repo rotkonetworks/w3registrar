@@ -13,7 +13,7 @@ use matrix_sdk::{
         events::room::{
             create::RoomCreateEventContent,
             member::StrippedRoomMemberEvent,
-            message::{MessageType, OriginalSyncRoomMessageEvent, TextMessageEventContent},
+            message::{MessageType, OriginalSyncRoomMessageEvent, TextMessageEventContent, RoomMessageEventContent},
         },
     },
     Client,
@@ -187,27 +187,52 @@ async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client
     }
 
     tokio::spawn(async move {
-        info!("Joining room {}", room.room_id());
+        const MAX_RETRY_DELAY: u64 = 16;
+        const MAX_RETRIES: u32 = 3;
+        
+        // early return if unable to determine DM status
+        let is_dm = match room.is_direct().await {
+            Ok(is_direct) => is_direct,
+            Err(e) => {
+                error!("Failed to check DM status: {}", e);
+                return;
+            }
+        };
+
+        if !is_dm {
+            return;
+        }
+
+        // join room with exponential backoff
+        let mut retry_count = 0;
         let mut delay = 2;
 
-        while let Err(err) = room.join().await {
-            // retry auto join due to synapse sending invites, before the
-            // invited user can join for more information see
-            // https://github.com/matrix-org/synapse/issues/4345
-            info!(
-                "Failed to join room {} ({err:?}), retrying in {delay}s",
-                room.room_id()
-            );
-
-            sleep(Duration::from_secs(delay)).await;
-            delay *= 2;
-
-            if delay > 3600 {
-                info!("Can't join room {} ({err:?})", room.room_id());
-                break;
+        while retry_count < MAX_RETRIES {
+            match room.join().await {
+                Ok(_) => {
+                    info!("Joined DM room {}", room.room_id());
+                    
+                    if let Err(e) = room
+                        .send(RoomMessageEventContent::text_plain(
+                            "Please submit your verification challenge.",
+                        ))
+                        .await
+                    {
+                        error!("Failed to send challenge prompt: {}", e);
+                    }
+                    return;
+                }
+                Err(e) => {
+                    retry_count += 1;
+                    if retry_count == MAX_RETRIES {
+                        error!("Failed to join room after {} attempts: {}", MAX_RETRIES, e);
+                        return;
+                    }
+                    sleep(Duration::from_secs(delay)).await;
+                    delay = delay.saturating_mul(2).min(MAX_RETRY_DELAY);
+                }
             }
         }
-        info!("Successfully joined room {}", room.room_id());
     });
 }
 
