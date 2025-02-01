@@ -72,7 +72,12 @@ impl Mail {
         };
         info!("Token: {:?}", token);
 
-        if self.body.ne(&Some(token.to_owned())) {
+        let body_token = self.body
+            .as_ref()
+            .and_then(|b| b.lines().next())
+            .map(|l| l.trim().to_owned());
+
+        if body_token.ne(&Some(token.to_owned())) {
             info!("Wrong token, got {:?} but expected {:?}", self.body, token);
             return Ok(());
         }
