@@ -19,7 +19,6 @@ use matrix_sdk::{
     Client,
 };
 use redis;
-use regex::Regex;
 use serde_json::Value;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
@@ -283,7 +282,7 @@ async fn handle_incoming(
     acc: Account,
     text_content: &TextMessageEventContent,
 ) -> anyhow::Result<()> {
-    info!("\nAcc: {:#?}\nContent: {:#?}", acc, text_content);
+    info!("\nMatrix Message\nSender: {:#?}\nMessage: {}\nRaw Content: {:#?}", acc, text_content.body, text_content);
     let cfg = GLOBAL_CONFIG.get().unwrap();
     let redis_cfg = cfg.redis.clone();
     let mut redis_connection = RedisConnection::create_conn(&redis_cfg)?;
@@ -345,7 +344,6 @@ async fn handle_content(
     account_id: &AccountId32,
     account: &Account,
 ) -> anyhow::Result<bool> {
-    let cfg = GLOBAL_CONFIG.get().unwrap();
     let account_type = &account.account_type().to_string();
 
     // get the current state
