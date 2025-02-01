@@ -8,8 +8,8 @@ SUBSCRIBE_MSG=$(cat << EOF | jq -c .
   "version": "1.0",
   "type": "SubscribeAccountState",
   "payload": {
-    "network": "rococo",
-    "account": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
+    "network": "paseo",
+    "account": "1Qrotkokp6taAeLThuwgzR7Mu3YQonZohwrzixwGnrD1QDT"
   }
 }
 EOF

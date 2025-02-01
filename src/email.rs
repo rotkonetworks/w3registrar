@@ -13,7 +13,7 @@ use crate::{
 use imap::Session;
 use native_tls::{TlsConnector, TlsStream};
 use subxt::utils::AccountId32;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::config::GLOBAL_CONFIG;
 
@@ -72,7 +72,12 @@ impl Mail {
         };
         info!("Token: {:?}", token);
 
-        if self.body.ne(&Some(token.to_owned())) {
+        let body_token = self.body
+            .as_ref()
+            .and_then(|b| b.lines().next())
+            .map(|l| l.trim().to_owned());
+
+        if body_token.ne(&Some(token.to_owned())) {
             info!("Wrong token, got {:?} but expected {:?}", self.body, token);
             return Ok(());
         }
@@ -81,15 +86,19 @@ impl Mail {
             .update_challenge_status(network, account_id, &account_type)
             .await?;
 
+        let state = match redis_connection
+            .get_verification_state(network, account_id)
+            .await?
+        {
+            Some(state) => state,
+            None => return Ok(()),
+        };
+
+        // how this will change if we aready instanced the state?
         if state.all_done {
             info!("All challenges are done!");
-            let cfg = GLOBAL_CONFIG.get().expect("Unable to get config");
-            let network = &cfg
-                .registrar
-                .get_network(network)
-                .expect(&format!("unable to get network from {}", network));
-
-            register_identity(account_id, network.registrar_index, &network.endpoint).await?;
+            let judgement_result = register_identity(account_id, network).await?;
+            info!("Judgement result: {:?}", judgement_result);
         }
         return Ok(());
     }
@@ -100,8 +109,8 @@ impl Mail {
         let account = Account::Email(self.sender.clone());
 
         let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
-        // <<type>:<name>>:<network>:<wallet_id>
-        let search_querry = format!("{}:*", account);
+        // <<type>|<name>>|<network>|<wallet_id>
+        let search_querry = format!("{}|*", account);
         let accounts = redis_connection.search(&search_querry)?;
 
         if accounts.is_empty() {
@@ -111,13 +120,13 @@ impl Mail {
 
         for acc_str in accounts {
             info!("Account: {}", acc_str);
-            let info: Vec<&str> = acc_str.split(":").collect();
+            let info: Vec<&str> = acc_str.split("|").collect();
             if info.len() != 4 {
                 continue;
             }
 
             let network = info[2];
-            // let account = Account::from_str(&format!("{}:{}", info[0], info[1]))?;
+            // let account = Account::from_str(&format!("{}|{}", info[0], info[1]))?;
             let id = info[3];
             if let Ok(wallet_id) = AccountId32::from_str(id) {
                 // TODO: make the network name enum instead of str
@@ -220,8 +229,8 @@ impl MailServer {
         //} else {
         //    info!("No messages found in mailbox.");
         //}
-
-        info!("succesful_login");
+        
+        info!("Sucessfull login to mail account {}", email_cfg.email);
 
         Ok(Self {
             redis_cfg: cfg.redis.clone(),
@@ -236,12 +245,13 @@ impl MailServer {
         self.session
             .select(self.mailbox.clone())
             .expect("Unable to select mailbox");
-
-        tokio::spawn(async move {
-            loop {
-                self.check_mailbox().await.unwrap();
+        info!("Selected mailbox `{}`", self.mailbox);
+        loop {
+            if let Err(e) = self.check_mailbox().await {
+                error!("Error reading mailbox: {}", e);
+                return Err(anyhow!(e));
             }
-        });
+        }
         Ok(())
     }
 
@@ -270,17 +280,21 @@ impl MailServer {
     /// Uses IMAP IDLE for efficient notification of new messages
     async fn check_mailbox(&mut self) -> anyhow::Result<()> {
         let idle_handle = self.session.idle()?;
-        tokio::time::timeout(Duration::from_secs(300), async { idle_handle.wait() })
-            .await
-            .map_err(|_| anyhow!("Timeout while waiting for new emails"))??;
-        let mail_id = self.session.search("UNSEEN")?;
-        for id in mail_id {
-            let mail = self.get_mail(id).await?;
-            self.flag_seen(id).await?;
-            info!("Mail: {:#?}", mail);
-            mail.handle_content(&self.redis_cfg).await?;
+        info!("Waiting for incoming mails...");
+        match idle_handle.wait() {
+            Ok(()) => {
+                info!("Recived a mail!");
+                let mail_id = self.session.search("UNSEEN")?;
+                for id in mail_id {
+                    let mail = self.get_mail(id).await?;
+                    self.flag_seen(id).await?;
+                    info!("\nEmail Message\nSender: {}\nMessage: {}\nRaw Mail: {:#?}", mail.sender, mail.body.as_deref().unwrap_or("(no content)"), mail);
+                    mail.handle_content(&self.redis_cfg).await?;
+                }
+                return Ok(());
+            }
+            Err(e) => return Err(anyhow!("Error waiting for mail: {}", e)),
         }
-        Ok(())
     }
 }
 

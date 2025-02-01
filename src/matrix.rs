@@ -13,7 +13,7 @@ use matrix_sdk::{
         events::room::{
             create::RoomCreateEventContent,
             member::StrippedRoomMemberEvent,
-            message::{MessageType, OriginalSyncRoomMessageEvent, TextMessageEventContent},
+            message::{MessageType, OriginalSyncRoomMessageEvent, TextMessageEventContent, RoomMessageEventContent},
         },
     },
     Client,
@@ -23,7 +23,7 @@ use serde_json::Value;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
 use tokio::time::{sleep, Duration};
-use tracing::info;
+use tracing::{error, info};
 
 use std::path::Path;
 
@@ -187,27 +187,52 @@ async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client
     }
 
     tokio::spawn(async move {
-        info!("Joining room {}", room.room_id());
+        const MAX_RETRY_DELAY: u64 = 16;
+        const MAX_RETRIES: u32 = 3;
+        
+        // early return if unable to determine DM status
+        let is_dm = match room.is_direct().await {
+            Ok(is_direct) => is_direct,
+            Err(e) => {
+                error!("Failed to check DM status: {}", e);
+                return;
+            }
+        };
+
+        if !is_dm {
+            return;
+        }
+
+        // join room with exponential backoff
+        let mut retry_count = 0;
         let mut delay = 2;
 
-        while let Err(err) = room.join().await {
-            // retry auto join due to synapse sending invites, before the
-            // invited user can join for more information see
-            // https://github.com/matrix-org/synapse/issues/4345
-            info!(
-                "Failed to join room {} ({err:?}), retrying in {delay}s",
-                room.room_id()
-            );
-
-            sleep(Duration::from_secs(delay)).await;
-            delay *= 2;
-
-            if delay > 3600 {
-                info!("Can't join room {} ({err:?})", room.room_id());
-                break;
+        while retry_count < MAX_RETRIES {
+            match room.join().await {
+                Ok(_) => {
+                    info!("Joined DM room {}", room.room_id());
+                    
+                    if let Err(e) = room
+                        .send(RoomMessageEventContent::text_plain(
+                            "Please submit your verification challenge.",
+                        ))
+                        .await
+                    {
+                        error!("Failed to send challenge prompt: {}", e);
+                    }
+                    return;
+                }
+                Err(e) => {
+                    retry_count += 1;
+                    if retry_count == MAX_RETRIES {
+                        error!("Failed to join room after {} attempts: {}", MAX_RETRIES, e);
+                        return;
+                    }
+                    sleep(Duration::from_secs(delay)).await;
+                    delay = delay.saturating_mul(2).min(MAX_RETRY_DELAY);
+                }
             }
         }
-        info!("Successfully joined room {}", room.room_id());
     });
 }
 
@@ -223,15 +248,14 @@ fn extract_sender_account(
     let obj = serde_json::from_str::<Value>(s.json().get()).ok()?;
 
     // Extract bridge identifiers
-    let arr = obj
-        .get("content")?
-        .get("com.beeper.bridge.identifiers")?
-        .as_array()?;
-
-    // Get first identifier and process it
-    let sender = arr
-        .first()?
-        .as_str()?;
+    let sender = match obj.get("content")?.get("com.beeper.bridge.identifiers") {
+        Some(sender) => {
+            let arr = sender.as_array()?;
+            &arr.first()?.as_str()?.replace(":", "|")
+        }
+        None => obj.get("state_key")?.as_str()?,
+    };
+    info!("Sender: {}", sender);
 
     Account::from_str(sender).ok()
 }
@@ -241,6 +265,7 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
     let MessageType::Text(text_content) = ev.content.msgtype else {
         return;
     };
+    info!("Recieved a text message!");
 
     let state_events = match _room
         .get_state_events(ruma::events::StateEventType::RoomMember)
@@ -248,7 +273,7 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
     {
         Ok(events) => events,
         Err(e) => {
-            info!("Failed to get state events: {:?}", e);
+            error!("Failed to get state events: {:?}", e);
             return;
         }
     };
@@ -256,12 +281,14 @@ async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
     for state in state_events {
         let state_cast: RawSyncOrStrippedState<RoomCreateEventContent> = state.cast();
 
+        info!("Extracting sender account..");
         let Some(account) = extract_sender_account(&state_cast) else {
             continue;
         };
+        info!("Account: {:?}", account);
 
         if let Err(e) = handle_incoming(account.clone(), &text_content).await {
-            info!(
+            error!(
                 "Error handling incoming message for account {:?}: {:?}",
                 account, e
             );
@@ -280,13 +307,15 @@ async fn handle_incoming(
     acc: Account,
     text_content: &TextMessageEventContent,
 ) -> anyhow::Result<()> {
-    info!("\nAcc: {:#?}\nContent: {:#?}", acc, text_content);
+    info!("\nMatrix Message\nSender: {:#?}\nMessage: {}\nRaw Content: {:#?}", acc, text_content.body, text_content);
     let cfg = GLOBAL_CONFIG.get().unwrap();
     let redis_cfg = cfg.redis.clone();
     let mut redis_connection = RedisConnection::create_conn(&redis_cfg)?;
+    let querry = format!("{}|*", acc);
+    info!("Search querry: {}", querry);
 
     // handle each instance of the account
-    let accounts_key = redis_connection.search(&format!("{}:*", acc))?;
+    let accounts_key = redis_connection.search(&querry)?;
 
     if accounts_key.is_empty() {
         return Ok(());
@@ -297,12 +326,12 @@ async fn handle_incoming(
 
         // extract account ID from the account string
         // <acc:name>:<acc_type>:<wallet_id>
-        let parts: Vec<&str> = acc_str.splitn(4, ':').collect();
+        let parts: Vec<&str> = acc_str.splitn(4, '|').collect();
         if parts.len() != 4 {
             continue;
         }
-
-        let account = Account::from_str(&format!("{}:{}", parts[0], parts[1]))?;
+        info!("Parts: {:#?}", parts);
+        let account = Account::from_str(&format!("{}|{}", parts[0], parts[1]))?;
         let network = parts[2];
 
         // this unwrap is fine, we checked above
@@ -340,13 +369,7 @@ async fn handle_content(
     account_id: &AccountId32,
     account: &Account,
 ) -> anyhow::Result<bool> {
-    let cfg = GLOBAL_CONFIG.get().unwrap();
     let account_type = &account.account_type().to_string();
-
-    let network_setting = match cfg.registrar.networks.get(network) {
-        Some(setting) => setting,
-        None => return Ok(false),
-    };
 
     // get the current state
     let state = match redis_connection
@@ -363,6 +386,7 @@ async fn handle_content(
         None => return Ok(false),
     };
 
+    info!("Checking if all challenges are already done...");
     // challenge is already completed
     if challenge.done {
         return Ok(false);
@@ -384,14 +408,17 @@ async fn handle_content(
         .update_challenge_status(network, account_id, account_type)
         .await?;
 
+    let state = match redis_connection
+        .get_verification_state(network, account_id)
+        .await?
+    {
+        Some(state) => state,
+        None => return Ok(false),
+    };
+
     // register identity if all challenges are completed
     if state.all_done {
-        register_identity(
-            account_id,
-            network_setting.registrar_index,
-            &network_setting.endpoint,
-        )
-        .await?;
+        register_identity(account_id, network).await?;
     }
 
     Ok(result)

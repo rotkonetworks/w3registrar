@@ -9,18 +9,20 @@ use crate::api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv};
 use crate::config::{Config, GLOBAL_CONFIG};
 use crate::email::watch_mailserver;
 use tokio::time::Duration;
-use tracing::Level;
 use tracing::{error, info};
-use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize logging
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| {
+            EnvFilter::new("info,matrix_sdk=warn,matrix_sdk_crypto=warn,matrix_sdk_base=warn")
+        });
+
     tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
+        .with_env_filter(env_filter)
         .with_line_number(true)
-        .with_target(true)
-        .with_span_events(FmtSpan::CLOSE)
         .init();
 
     // init global configs
@@ -74,7 +76,10 @@ async fn main() -> anyhow::Result<()> {
         handles.push(tokio::spawn(async move {
             info!("Spawning mailserver...");
             if let Err(e) = watch_mailserver().await {
-                error!("Mailserver error: {}", e);
+                error!("Mailserver watcher error: {}", e);
+                return;
+            } else {
+                info!("Mailserver watcher is exiting");
             }
         }));
     }

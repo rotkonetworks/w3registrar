@@ -44,10 +44,10 @@ impl<'a> From<&'a str> for Token {
 impl AuthToken for Token {
     /// Generates a [Token] as a [String] 8 characters long, using the base-20 `OLC_ALPHABET`.
     async fn generate() -> Token {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let s: String = (0..8)
             .map(|_| {
-                let idx = rng.gen_range(0..OLC_ALPHABET.len());
+                let idx = rng.random_range(0..OLC_ALPHABET.len());
                 OLC_ALPHABET.chars().nth(idx).unwrap()
             })
             .collect();
