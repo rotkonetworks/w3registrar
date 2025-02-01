@@ -100,8 +100,6 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
 
-    info!("gl hf! All services spawned successfully");
-
     // signal handling and exit
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
