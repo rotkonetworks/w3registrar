@@ -26,12 +26,6 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(env_filter)
         .with_line_number(true)
         .init();
-    //tracing_subscriber::fmt()
-    //    .with_max_level(Level::INFO)
-    //    .with_line_number(true)
-    //    .with_target(true)
-    //    .with_span_events(FmtSpan::CLOSE)
-    //    .init();
 
     // init global configs
     let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
