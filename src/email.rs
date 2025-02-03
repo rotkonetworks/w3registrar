@@ -72,7 +72,8 @@ impl Mail {
         };
         info!("Token: {:?}", token);
 
-        let body_token = self.body
+        let body_token = self
+            .body
             .as_ref()
             .and_then(|b| b.lines().next())
             .map(|l| l.trim().to_owned());
@@ -229,7 +230,7 @@ impl MailServer {
         //} else {
         //    info!("No messages found in mailbox.");
         //}
-        
+
         info!("Sucessfull login to mail account {}", email_cfg.email);
 
         Ok(Self {
@@ -288,7 +289,12 @@ impl MailServer {
                 for id in mail_id {
                     let mail = self.get_mail(id).await?;
                     self.flag_seen(id).await?;
-                    info!("\nEmail Message\nSender: {}\nMessage: {}\nRaw Mail: {:#?}", mail.sender, mail.body.as_deref().unwrap_or("(no content)"), mail);
+                    info!(
+                        "\nEmail Message\nSender: {}\nMessage: {}\nRaw Mail: {:#?}",
+                        mail.sender,
+                        mail.body.as_deref().unwrap_or("(no content)"),
+                        mail
+                    );
                     mail.handle_content(&self.redis_cfg).await?;
                 }
                 return Ok(());

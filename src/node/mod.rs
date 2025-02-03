@@ -54,8 +54,7 @@ pub async fn get_registration(
 /// Setup client and load network configuration
 ///
 /// # Arguments
-/// * `network` - Network name (paseo, rotoko)
-/// TODO: enum instead of str :D
+/// * `network` - Network name (network_name)
 async fn setup_network(network: &str) -> anyhow::Result<(Client, crate::config::RegistrarConfig)> {
     let cfg = GLOBAL_CONFIG
         .get()
@@ -244,10 +243,7 @@ async fn fetch_latest_nonce(client: &Client, account: &AccountId32) -> Result<u6
 }
 
 /// Provides succesful judgement
-pub async fn register_identity<'a>(
-    who: &AccountId32,
-    network: &str,
-) -> anyhow::Result<&'a str> {
+pub async fn register_identity<'a>(who: &AccountId32, network: &str) -> anyhow::Result<&'a str> {
     info!("Providing jdugement for {} on {}", who, network);
     provide_judgement(who, Judgement::Reasonable, network).await
 }

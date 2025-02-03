@@ -27,6 +27,7 @@ use tokio_tungstenite::WebSocketStream;
 use tracing::{debug, error, info, span, Level};
 
 use crate::{
+    adapter::dns,
     config::{RedisConfig, RegistrarConfig, GLOBAL_CONFIG},
     node::{
         self, filter_accounts,
@@ -38,8 +39,7 @@ use crate::{
         },
         Client as NodeClient,
     },
-    token::AuthToken,
-    token::Token,
+    token::{AuthToken, Token},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,17 +192,17 @@ impl Account {
     pub fn determine(&self) -> ValidationMode {
         match self {
             // Direct: verified directly without user action
-            Account::Display(_) // onchain check that not empty/0x
-            | Account::Web(_) => ValidationMode::Direct, // dig/dns record query
+            Account::Display(_) => ValidationMode::Direct, // onchain check that not empty/0x
             // Inbound: receive challenge/callback via websocket
-            Account::Github(_) // oauth callback ws/rest?
-            | Account::PGPFingerprint(_) => ValidationMode::Inbound, // not sure if direct?
+            Account::Github(_) // TODO: oauth callback via ws/rest?
+            | Account::PGPFingerprint(_) => ValidationMode::Inbound, // not sure if hybrid(in/out)?
             // Outbound: send challenge via websocket
             Account::Discord(_) // ws out -> matrix read
             | Account::Matrix(_) // ws out -> matrix read
             | Account::Email(_) // ws out -> imap read
-            | Account::Twitter(_) => ValidationMode::Outbound, // ws out -> matrix read
-            Account::Legal(_) => ValidationMode::Unsupported,
+            | Account::Twitter(_)// ws out -> matrix read
+            | Account::Web(_) => ValidationMode::Outbound, // ws_out -> read dns txt record
+            Account::Legal(_) => ValidationMode::Unsupported, // not planned
         }
     }
 
@@ -329,7 +329,7 @@ impl FromStr for Account {
                 return Ok(Self::from_type_and_value(
                     account_type,
                     value.trim().to_owned(),
-                ))
+                ));
             }
         }
     }
@@ -513,6 +513,14 @@ where
 
 fn string_to_account_id(s: &str) -> anyhow::Result<AccountId32> {
     AccountId32::from_str(s).map_err(|e| anyhow!("Invalid account ID: {}", e))
+}
+
+pub async fn verify_web_challenge(account: &Account, token: &str) -> anyhow::Result<bool> {
+    match account {
+        // returns bool
+        Account::Web(domain) => dns::verify_txt(domain, token).await,
+        _ => Ok(false),
+    }
 }
 
 #[derive(Debug, Clone)]
