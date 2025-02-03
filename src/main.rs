@@ -24,12 +24,7 @@ async fn main() -> anyhow::Result<()> {
         .with_line_number(true)
         .init();
 
-    // init global configs
-    let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
-    let config = Config::load_from(&config_path)?;
-    GLOBAL_CONFIG
-        .set(config.clone())
-        .expect("GLOBAL_CONFIG already initialized");
+    let config = Config::set_global_config()?;
 
     // Start services
     info!("Starting services...");
