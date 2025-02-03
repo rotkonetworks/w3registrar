@@ -634,49 +634,6 @@ impl Listener {
         }))
     }
 
-    pub async fn handle_identity_verification_request(
-        &self,
-        request: VerifyIdentityRequest,
-    ) -> anyhow::Result<serde_json::Value> {
-        let account_id = string_to_account_id(&request.payload.account)?;
-        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
-
-        let state = conn
-            .get_verification_state("rococo", &account_id)
-            .await?
-            .ok_or_else(|| anyhow!("No verification state found"))?;
-
-        let acc_type = request.payload.field.to_string();
-        let challenge = state
-            .challenges
-            .get(&acc_type)
-            .ok_or_else(|| anyhow!("No challenge found for {}", acc_type))?;
-
-        match &challenge.token {
-            Some(token) if token == &request.payload.challenge => {
-                // Mark challenge as complete
-                conn.update_challenge_status("rococo", &account_id, &acc_type)
-                    .await?;
-
-                Ok(serde_json::json!({
-                    "type": "ok",
-                    "message": true,
-                }))
-            }
-            Some(token) => Ok(serde_json::json!({
-                "type": "error",
-                "reason": format!(
-                    "{} is not equal to the challenge token",
-                    token
-                ),
-            })),
-            None => Ok(serde_json::json!({
-                "type": "error",
-                "reason": "No active challenge found"
-            })),
-        }
-    }
-
     /// Generates a hex-encoded blake2 hash of the identity info with 0x prefix
     fn hash_identity_info(&self, info: &IdentityInfo) -> String {
         let encoded_info = info.encode();
@@ -700,18 +657,6 @@ impl Listener {
                 };
 
                 self.handle_subscription_request(internal_request, &incoming.network, subscriber)
-                    .await
-            }
-            "VerifyIdentity" => {
-                let verify_request: ChallengedAccount = serde_json::from_value(message.payload)
-                    .map_err(|e| anyhow!("Invalid VerifyIdentity payload: {}", e))?;
-
-                let internal_request = VerifyIdentityRequest {
-                    _type: "VerifyIdentity".to_string(),
-                    payload: verify_request,
-                };
-
-                self.handle_identity_verification_request(internal_request)
                     .await
             }
             _ => Err(anyhow!(
