@@ -17,18 +17,24 @@ const DNS_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// Verifies the presence of a TXT record in a domain's DNS entries
 pub async fn verify_txt(domain: &str, txt: &str) -> bool {
     let resolver = AsyncResolver::tokio(ResolverConfig::cloudflare_tls(), ResolverOpts::default());
-    match resolver.lookup(domain, RecordType::TXT).await {
-        Ok(response) => response
-            .iter()
-            .filter_map(|record| match record {
-                RData::TXT(txt_data) => Some(txt_data),
-                _ => None,
-            })
-            .flat_map(|txt_data| txt_data.iter())
-            .map(|bytes| String::from_utf8_lossy(bytes))
-            .any(|record| record == txt),
-        Err(_) => false,
-    }
+    
+    let lookup_result = match resolver.lookup(domain, RecordType::TXT).await {
+        Ok(response) => response,
+        Err(e) => {
+            error!("DNS lookup failed for domain {}: {}", domain, e);
+            return false;
+        }
+    };
+
+    lookup_result
+        .iter()
+        .filter_map(|record| match record {
+            RData::TXT(txt_data) => Some(txt_data),
+            _ => None,
+        })
+        .flat_map(|txt_data| txt_data.iter())
+        .map(|bytes| String::from_utf8_lossy(bytes))
+        .any(|record| record == txt)
 }
 
 struct DnsChallenge {
