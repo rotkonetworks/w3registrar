@@ -1,6 +1,8 @@
 use trust_dns_resolver::{AsyncResolver, config::{ResolverConfig, ResolverOpts}};
 use trust_dns_resolver::proto::rr::{RecordType, RData};
 
+pub sync fn watch_dns
+
 pub async fn verify_txt(domain: &str, txt: &str) -> bool {
     let resolver = AsyncResolver::tokio(ResolverConfig::cloudflare_tls(), ResolverOpts::default());
     match resolver.lookup(domain, RecordType::TXT).await {

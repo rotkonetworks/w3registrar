@@ -8,6 +8,7 @@ mod token;
 use crate::api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv};
 use crate::config::{Config, GLOBAL_CONFIG};
 use crate::email::watch_mailserver;
+use crate::adapter::dns::watch_dns;
 use tokio::time::Duration;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -95,6 +96,25 @@ async fn main() -> anyhow::Result<()> {
             info!("Spawning matrix bot...");
             if let Err(e) = matrix::start_bot().await {
                 error!("Matrix bot error: {}", e);
+            }
+        }));
+    }
+
+    // web query
+    let needs_web = config
+        .registrar
+        .networks
+        .values()
+        .any(|r| r.fields.contains(&"web".to_string()));
+
+    if needs_web {
+        handles.push(tokio::spawn(async move {
+            info!("Spawning DNS...");
+            if let Err(e) = watch_dns().await {
+                error!("DNS watcher error: {}", e);
+                return;
+            } else {
+                info!("DNS watcher is exiting");
             }
         }));
     }

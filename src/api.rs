@@ -667,6 +667,7 @@ impl Listener {
                 self.handle_subscription_request(internal_request, &incoming.network, subscriber)
                     .await
             }
+            // TODO: NotifyAccountState to send updates to frontend
             _ => Err(anyhow!(
                 "Unsupported message type: {}",
                 message.message_type
@@ -740,6 +741,8 @@ impl Listener {
         info!("registration: {:#?}", registration);
 
         Self::is_complete(&registration, &accounts)?;
+        // TODO: instead of using index 0 judgement search for our registrar judgement that its paid
+        // now if there is more than 1 judgement from other registrars I think this breaks
         Self::has_paid_fee(registration.judgements.0)?;
         Self::validate_account_types(&accounts, network_cfg)?;
 
@@ -790,6 +793,9 @@ impl Listener {
     ) -> anyhow::Result<(), anyhow::Error> {
         for acc in expected {
             let (stored_acc, expected_acc) = match acc {
+                Account::Email(email_acc) => {
+                    (identity_data_tostring(&registration.info.email), email_acc)
+                },
                 Account::Discord(discord_acc) => (
                     identity_data_tostring(&registration.info.discord),
                     discord_acc,
@@ -798,15 +804,17 @@ impl Listener {
                     identity_data_tostring(&registration.info.display),
                     display_name,
                 ),
+                // TODO: GITHUB
                 Account::Matrix(matrix_acc) => (
                     identity_data_tostring(&registration.info.matrix),
                     matrix_acc,
                 ),
+                // TODO: PGP
                 Account::Twitter(twit_acc) => {
                     (identity_data_tostring(&registration.info.twitter), twit_acc)
-                }
-                Account::Email(email_acc) => {
-                    (identity_data_tostring(&registration.info.email), email_acc)
+                },
+                Account::Web(web_acc) => {
+                    (identity_data_tostring(&registration.info.web), web_acc)
                 }
                 _ => todo!(),
             };
@@ -1470,8 +1478,6 @@ impl NodeListener {
     /// to `redis` as `done:false` otherwise, issue `Erroneous` judgement and save the registration
     /// request as `done:true`
     ///
-    /// # Note
-    /// For now, we only handle registration requests from `Matrix`, `Twitter` and `Discord`
     /// # TODO: remove this
     pub async fn handle_registration_request(
         conn: &mut RedisConnection,
