@@ -47,7 +47,7 @@ pub async fn verify(domain: &str, txt: &str) -> bool {
 }
 
 pub async fn verify_txt(domain: &str, challenge: &str) -> bool {
-    let resolver = AsyncResolver::tokio(ResolverConfig::cloudflare(), ResolverOpts::default());
+    let resolver = AsyncResolver::tokio(ResolverConfig::cloudflare_tls(), ResolverOpts::default());
     match lookup_txt_records(domain, &resolver).await {
         Ok(records) => {
             for record in &records {
