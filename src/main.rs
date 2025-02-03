@@ -4,6 +4,7 @@ mod email;
 mod matrix;
 mod node;
 mod token;
+mod adapter;
 
 use crate::api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv};
 use crate::config::{Config, GLOBAL_CONFIG};

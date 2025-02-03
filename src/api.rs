@@ -27,7 +27,6 @@ use tokio_tungstenite::WebSocketStream;
 use tracing::{debug, error, info, span, Level};
 
 use crate::{
-    adapter::dns,
     config::{RedisConfig, RegistrarConfig, GLOBAL_CONFIG},
     node::{
         self, filter_accounts,
@@ -513,14 +512,6 @@ where
 
 fn string_to_account_id(s: &str) -> anyhow::Result<AccountId32> {
     AccountId32::from_str(s).map_err(|e| anyhow!("Invalid account ID: {}", e))
-}
-
-pub async fn verify_web_challenge(account: &Account, token: &str) -> anyhow::Result<bool> {
-    match account {
-        // returns bool
-        Account::Web(domain) => dns::verify_txt(domain, token).await,
-        _ => Ok(false),
-    }
 }
 
 #[derive(Debug, Clone)]
