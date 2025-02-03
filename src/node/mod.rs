@@ -255,7 +255,11 @@ pub async fn filter_accounts(
     _reg_index: u32,
     network: &str,
 ) -> anyhow::Result<HashMap<Account, bool>> {
+    info!("Starting account filtering for {}", who);
+    
     let accounts = Account::into_accounts(info);
+    info!("Found accounts: {:?}", accounts);
+    
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
@@ -266,18 +270,22 @@ pub async fn filter_accounts(
         .ok_or_else(|| anyhow!("Network {} not configured", network))?;
 
     let supported = &network_cfg.fields;
+    info!("Supported fields for network {}: {:?}", network, supported);
 
     if accounts.is_empty() {
+        info!("No accounts found, providing Unknown judgment");
         provide_judgement(who, Judgement::Unknown, network).await?;
         return Ok(HashMap::new());
     }
 
     for account in &accounts {
         let account_type = account.account_type();
+        info!("Checking account type: {:?}", account_type);
         if !supported
             .iter()
             .any(|s| AccountType::from_str(s).ok() == Some(account_type))
         {
+            info!("Unsupported account type: {:?}", account_type);
             provide_judgement(who, Judgement::Erroneous, network).await?;
             return Ok(HashMap::new());
         }

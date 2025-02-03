@@ -188,20 +188,20 @@ impl fmt::Display for AccountType {
 }
 
 impl Account {
-    pub fn determine(&self) -> ValidationMode {
+pub fn determine(&self) -> ValidationMode {
         match self {
             // Direct: verified directly without user action
-            Account::Display(_) => ValidationMode::Direct, // onchain check that not empty/0x
+            Account::Display(_) => ValidationMode::Direct,
             // Inbound: receive challenge/callback via websocket
-            Account::Github(_) // TODO: oauth callback via ws/rest?
-            | Account::PGPFingerprint(_) => ValidationMode::Inbound, // not sure if hybrid(in/out)?
+            Account::Github(_) | Account::PGPFingerprint(_) => ValidationMode::Inbound,
             // Outbound: send challenge via websocket
-            Account::Discord(_) // ws out -> matrix read
-            | Account::Matrix(_) // ws out -> matrix read
-            | Account::Email(_) // ws out -> imap read
-            | Account::Twitter(_)// ws out -> matrix read
-            | Account::Web(_) => ValidationMode::Outbound, // ws_out -> read dns txt record
-            Account::Legal(_) => ValidationMode::Unsupported, // not planned
+            Account::Discord(_) |
+            Account::Matrix(_) |
+            Account::Email(_) |
+            Account::Twitter(_) |
+            Account::Web(_) => ValidationMode::Outbound,
+            // Unsupported
+            Account::Legal(_) => ValidationMode::Unsupported,
         }
     }
 
@@ -264,6 +264,7 @@ impl Account {
     }
 
     pub fn into_accounts(value: &IdentityInfo) -> Vec<Account> {
+        info!("Converting IdentityInfo into accounts: {:?}", value);
         let mut accounts = Vec::new();
 
         let mut add_if_some = |data: &IdentityData, constructor: fn(String) -> Account| {
