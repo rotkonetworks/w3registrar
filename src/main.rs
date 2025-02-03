@@ -1,15 +1,15 @@
+mod adapter;
 mod api;
 mod config;
 mod email;
 mod matrix;
 mod node;
 mod token;
-mod adapter;
 
+use crate::adapter::dns::watch_dns;
 use crate::api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv};
 use crate::config::{Config, GLOBAL_CONFIG};
 use crate::email::watch_mailserver;
-use crate::adapter::dns::watch_dns;
 use tokio::time::Duration;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;

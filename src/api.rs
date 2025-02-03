@@ -188,18 +188,18 @@ impl fmt::Display for AccountType {
 }
 
 impl Account {
-pub fn determine(&self) -> ValidationMode {
+    pub fn determine(&self) -> ValidationMode {
         match self {
             // Direct: verified directly without user action
             Account::Display(_) => ValidationMode::Direct,
             // Inbound: receive challenge/callback via websocket
             Account::Github(_) | Account::PGPFingerprint(_) => ValidationMode::Inbound,
             // Outbound: send challenge via websocket
-            Account::Discord(_) |
-            Account::Matrix(_) |
-            Account::Email(_) |
-            Account::Twitter(_) |
-            Account::Web(_) => ValidationMode::Outbound,
+            Account::Discord(_)
+            | Account::Matrix(_)
+            | Account::Email(_)
+            | Account::Twitter(_)
+            | Account::Web(_) => ValidationMode::Outbound,
             // Unsupported
             Account::Legal(_) => ValidationMode::Unsupported,
         }
@@ -787,7 +787,7 @@ impl Listener {
             let (stored_acc, expected_acc) = match acc {
                 Account::Email(email_acc) => {
                     (identity_data_tostring(&registration.info.email), email_acc)
-                },
+                }
                 Account::Discord(discord_acc) => (
                     identity_data_tostring(&registration.info.discord),
                     discord_acc,
@@ -804,10 +804,8 @@ impl Listener {
                 // TODO: PGP
                 Account::Twitter(twit_acc) => {
                     (identity_data_tostring(&registration.info.twitter), twit_acc)
-                },
-                Account::Web(web_acc) => {
-                    (identity_data_tostring(&registration.info.web), web_acc)
                 }
+                Account::Web(web_acc) => (identity_data_tostring(&registration.info.web), web_acc),
                 _ => todo!(),
             };
 

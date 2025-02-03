@@ -256,10 +256,10 @@ pub async fn filter_accounts(
     network: &str,
 ) -> anyhow::Result<HashMap<Account, bool>> {
     info!("Starting account filtering for {}", who);
-    
+
     let accounts = Account::into_accounts(info);
     info!("Found accounts: {:?}", accounts);
-    
+
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
