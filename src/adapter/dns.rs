@@ -1,6 +1,6 @@
 use crate::{api::RedisConnection, config::GLOBAL_CONFIG, node::register_identity};
 use anyhow::Result;
-use hickory_resolver::{
+use trust_dns_resolver::{
     config::{ResolverConfig, ResolverOpts},
     name_server::TokioConnectionProvider,
     AsyncResolver,
@@ -29,23 +29,6 @@ async fn lookup_txt_records(
         .map_err(|e| e.to_string())
 }
 
-pub async fn verify(domain: &str, txt: &str) -> bool {
-    let resolver = AsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
-    match lookup_txt_records(domain, &resolver).await {
-        Ok(records) => {
-            for record in &records {
-                println!("Record: {}", record);
-            }
-            println!("Challenge: {}", txt);
-            records.contains(&txt.to_string())
-        }
-        Err(err) => {
-            println!("Lookup failed for {}: {}", domain, err);
-            false
-        }
-    }
-}
-
 pub async fn verify_txt(domain: &str, challenge: &str) -> bool {
     let resolver = AsyncResolver::tokio(ResolverConfig::cloudflare_tls(), ResolverOpts::default());
     match lookup_txt_records(domain, &resolver).await {
@@ -56,7 +39,7 @@ pub async fn verify_txt(domain: &str, challenge: &str) -> bool {
             if records.contains(&challenge.to_string()) {
                 return true;
             }
-            info!("No matching TXT record found");
+            info!("No matching({}) TXT record found", &challenge.to_string());
             false
         }
         Err(err) => {
@@ -74,10 +57,7 @@ struct DnsChallenge {
 }
 
 impl DnsChallenge {
-    async fn from_key(key: &str) -> Result<Option<(Self, RedisConnection)>> {
-        let cfg = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG is not initialized");
-        let mut redis_conn = RedisConnection::create_conn(&cfg.redis)?;
-
+    async fn from_key(key: &str, redis_conn: &mut RedisConnection) -> Result<Option<Self>> {
         let parts: Vec<&str> = key.split('|').collect();
         if parts.len() != 4 {
             return Ok(None);
@@ -107,12 +87,12 @@ impl DnsChallenge {
             _ => return Ok(None),
         };
 
-        Ok(Some((Self {
+        Ok(Some(Self {
             domain,
             network,
             account_id,
             token,
-        }, redis_conn)))
+        }))
     }
 
     async fn verify(&self, redis_conn: &mut RedisConnection) -> Result<()> {
@@ -135,29 +115,29 @@ impl DnsChallenge {
 }
 
 pub async fn watch_dns() -> Result<()> {
+    let cfg = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG is not initialized");
+    let mut redis_conn = RedisConnection::create_conn(&cfg.redis)?;
+    
     loop {
-        if let Err(e) = process_challenges().await {
+        if let Err(e) = process_challenges(&mut redis_conn).await {
             error!("DNS challenge processing error: {}", e);
         }
         sleep(DNS_CHECK_INTERVAL).await;
     }
 }
 
-async fn process_challenges() -> Result<()> {
-    let cfg = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG is not initialized");
-    let mut redis_conn = RedisConnection::create_conn(&cfg.redis)?;
-
+async fn process_challenges(redis_conn: &mut RedisConnection) -> Result<()> {
     for challenge_key in redis_conn.search("web|*")? {
-        if let Err(e) = process_single_challenge(&challenge_key).await {
+        if let Err(e) = process_single_challenge(&challenge_key, redis_conn).await {
             error!("Challenge processing failed {}: {}", challenge_key, e);
         }
     }
     Ok(())
 }
 
-async fn process_single_challenge(challenge_key: &str) -> Result<()> {
-    if let Some((challenge, mut redis_conn)) = DnsChallenge::from_key(challenge_key).await? {
-        challenge.verify(&mut redis_conn).await?;
+async fn process_single_challenge(challenge_key: &str, redis_conn: &mut RedisConnection) -> Result<()> {
+    if let Some(challenge) = DnsChallenge::from_key(challenge_key, redis_conn).await? {
+        challenge.verify(redis_conn).await?;
     }
     Ok(())
 }

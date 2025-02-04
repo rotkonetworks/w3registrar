@@ -37,8 +37,8 @@ imap = "2.4.1"
 native-tls = "0.2.12"
 mail-parser = "0.10"
 regex = "1.11.1"
-# dns-over-rustls broken in hickory
-hickory-resolver = { version = "^0.24", features = ["dns-over-openssl"] }
+# hickory tls unstable, locking to trust-dns
+trust-dns-resolver = { version = "=0.23.2", features = ["dns-over-rustls"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
