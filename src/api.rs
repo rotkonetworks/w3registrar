@@ -301,19 +301,14 @@ impl FromStr for Account {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let matrix_regex =
-            Regex::new(r"@(?<name>\w+):(?<domain_name>\w+).(?<top_domain>\w+)").unwrap();
+        let matrix_regex = Regex::new(r"@(?<name>[a-z0-9][a-z0-9.=/-]*):(?<domain>(?:[a-zA-Z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?)").unwrap();
         info!("Determining that account {s} is a valid format...");
         match matrix_regex.captures(s) {
             Some(account) => {
                 info!("This {s} is a matrix account");
                 let acc_name: &str = &account["name"];
-                let domain_name: &str = &account["domain_name"];
-                let top_level: &str = &account["top_domain"];
-                return Ok(Self::Matrix(format!(
-                    "@{}:{}.{}",
-                    acc_name, domain_name, top_level
-                )));
+                let domain: &str = &account["domain"];
+                return Ok(Self::Matrix(format!("@{}:{}", acc_name, domain)));
             }
             None => {
                 let (account_type, value) = s
