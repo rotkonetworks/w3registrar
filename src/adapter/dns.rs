@@ -37,6 +37,7 @@ pub async fn verify_txt(domain: &str, challenge: &str) -> bool {
                 info!("Found {}:{}:{}", domain, challenge, record);
             }
             if records.contains(&challenge.to_string()) {
+                info!("TXT record verification successful for {}", domain);
                 return true;
             }
             info!("No matching({}) TXT record found", &challenge.to_string());
