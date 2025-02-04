@@ -1,3 +1,4 @@
+mod adapter;
 mod api;
 mod config;
 mod email;
@@ -5,6 +6,7 @@ mod matrix;
 mod node;
 mod token;
 
+use crate::adapter::dns::watch_dns;
 use crate::api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv};
 use crate::config::{Config, GLOBAL_CONFIG};
 use crate::email::watch_mailserver;
@@ -15,10 +17,9 @@ use tracing_subscriber::EnvFilter;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize logging
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| {
-            EnvFilter::new("info,matrix_sdk=warn,matrix_sdk_crypto=warn,matrix_sdk_base=warn")
-        });
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("info,matrix_sdk=warn,matrix_sdk_crypto=warn,matrix_sdk_base=warn")
+    });
 
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
@@ -96,6 +97,25 @@ async fn main() -> anyhow::Result<()> {
             info!("Spawning matrix bot...");
             if let Err(e) = matrix::start_bot().await {
                 error!("Matrix bot error: {}", e);
+            }
+        }));
+    }
+
+    // web query
+    let needs_web = config
+        .registrar
+        .networks
+        .values()
+        .any(|r| r.fields.contains(&"web".to_string()));
+
+    if needs_web {
+        handles.push(tokio::spawn(async move {
+            info!("Spawning DNS...");
+            if let Err(e) = watch_dns().await {
+                error!("DNS watcher error: {}", e);
+                return;
+            } else {
+                info!("DNS watcher is exiting");
             }
         }));
     }

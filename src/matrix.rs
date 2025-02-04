@@ -13,7 +13,10 @@ use matrix_sdk::{
         events::room::{
             create::RoomCreateEventContent,
             member::StrippedRoomMemberEvent,
-            message::{MessageType, OriginalSyncRoomMessageEvent, TextMessageEventContent, RoomMessageEventContent},
+            message::{
+                MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent,
+                TextMessageEventContent,
+            },
         },
     },
     Client,
@@ -189,7 +192,7 @@ async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client
     tokio::spawn(async move {
         const MAX_RETRY_DELAY: u64 = 16;
         const MAX_RETRIES: u32 = 3;
-        
+
         // early return if unable to determine DM status
         let is_dm = match room.is_direct().await {
             Ok(is_direct) => is_direct,
@@ -211,7 +214,7 @@ async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client
             match room.join().await {
                 Ok(_) => {
                     info!("Joined DM room {}", room.room_id());
-                    
+
                     if let Err(e) = room
                         .send(RoomMessageEventContent::text_plain(
                             "Please submit your verification challenge.",
@@ -307,7 +310,10 @@ async fn handle_incoming(
     acc: Account,
     text_content: &TextMessageEventContent,
 ) -> anyhow::Result<()> {
-    info!("\nMatrix Message\nSender: {:#?}\nMessage: {}\nRaw Content: {:#?}", acc, text_content.body, text_content);
+    info!(
+        "\nMatrix Message\nSender: {:#?}\nMessage: {}\nRaw Content: {:#?}",
+        acc, text_content.body, text_content
+    );
     let cfg = GLOBAL_CONFIG.get().unwrap();
     let redis_cfg = cfg.redis.clone();
     let mut redis_connection = RedisConnection::create_conn(&redis_cfg)?;

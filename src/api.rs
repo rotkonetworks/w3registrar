@@ -38,8 +38,7 @@ use crate::{
         },
         Client as NodeClient,
     },
-    token::AuthToken,
-    token::Token,
+    token::{AuthToken, Token},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,16 +191,16 @@ impl Account {
     pub fn determine(&self) -> ValidationMode {
         match self {
             // Direct: verified directly without user action
-            Account::Display(_) // onchain check that not empty/0x
-            | Account::Web(_) => ValidationMode::Direct, // dig/dns record query
+            Account::Display(_) => ValidationMode::Direct,
             // Inbound: receive challenge/callback via websocket
-            Account::Github(_) // oauth callback ws/rest?
-            | Account::PGPFingerprint(_) => ValidationMode::Inbound, // not sure if direct?
+            Account::Github(_) | Account::PGPFingerprint(_) => ValidationMode::Inbound,
             // Outbound: send challenge via websocket
-            Account::Discord(_) // ws out -> matrix read
-            | Account::Matrix(_) // ws out -> matrix read
-            | Account::Email(_) // ws out -> imap read
-            | Account::Twitter(_) => ValidationMode::Outbound, // ws out -> matrix read
+            Account::Discord(_)
+            | Account::Matrix(_)
+            | Account::Email(_)
+            | Account::Twitter(_)
+            | Account::Web(_) => ValidationMode::Outbound,
+            // Unsupported
             Account::Legal(_) => ValidationMode::Unsupported,
         }
     }
@@ -265,6 +264,7 @@ impl Account {
     }
 
     pub fn into_accounts(value: &IdentityInfo) -> Vec<Account> {
+        info!("Converting IdentityInfo into accounts: {:?}", value);
         let mut accounts = Vec::new();
 
         let mut add_if_some = |data: &IdentityData, constructor: fn(String) -> Account| {
@@ -329,7 +329,7 @@ impl FromStr for Account {
                 return Ok(Self::from_type_and_value(
                     account_type,
                     value.trim().to_owned(),
-                ))
+                ));
             }
         }
     }
@@ -634,49 +634,6 @@ impl Listener {
         }))
     }
 
-    pub async fn handle_identity_verification_request(
-        &self,
-        request: VerifyIdentityRequest,
-    ) -> anyhow::Result<serde_json::Value> {
-        let account_id = string_to_account_id(&request.payload.account)?;
-        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
-
-        let state = conn
-            .get_verification_state("rococo", &account_id)
-            .await?
-            .ok_or_else(|| anyhow!("No verification state found"))?;
-
-        let acc_type = request.payload.field.to_string();
-        let challenge = state
-            .challenges
-            .get(&acc_type)
-            .ok_or_else(|| anyhow!("No challenge found for {}", acc_type))?;
-
-        match &challenge.token {
-            Some(token) if token == &request.payload.challenge => {
-                // Mark challenge as complete
-                conn.update_challenge_status("rococo", &account_id, &acc_type)
-                    .await?;
-
-                Ok(serde_json::json!({
-                    "type": "ok",
-                    "message": true,
-                }))
-            }
-            Some(token) => Ok(serde_json::json!({
-                "type": "error",
-                "reason": format!(
-                    "{} is not equal to the challenge token",
-                    token
-                ),
-            })),
-            None => Ok(serde_json::json!({
-                "type": "error",
-                "reason": "No active challenge found"
-            })),
-        }
-    }
-
     /// Generates a hex-encoded blake2 hash of the identity info with 0x prefix
     fn hash_identity_info(&self, info: &IdentityInfo) -> String {
         let encoded_info = info.encode();
@@ -702,18 +659,7 @@ impl Listener {
                 self.handle_subscription_request(internal_request, &incoming.network, subscriber)
                     .await
             }
-            "VerifyIdentity" => {
-                let verify_request: ChallengedAccount = serde_json::from_value(message.payload)
-                    .map_err(|e| anyhow!("Invalid VerifyIdentity payload: {}", e))?;
-
-                let internal_request = VerifyIdentityRequest {
-                    _type: "VerifyIdentity".to_string(),
-                    payload: verify_request,
-                };
-
-                self.handle_identity_verification_request(internal_request)
-                    .await
-            }
+            // TODO: NotifyAccountState to send updates to frontend
             _ => Err(anyhow!(
                 "Unsupported message type: {}",
                 message.message_type
@@ -787,6 +733,8 @@ impl Listener {
         info!("registration: {:#?}", registration);
 
         Self::is_complete(&registration, &accounts)?;
+        // TODO: instead of using index 0 judgement search for our registrar judgement that its paid
+        // now if there is more than 1 judgement from other registrars I think this breaks
         Self::has_paid_fee(registration.judgements.0)?;
         Self::validate_account_types(&accounts, network_cfg)?;
 
@@ -837,6 +785,9 @@ impl Listener {
     ) -> anyhow::Result<(), anyhow::Error> {
         for acc in expected {
             let (stored_acc, expected_acc) = match acc {
+                Account::Email(email_acc) => {
+                    (identity_data_tostring(&registration.info.email), email_acc)
+                }
                 Account::Discord(discord_acc) => (
                     identity_data_tostring(&registration.info.discord),
                     discord_acc,
@@ -845,16 +796,16 @@ impl Listener {
                     identity_data_tostring(&registration.info.display),
                     display_name,
                 ),
+                // TODO: GITHUB
                 Account::Matrix(matrix_acc) => (
                     identity_data_tostring(&registration.info.matrix),
                     matrix_acc,
                 ),
+                // TODO: PGP
                 Account::Twitter(twit_acc) => {
                     (identity_data_tostring(&registration.info.twitter), twit_acc)
                 }
-                Account::Email(email_acc) => {
-                    (identity_data_tostring(&registration.info.email), email_acc)
-                }
+                Account::Web(web_acc) => (identity_data_tostring(&registration.info.web), web_acc),
                 _ => todo!(),
             };
 
@@ -1517,8 +1468,6 @@ impl NodeListener {
     /// to `redis` as `done:false` otherwise, issue `Erroneous` judgement and save the registration
     /// request as `done:true`
     ///
-    /// # Note
-    /// For now, we only handle registration requests from `Matrix`, `Twitter` and `Discord`
     /// # TODO: remove this
     pub async fn handle_registration_request(
         conn: &mut RedisConnection,
