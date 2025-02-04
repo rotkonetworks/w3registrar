@@ -64,10 +64,10 @@ pub struct RegistrarConfig {
 }
 
 impl Config {
-
     /// Set the [GLOBAL_CONFIG] global variable and return an instance(clone) of it
     pub fn set_global_config() -> anyhow::Result<Config> {
-        let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
+        let config_path =
+            std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
         let config = Config::load_from(&config_path)?;
         GLOBAL_CONFIG
             .set(config.clone())

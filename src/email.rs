@@ -225,30 +225,6 @@ impl MailServer {
         .map_err(|_| anyhow!("Timeout during login"))?
         .expect("Unable to login!");
 
-        // for debugging print last mail
-        //session
-        //    .select(email_cfg.mailbox.clone())
-        //    .expect("Unable to select mailbox");
-        //
-        //let msgs = session.search("ALL")?;
-        //if let Some(max_uid) = msgs.iter().max() {
-        //    // If there's at least one message, we try to fetch & parse it
-        //    let fetches = session.uid_fetch(format!("{}", max_uid), "RFC822")?;
-        //    if let Some(msg) = fetches.get(0) {
-        //        let parsed = mail_parser::MessageParser::default()
-        //            .parse(msg.body().unwrap_or_default())
-        //            .unwrap_or_default();
-        //        let from = parsed.return_address().unwrap_or("(no sender)").to_string();
-        //        let subject = parsed.subject().unwrap_or("(no subject)").to_string();
-        //        info!(
-        //            "Last email in mailbox => from: {}, subject: {}",
-        //            from, subject
-        //        );
-        //    }
-        //} else {
-        //    info!("No messages found in mailbox.");
-        //}
-
         info!("Sucessfull login to mail account {}", email_cfg.email);
 
         Ok(Self {
