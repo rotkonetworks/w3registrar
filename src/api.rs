@@ -1801,23 +1801,16 @@ impl RedisConnection {
     ) -> anyhow::Result<()> {
         self.save_state(network, account_id, state).await?;
         let mut pipe = redis::pipe();
-        for (acc_type, info) in state.challenges.clone() {
-            let pipe = pipe.cmd("SET");
-            // TODO: deal with this clowns
-            let acc_key = match acc_type.as_str() {
-                "discord" => Account::Discord(info.name.clone()),
-                "twitter" => Account::Twitter(info.name.clone()),
-                "web" => Account::Web(info.name.clone()),
-                "github" => Account::Github(info.name.clone()),
-                "email" => Account::Email(info.name.clone()),
-                "legal" => Account::Legal(info.name.clone()),
-                "matrix" => Account::Matrix(info.name.clone()),
-                "pgp_fingerprint" => todo!(),
-                _ => unreachable!(),
-            };
+
+        for (acc_type, info) in state.challenges.iter() {
+            let account_type = AccountType::from_str(acc_type)?;
+            let acc_key = Account::from_type_and_value(account_type, info.name.clone());
             let key = format!("{}|{}|{}", acc_key, network, account_id);
-            pipe.arg(&key).arg(&serde_json::to_string(&info)?);
+            pipe.cmd("SET")
+                .arg(&key)
+                .arg(&serde_json::to_string(&info)?);
         }
+
         pipe.exec(&mut self.conn)?;
         Ok(())
     }
