@@ -39,38 +39,50 @@ impl Mail {
     /// * `account_id` - The account ID being verified
     /// * `network` - The network identifier (e.g., "polkadot", "kusama")
     async fn handle_content_(
-        // TOOO: refactor this use same trait with matrix?
         &self,
         redis_connection: &mut RedisConnection,
         account_id: &AccountId32,
         network: &str,
     ) -> anyhow::Result<()> {
         let account_type = AccountType::Email.to_string();
+
         let state = match redis_connection
             .get_verification_state(network, account_id)
             .await?
         {
             Some(state) => state,
-            None => return Ok(()),
+            None => {
+                info!(
+                    "No verification state found for {} on {}",
+                    account_id, network
+                );
+                return Ok(());
+            }
         };
         info!("Verification state: {:?}", state);
 
-        // TODO: hardcoded?
         let challenge = match state.challenges.get(&account_type) {
             Some(challenge) => challenge,
-            None => return Ok(()),
+            None => {
+                info!("No email challenge found in state");
+                return Ok(());
+            }
         };
         info!("Challenge: {:?}", challenge);
 
         if challenge.done {
+            info!("Challenge already completed");
             return Ok(());
         }
 
         let token = match &challenge.token {
             Some(token) => token,
-            None => return Ok(()),
+            None => {
+                info!("No token found in challenge");
+                return Ok(());
+            }
         };
-        info!("Token: {:?}", token);
+        info!("Expected token: {:?}", token);
 
         let body_token = self
             .body
@@ -78,10 +90,18 @@ impl Mail {
             .and_then(|b| b.lines().next())
             .map(|l| l.trim().to_owned());
 
+        info!("Received email body: {:?}", self.body);
+        info!("Extracted token from email: {:?}", body_token);
+
         if body_token.ne(&Some(token.to_owned())) {
-            info!("Wrong token, got {:?} but expected {:?}", self.body, token);
+            info!(
+                "Token mismatch - Expected: {:?}, Got: {:?}",
+                token, body_token
+            );
             return Ok(());
         }
+
+        info!("Token matched! Updating challenge status..");
 
         redis_connection
             .update_challenge_status(network, account_id, &account_type)
@@ -95,27 +115,26 @@ impl Mail {
             None => return Ok(()),
         };
 
-        // how this will change if we aready instanced the state?
         if state.all_done {
             info!("All challenges are done!");
             let judgement_result = register_identity(account_id, network).await?;
             info!("Judgement result: {:?}", judgement_result);
         }
-        return Ok(());
+        Ok(())
     }
 
     /// Entry point for processing incoming emails
-    /// Looks up associated accounts and delegates to handle_content_ for verification
+    /// Uses a single Redis connection for processing all accounts
     async fn handle_content(&self, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
         let account = Account::Email(self.sender.clone());
-
         let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
+
         // <<type>|<name>>|<network>|<wallet_id>
-        let search_querry = format!("{}|*", account);
-        let accounts = redis_connection.search(&search_querry)?;
+        let search_query = format!("{}|*", account);
+        let accounts = redis_connection.search(&search_query)?;
 
         if accounts.is_empty() {
-            info!("No account found for {}", search_querry);
+            info!("No account found for {}", search_query);
             return Ok(());
         }
 
@@ -127,10 +146,9 @@ impl Mail {
             }
 
             let network = info[2];
-            // let account = Account::from_str(&format!("{}|{}", info[0], info[1]))?;
             let id = info[3];
             if let Ok(wallet_id) = AccountId32::from_str(id) {
-                // TODO: make the network name enum instead of str
+                // reuse the same redis connection for each account
                 self.handle_content_(&mut redis_connection, &wallet_id, network)
                     .await?;
             }
@@ -247,13 +265,16 @@ impl MailServer {
             .select(self.mailbox.clone())
             .expect("Unable to select mailbox");
         info!("Selected mailbox `{}`", self.mailbox);
+
+        info!("Checking existing emails on startup...");
+        self.check_mailbox().await?;
+
         loop {
             if let Err(e) = self.check_mailbox().await {
                 error!("Error reading mailbox: {}", e);
                 return Err(anyhow!(e));
             }
         }
-        Ok(())
     }
 
     /// Marks an email as seen and removes it from the unread queue
@@ -267,14 +288,38 @@ impl MailServer {
     /// Retrieves and parses an email message by its ID
     /// Extracts sender address and message body
     async fn get_mail(&mut self, id: u32) -> anyhow::Result<Mail> {
-        let mail = self.session.uid_fetch(format!("{}", id), "RFC822")?;
-        let mail = mail.get(0).expect("smth went wrong uwu");
+        info!("Attempting to fetch mail with UID {}", id);
+
+        let fetched_mails = self.session.fetch(format!("{}", id), "RFC822")?;
+        if fetched_mails.is_empty() {
+            info!("No mail found with MSN {}, trying UID fetch", id);
+            let fetched_mails = self.session.uid_fetch(format!("{}", id), "RFC822")?;
+            if fetched_mails.is_empty() {
+                return Err(anyhow!("No mail found with either MSN or UID {}", id));
+            }
+        }
+
+        let mail = fetched_mails
+            .get(0)
+            .ok_or_else(|| anyhow!("Fetch succeeded but returned empty result for {}", id))?;
+
         let parsed = mail_parser::MessageParser::default()
             .parse(mail.body().unwrap_or_default())
-            .unwrap_or_default();
-        let address = parsed.return_address().unwrap().to_string();
-        let x = parsed.body_text(0).map(|body| body.to_string());
-        Ok(Mail::new(address, x))
+            .ok_or_else(|| anyhow!("Failed to parse mail content"))?;
+
+        let address = parsed
+            .return_address()
+            .ok_or_else(|| anyhow!("No return address found"))?
+            .to_string();
+
+        let body = parsed.body_text(0).map(|body| body.to_string());
+
+        info!(
+            "Successfully fetched and parsed mail {} from {}",
+            id, address
+        );
+
+        Ok(Mail::new(address, body))
     }
 
     /// Polls mailbox for new unread messages and processes them
@@ -282,25 +327,68 @@ impl MailServer {
     async fn check_mailbox(&mut self) -> anyhow::Result<()> {
         let idle_handle = self.session.idle()?;
         info!("Waiting for incoming mails...");
-        match idle_handle.wait() {
-            Ok(()) => {
-                info!("Recived a mail!");
-                let mail_id = self.session.search("UNSEEN")?;
-                for id in mail_id {
-                    let mail = self.get_mail(id).await?;
-                    self.flag_seen(id).await?;
-                    info!(
-                        "\nEmail Message\nSender: {}\nMessage: {}\nRaw Mail: {:#?}",
-                        mail.sender,
-                        mail.body.as_deref().unwrap_or("(no content)"),
-                        mail
-                    );
-                    mail.handle_content(&self.redis_cfg).await?;
-                }
-                return Ok(());
-            }
-            Err(e) => return Err(anyhow!("Error waiting for mail: {}", e)),
+
+        idle_handle
+            .wait()
+            .map_err(|e| anyhow!("IMAP IDLE error: {}", e))?;
+        info!("Received new mail notification");
+
+        let search_date = (chrono::Utc::now() - chrono::Duration::hours(1))
+            .format("%d-%b-%Y")
+            .to_string();
+
+        let recent_ids = self
+            .session
+            .search(&format!("SENTSINCE {}", search_date))
+            .map_err(|e| anyhow!("IMAP search failed: {}", e))?;
+
+        if recent_ids.is_empty() {
+            info!("No emails in the last hour");
+            return Ok(());
         }
+
+        info!("Found {} recent emails", recent_ids.len());
+
+        // process one email at a time
+        for id in recent_ids {
+            info!("Fetching email ID: {}", id);
+            match self.get_mail(id).await {
+                Ok(mail) => {
+                    info!(
+                        "Got mail from: {}, Content: {:?}",
+                        mail.sender,
+                        mail.body.as_deref().unwrap_or("(no content)")
+                    );
+
+                    match mail.handle_content(&self.redis_cfg).await {
+                        Ok(_) => info!("Successfully processed mail from {}", mail.sender),
+                        Err(e) => error!("Failed to process mail content: {}", e),
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to get mail {}: {}", id, e);
+                }
+            }
+        }
+
+        info!("Finished processing email batch");
+        Ok(())
+    }
+
+    /// a mail parser
+    async fn parse_mail(&mut self, mail: &imap::types::Fetch) -> anyhow::Result<Mail> {
+        let parsed = mail_parser::MessageParser::default()
+            .parse(mail.body().unwrap_or_default())
+            .ok_or_else(|| anyhow!("Failed to parse mail content"))?;
+
+        let address = parsed
+            .return_address()
+            .ok_or_else(|| anyhow!("No return address found"))?
+            .to_string();
+
+        let body = parsed.body_text(0).map(|body| body.to_string());
+
+        Ok(Mail::new(address, body))
     }
 }
 
