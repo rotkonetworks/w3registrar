@@ -17,7 +17,7 @@ jobs:
       SERVER_USER: root
       SERVER_HOST: 157.90.237.17
       SERVER_PORT: 22
-      DEPLOY_PATH: /home/w3registrar/backend
+      DEPLOY_PATH: /root/w3registrar/backend
       BACKEND_SERVICE_NAME: w3registrar-backend
       REDIS_SERVICE_NAME: w3registrar-redis
     steps:
