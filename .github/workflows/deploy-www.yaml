@@ -14,65 +14,31 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event.inputs.confirm_deploy == 'DEPLOY'
     env:
-      SERVER_USER: root
+      SERVER_USER: w3reg
       SERVER_HOST: 157.90.237.17
       SERVER_PORT: 22
-      DEPLOY_PATH: /root/w3registrar/backend
+      DEPLOY_PATH: /home/w3reg/w3registrar/backend
       BACKEND_SERVICE_NAME: w3registrar-backend
       REDIS_SERVICE_NAME: w3registrar-redis
     steps:
       # NOTE: for using latest binary
-      # - name: Setup SSH
-      #   run: |
-      #     mkdir -p ~/.ssh
-      #     echo "${{ secrets.WWW_SSH_KEY }}" > ~/.ssh/id_ed25519
-      #     chmod 600 ~/.ssh/id_ed25519
-      #     ssh-keyscan -p ${{ env.SERVER_PORT }} ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
-
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-gnu
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            protobuf-compiler \
-            cmake \
-            pkg-config \
-            clang \
-            llvm \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu
-
-      - name: Build binary
-        run: |
-          cargo build --release --target aarch64-unknown-linux-gnu
-          ls -la target/aarch64-unknown-linux-gnu/release/
-
-      - name: Deploy binary to server
+      - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          echo "${{ secrets.WWW_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p ${{ env.SERVER_PORT }} ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
-          rsync -avz -e "ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }}" \
-            target/aarch64-unknown-linux-gnu/release/w3registrar ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/${{ env.BACKEND_SERVICE_NAME }}
 
         # NOTE: pulling latest binary releases, need to provide for aarch64 procie
-      # - name: Deploy binary to server
-      #   run: |
-      #     ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
-      #     curl -s https://api.github.com/repos/rotkonetworks/w3registrar/releases/latest \
-      #       | jq -r '.assets[] | select(.name == "w3registrar-linux-amd64") | .browser_download_url' \
-      #       | xargs curl -LO
-      #     chmod +x w3registrar-linux-amd64
-      #     mv w3registrar-linux-amd64 ${{ env.DEPLOY_PATH }}/w3registrar-backend
-      #     EOF
+      - name: Deploy binary to server
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
+          curl -s https://api.github.com/repos/rotkonetworks/w3registrar/releases/latest \
+            | jq -r '.assets[] | select(.name == "w3registrar-linux-aarch64") | .browser_download_url' \
+            | xargs curl -LO
+          chmod +x w3registrar-linux-amd64
+          mv w3registrar-linux-amd64 ${{ env.DEPLOY_PATH }}/w3registrar-backend
+          EOF
 
       - name: Restart service
         run: |
