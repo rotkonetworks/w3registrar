@@ -13,6 +13,7 @@ use crate::config::{Config, GLOBAL_CONFIG};
 use crate::email::watch_mailserver;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -73,14 +74,22 @@ async fn main() -> anyhow::Result<()> {
         runner
             .push(tokio::spawn(async move {
                 info!("Spawning mailserver...");
-                if let Err(e) = watch_mailserver().await {
-                    error!("Mailserver watcher error: {}", e);
-                    return;
-                } else {
-                    info!("Mailserver watcher is exiting");
+                loop {
+                    match watch_mailserver().await {
+                        Ok(_) => {
+                            error!("Mailserver watcher exited unexpectedly");
+                        }
+                        Err(e) => {
+                            error!("Mailserver watcher error: {}", e);
+                        }
+                    }
+
+                    // wait before attempting to restart
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    info!("Attempting to restart mailserver watcher...");
                 }
             }))
-            .await;
+        .await;
     }
 
     // matrix bot (spawn only once if *any* network needs matrix/discord/twitter)

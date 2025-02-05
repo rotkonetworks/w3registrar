@@ -1,5 +1,5 @@
 use tokio::task::JoinHandle;
-use tracing::info;
+use tracing::{info,error};
 /// NOTE: I hate how short this file is
 
 #[derive(Default)]
@@ -22,8 +22,19 @@ impl Runner {
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 std::process::exit(0);
             }
-            _ = futures::future::join_all(self.handlers) => {
-                info!("All services completed");
+            result = futures::future::join_all(self.handlers) => {
+                // check if any tasks failed
+                let failed_tasks: Vec<_> = result
+                    .into_iter()
+                    .filter(|r| r.is_err())
+                    .collect();
+
+                if !failed_tasks.is_empty() {
+                    error!("{} tasks failed - system needs restart", failed_tasks.len());
+                    std::process::exit(1);
+                } else {
+                    info!("All services completed successfully");
+                }
             }
         }
     }
