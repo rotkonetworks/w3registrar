@@ -3,6 +3,9 @@ RUN apk add --no-cache \
     musl-dev \
     openssl-dev \
     openssl-libs-static \
+    sqlite-dev \
+    sqlite-libs \
+    sqlite-static \
     git
 
 RUN git config --global net.git-fetch-with-cli true
