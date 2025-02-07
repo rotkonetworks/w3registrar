@@ -40,19 +40,26 @@ jobs:
           username: ${{ env.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
           source: "w3registrar.tar"
-          target: ${{ env.DEPLOY_PATH }}/w3registrar-dapi.tar
+          target: ${{ env.DEPLOY_PATH }}
 
-      - name: Deploy on Remote Server
+      - name: Install SSH Key
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p ${{ env.SERVER_PORT }} ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
-          scp .keyfile.example ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/.keyfile
-          scp dockers/docker-compose-dev.yaml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/docker-compose.yaml
+          ssh-keyscan -t ed25519 ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Copied config files to host
+        run: |
+          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} .keyfile.example ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/.keyfile
+          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} dockers/docker-compose-dev.yaml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/docker-compose.yaml
+
+      - name: Deploy on Remote Server
+        run: |
           ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
-            docker load -i ${{ env.DEPLOY_PATH }}/w3registrar-dapi.tar
+            docker load -i ${{ env.DEPLOY_PATH }}/w3registrar.tar
             docker compose -f ./docker-compose.yaml up -d
           EOF
