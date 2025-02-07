@@ -3,16 +3,17 @@ services:
     image: redis:7-alpine
     container_name: redis-dev
     ports:
-      - "46379:6379"
+      - "127.0.0.1:46379:6379"
     volumes:
       - redis_data:/data
     networks:
-      - w3r_network
+      - w3r_dev_network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 3
+    command: ["redis-server", "--bind", "0.0.0.0"] 
 
   w3registrar:
     container_name: w3registrar-dev
@@ -20,8 +21,10 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    ports:
+      - "48080:8080"
     networks:
-      - w3r_network
+      - w3r_dev_network
     volumes:
       - ./config.toml:/etc/w3registrar/config.toml:ro
       - ./.keyfile:/etc/w3registrar/keyfile:ro
@@ -41,5 +44,5 @@ volumes:
   redis_data:
 
 networks:
-  w3r_network:
+  w3r_dev_network:
     driver: bridge
