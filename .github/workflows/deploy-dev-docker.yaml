@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-and-deploy:
-    name: Build and Deploy docker to DAPI
+    name: Build and Deploy DAPI docker
     runs-on: ubuntu-latest
     env:
       SERVER_USER: w3reg
@@ -29,12 +29,6 @@ jobs:
           docker build -t w3registrar:dev .
           docker save w3registrar:dev -o w3registrar.tar
 
-      # - name: Upload Docker image as an artifact
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: w3registrar-dapi-image
-      #     path: w3registrar.tar
-
       - name: Transfer Docker image to remote server
         uses: appleboy/scp-action@v0.1.4
         with:
@@ -52,18 +46,42 @@ jobs:
           ssh-keyscan -t ed25519 ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-      - name: Copied keyfile files to host
+      - name: Create Required files
+        env:
+          CONFIG_CONTENT: ${{ secrets.CONFIG_DAPI_DOCKER }}
+          KEYFILE_ROCOCO: ${{ secrets.KEYFILE_ROCOCO }}
+          KEYFILE_PASEO: ${{ secrets.KEYFILE_PASEO }}
         run: |
-          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} .keyfile.example ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/.keyfile
+          # Create and transfer config and keyfiles securely on the remote server
+          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << 'EOF'
+            set -euo pipefail
+            cd ${{ env.DEPLOY_PATH }}
+            
+            # Create config.toml
+            cat > config.docker.toml << 'CONFIGEND'
+            $CONFIG_CONTENT
+            CONFIGEND
+            chmod 600 config.toml
+            
+            # Create .keyfile.rococo
+            cat > .keyfile.rococo << 'ROCOCOEND'
+            $KEYFILE_ROCOCO
+            ROCOCOEND
+            chmod 600 .keyfile.rococo
+            
+            # Create .keyfile.paseo
+            cat > .keyfile.paseo << 'PASEOEND'
+            $KEYFILE_PASEO
+            PASEOEND
+            chmod 600 .keyfile.paseo
+          EOF
 
       - name: Deploy on Remote Server
         run: |
           ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
-            # Stop and remove existing containers
-            docker compose -f ./docker-compose.yaml down
-            # Remove old images to free up space
+            docker compose -f ./docker-compose.yaml down || true
             docker image rm w3registrar:dev || true
           EOF
 
@@ -72,7 +90,6 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
-            # Load new image and start containers
             docker load -i ${{ env.DEPLOY_PATH }}/w3registrar.tar
             docker compose -f ./docker-compose.yaml up -d
           EOF
