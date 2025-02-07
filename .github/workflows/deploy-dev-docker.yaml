@@ -62,6 +62,17 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
+            
+            # Stop and remove existing containers
+            docker compose -f ./docker-compose.yaml down
+            
+            # Remove old images to free up space
+            docker image rm w3registrar:dev || true
+            
+            # Load new image and start containers
             docker load -i ${{ env.DEPLOY_PATH }}/w3registrar.tar
             docker compose -f ./docker-compose.yaml up -d
+            
+            # Clean up old dangling images
+            docker image prune -f
           EOF
