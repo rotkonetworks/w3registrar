@@ -1,21 +1,21 @@
-# deploy-dev-docker.yaml (DAPI)
-name: Deploy DAPI with dockers
+# deploy-staging-docker.yaml (SAPI)
+name: Deploy SAPI with dockers
 
 on:
-  pull_request:
+  push:
     branches:
       - main
 
 jobs:
   build-and-deploy:
-    name: Build and Deploy DAPI docker
+    name: Build and Deploy SAPI docker
     runs-on: ubuntu-latest
     env:
       SERVER_USER: w3reg
       SERVER_HOST: 135.181.202.179
       SERVER_PORT: 22
-      DEPLOY_PATH: /home/w3reg/dapi.w3reg.org
-      SERVICE_NAME: w3registrar-dapi
+      DEPLOY_PATH: /home/w3reg/sapi.w3reg.org
+      SERVICE_NAME: w3registrar-sapi
 
     steps:
       - name: Checkout repository
@@ -26,8 +26,8 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t w3registrar:dev .
-          docker save w3registrar:dev -o w3registrar.tar
+          docker build -t w3registrar:staging .
+          docker save w3registrar:staging -o w3registrar.tar
 
       - name: Transfer Docker image to remote server
         uses: appleboy/scp-action@v0.1.4
@@ -56,10 +56,10 @@ jobs:
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
             docker compose -f ./docker-compose.yaml down || true
-            docker image rm w3registrar:dev || true
+            docker image rm w3registrar:staging || true
           EOF
 
-          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} dockers/docker-compose-dev.yaml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/docker-compose.yaml
+          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} dockers/docker-compose-staging.yaml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/docker-compose.yaml
             
           ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
             set -euo pipefail
