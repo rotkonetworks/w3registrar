@@ -16,7 +16,7 @@ services:
     command: ["redis-server", "--bind", "0.0.0.0"] 
 
   w3registrar:
-    container_name: w3registrar-dev
+    container_name: dapi-w3registrar
     image: w3registrar:dev
     depends_on:
       redis:

@@ -1,5 +1,5 @@
 # deploy-dev-docker.yaml (DAPI)
-name: Deploy w3registrar with dockers
+name: Deploy DAPI with dockers
 
 on:
   pull_request:
@@ -52,27 +52,27 @@ jobs:
           ssh-keyscan -t ed25519 ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-      - name: Copied config files to host
+      - name: Copied keyfile files to host
         run: |
           scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} .keyfile.example ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/.keyfile
-          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} dockers/docker-compose-dev.yaml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/docker-compose.yaml
 
       - name: Deploy on Remote Server
         run: |
           ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
-            
             # Stop and remove existing containers
             docker compose -f ./docker-compose.yaml down
-            
             # Remove old images to free up space
             docker image rm w3registrar:dev || true
+          EOF
+
+          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} dockers/docker-compose-dev.yaml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/docker-compose.yaml
             
+          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
+            set -euo pipefail
+            cd ${{ env.DEPLOY_PATH }}
             # Load new image and start containers
             docker load -i ${{ env.DEPLOY_PATH }}/w3registrar.tar
             docker compose -f ./docker-compose.yaml up -d
-            
-            # Clean up old dangling images
-            docker image prune -f
           EOF
