@@ -1,0 +1,58 @@
+# deploy-dev.yaml (DAPI)
+name: Deploy w3registrar with dockers
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy docker to DAPI
+    runs-on: ubuntu-latest
+    env:
+      SERVER_USER: w3reg
+      SERVER_HOST: 135.181.202.179
+      SERVER_PORT: 22
+      DEPLOY_PATH: /home/w3reg/dapi.w3reg.org
+      SERVICE_NAME: w3registrar-dapi
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          docker build -t w3registrar:dev .
+          docker save w3registrar:dev -o w3registrar.tar
+
+      # - name: Upload Docker image as an artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: w3registrar-dapi-image
+      #     path: w3registrar.tar
+
+      - name: Transfer Docker image to remote server
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ env.SERVER_HOST }}
+          username: ${{ env.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          source: "w3registrar.tar"
+          target: ${{ env.DEPLOY_PATH }}/w3registrar-dapi.tar
+
+      - name: Deploy on Remote Server
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p ${{ env.SERVER_PORT }} ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+          scp .keyfile.example ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/.keyfile
+          scp dockers/docker-compose-dev.yaml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/docker-compose.yaml
+          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
+            set -euo pipefail
+            cd ${{ env.DEPLOY_PATH }}
+            docker load -i ${{ DEPLOY_PATH }}/w3registrar-dapi.tar
+            docker compose -f ./docker-compose.yaml up -d
+          EOF
