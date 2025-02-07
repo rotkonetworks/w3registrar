@@ -24,23 +24,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image
-        run: |
-          docker build -t w3registrar:prod .
-          docker save w3registrar:prod -o w3registrar.tar
-
-      - name: Transfer Docker image to remote server
-        uses: appleboy/scp-action@v0.1.4
-        with:
-          host: ${{ env.SERVER_HOST }}
-          username: ${{ env.SERVER_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          source: "w3registrar.tar"
-          target: ${{ env.DEPLOY_PATH }}
-
       - name: Install SSH Key
         run: |
           mkdir -p ~/.ssh
@@ -60,13 +43,6 @@ jobs:
             cd ${{ env.DEPLOY_PATH }}
             docker compose -f ./docker-compose.yaml down || true
             docker image rm w3registrar:prod || true
-          EOF
-
-          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} dockers/docker-compose-prod.yaml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/docker-compose.yaml
-            
-          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
-            set -euo pipefail
-            cd ${{ env.DEPLOY_PATH }}
-            docker load -i ${{ env.DEPLOY_PATH }}/w3registrar.tar
+            docker tag w3registrar:staging w3registrar:prod
             docker compose -f ./docker-compose.yaml up -d
           EOF
