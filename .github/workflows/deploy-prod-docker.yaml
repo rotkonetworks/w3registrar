@@ -38,29 +38,26 @@ jobs:
           KEYFILE_ROCOCO: ${{ secrets.KEYFILE_ROCOCO }}
           KEYFILE_PASEO: ${{ secrets.KEYFILE_PASEO }}
         run: |
-          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << 'EOF'
+          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
             
-            # Create config.toml
-            cat > config.docker.toml << 'CONFIGEND'
-            $CONFIG_CONTENT
+            cat > config.docker.toml << CONFIGEND
+            ${CONFIG_CONTENT}
             CONFIGEND
             
-            # Create .keyfile.rococo
-            cat > .keyfile.rococo << 'ROCOCOEND'
-            $KEYFILE_ROCOCO
+            cat > .keyfile.rococo << ROCOCOEND
+            ${KEYFILE_ROCOCO}
             ROCOCOEND
             
-            # Create .keyfile.paseo
-            cat > .keyfile.paseo << 'PASEOEND'
-            $KEYFILE_PASEO
+            cat > .keyfile.paseo << PASEOEND
+            ${KEYFILE_PASEO}
             PASEOEND
           EOF
 
       - name: Deploy on Remote Server
         run: |
-          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << 'EOF'
+          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
             docker compose -f ./docker-compose.yaml down || true
