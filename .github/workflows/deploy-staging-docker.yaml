@@ -48,16 +48,13 @@ jobs:
 
       - name: Create Required files
         env:
-          CONFIG_CONTENT: ${{ secrets.CONFIG_SAPI_DOCKER }}
-          KEYFILE_ROCOCO: ${{ secrets.KEYFILE_ROCOCO }}
-          KEYFILE_PASEO: ${{ secrets.KEYFILE_PASEO }}
         run: |
           ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
-            cat ${CONFIG_CONTENT} > config.docker.toml 
-            cat ${KEYFILE_ROCOCO} > .keyfile.rococo 
-            cat ${KEYFILE_PASEO} > .keyfile.paseo 
+            cat ${{ secrets.CONFIG_DAPI_DOCKER }} > config.docker.toml 
+            cat ${{ secrets.KEYFILE_ROCOCO }} > .keyfile.rococo 
+            cat ${{ secrets.KEYFILE_PASEO }} > .keyfile.paseo 
           EOF
 
       - name: Deploy on Remote Server
