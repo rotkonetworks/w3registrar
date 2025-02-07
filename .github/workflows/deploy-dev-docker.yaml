@@ -52,7 +52,6 @@ jobs:
           KEYFILE_ROCOCO: ${{ secrets.KEYFILE_ROCOCO }}
           KEYFILE_PASEO: ${{ secrets.KEYFILE_PASEO }}
         run: |
-          # Create and transfer config and keyfiles securely on the remote server
           ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << 'EOF'
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}

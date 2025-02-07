@@ -26,15 +26,16 @@ services:
     networks:
       - w3r_staging_network
     volumes:
-      - ./config.toml:/etc/w3registrar/config.toml:ro
-      - ./.keyfile:/etc/w3registrar/keyfile:ro
+      - ./config.docker.toml:/etc/w3registrar/config.toml:ro
+      - ./.keyfile.rococo:/etc/w3registrar/.keyfile.rococo:ro
+      - ./.keyfile.paseo:/etc/w3registrar/.keyfile.paseo:ro
     environment:
       - CONFIG_PATH=/etc/w3registrar/config.toml
       - RUST_LOG=info
       - KEYFILE_PATH=/etc/w3registrar/keyfile
     healthcheck:
       test:
-        [ "CMD-SHELL", "test -f /etc/w3registrar/config.toml && test -f /etc/w3registrar/keyfile", ]
+        [ "CMD-SHELL", "test -f /etc/w3registrar/config.toml && test -f /etc/w3registrar/.keyfile.rococo && test -f /etc/w3registrar/.keyfile.paseo", ]
       interval: 10s
       timeout: 5s
       retries: 3
