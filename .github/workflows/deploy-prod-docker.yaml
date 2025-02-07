@@ -1,0 +1,72 @@
+# deploy-prod-docker.yaml (API)
+name: Deploy API with dockers
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_deploy:
+        description: 'Are you sure you want to deploy to production? (type "DEPLOY" to confirm)'
+        required: true
+        type: string
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy API docker
+    runs-on: ubuntu-latest
+    env:
+      SERVER_USER: w3reg
+      SERVER_HOST: 135.181.202.179
+      SERVER_PORT: 22
+      DEPLOY_PATH: /home/w3reg/api.w3reg.org
+      SERVICE_NAME: w3registrar-api
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          docker build -t w3registrar:prod .
+          docker save w3registrar:prod -o w3registrar.tar
+
+      - name: Transfer Docker image to remote server
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ env.SERVER_HOST }}
+          username: ${{ env.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          source: "w3registrar.tar"
+          target: ${{ env.DEPLOY_PATH }}
+
+      - name: Install SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519 ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Copied keyfile files to host
+        run: |
+          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} .keyfile.example ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/.keyfile
+
+      - name: Deploy on Remote Server
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
+            set -euo pipefail
+            cd ${{ env.DEPLOY_PATH }}
+            docker compose -f ./docker-compose.yaml down || true
+            docker image rm w3registrar:prod || true
+          EOF
+
+          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} dockers/docker-compose-prod.yaml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/docker-compose.yaml
+            
+          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
+            set -euo pipefail
+            cd ${{ env.DEPLOY_PATH }}
+            docker load -i ${{ env.DEPLOY_PATH }}/w3registrar.tar
+            docker compose -f ./docker-compose.yaml up -d
+          EOF
