@@ -53,6 +53,6 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
-            docker load -i ${{ DEPLOY_PATH }}/w3registrar-dapi.tar
+            docker load -i ${{ env.DEPLOY_PATH }}/w3registrar-dapi.tar
             docker compose -f ./docker-compose.yaml up -d
           EOF
