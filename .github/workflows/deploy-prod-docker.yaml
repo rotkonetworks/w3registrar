@@ -32,10 +32,6 @@ jobs:
           ssh-keyscan -t ed25519 ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-      - name: Copied keyfile files to host
-        run: |
-          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} .keyfile.example ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/.keyfile
-
       - name: Deploy on Remote Server
         run: |
           ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
