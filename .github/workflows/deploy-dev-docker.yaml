@@ -55,18 +55,9 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
-            
-            cat > config.docker.toml << CONFIGEND
-            ${CONFIG_CONTENT}
-            CONFIGEND
-            
-            cat > .keyfile.rococo << ROCOCOEND
-            ${KEYFILE_ROCOCO}
-            ROCOCOEND
-            
-            cat > .keyfile.paseo << PASEOEND
-            ${KEYFILE_PASEO}
-            PASEOEND
+            cat ${CONFIG_CONTENT} > config.docker.toml 
+            cat ${KEYFILE_ROCOCO} > .keyfile.rococo 
+            cat ${KEYFILE_PASEO} > .keyfile.paseo 
           EOF
 
       - name: Deploy on Remote Server
