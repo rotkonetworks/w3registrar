@@ -13,6 +13,7 @@ jobs:
   build-and-deploy:
     name: Build and Deploy API docker
     runs-on: ubuntu-latest
+    if: github.event.inputs.confirm_deploy == 'DEPLOY'
     env:
       SERVER_USER: w3reg
       SERVER_HOST: 135.181.202.179
