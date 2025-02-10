@@ -37,7 +37,6 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Create Required files
-        env:
         run: |
           echo "${{ secrets.CONFIG_API_DOCKER }}" | base64 -d > config.docker.toml
           echo "${{ secrets.KEYFILE_ROCOCO }}" > .keyfile.rococo 
