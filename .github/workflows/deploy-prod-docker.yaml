@@ -1,45 +1,32 @@
-# deploy-dev-docker.yaml (DAPI)
-name: Deploy DAPI with dockers
+# deploy-prod-docker.yaml (API)
+name: Deploy API with dockers
 
 on:
-  pull_request:
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      confirm_deploy:
+        description: 'Are you sure you want to deploy to production? (type "DEPLOY" to confirm)'
+        required: true
+        type: string
 
 jobs:
   build-and-deploy:
-    name: Build and Deploy DAPI docker
+    name: Build and Deploy API docker
     runs-on: ubuntu-latest
+    if: github.event.inputs.confirm_deploy == 'DEPLOY'
     env:
       SERVER_USER: w3reg
       SERVER_HOST: 135.181.202.179
       SERVER_PORT: 22
-      DEPLOY_PATH: /home/w3reg/dapi.w3reg.org
-      SERVICE_NAME: w3registrar-dapi
-      VERSION_TAG: dev
-      REDIS_PORT: 46379
-      W3REG_PORT: 38080
+      DEPLOY_PATH: /home/w3reg/api.w3reg.org
+      SERVICE_NAME: w3registrar-api
+      VERSION_TAG: prod
+      REDIS_PORT: 16379
+      W3REG_PORT: 18080
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image
-        run: |
-          docker build -t w3registrar:${{ env.VERSION_TAG }} .
-          docker save w3registrar:${{ env.VERSION_TAG }} -o w3registrar.tar
-
-      - name: Transfer Docker image to remote server
-        uses: appleboy/scp-action@v0.1.4
-        with:
-          host: ${{ env.SERVER_HOST }}
-          username: ${{ env.SERVER_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          source: "w3registrar.tar"
-          target: ${{ env.DEPLOY_PATH }}
 
       - name: Install SSH Key
         run: |
@@ -50,8 +37,9 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Create Required files
+        env:
         run: |
-          echo "${{ secrets.CONFIG_DAPI_DOCKER }}" | base64 -d > config.docker.toml
+          echo "${{ secrets.CONFIG_API_DOCKER }}" | base64 -d > config.docker.toml
           echo "${{ secrets.KEYFILE_ROCOCO }}" > .keyfile.rococo 
           echo "${{ secrets.KEYFILE_PASEO }}" > .keyfile.paseo
           scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} config.docker.toml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}
@@ -64,11 +52,11 @@ jobs:
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
             docker compose -f ./docker-compose.yaml down || true
-            docker image rm w3registrar:${{ env.VERSION_TAG }} || true
+            docker image rm w3registrar:prod || true
           EOF
 
           scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} docker-compose.yaml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/docker-compose.yaml
-            
+
           ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
@@ -76,6 +64,6 @@ jobs:
             echo "VERSION_TAG=${{ env.VERSION_TAG }}" >> .env
             echo "REDIS_PORT=${{ env.REDIS_PORT }}" >> .env
             echo "W3REG_PORT=${{ env.W3REG_PORT }}" >> .env
-            docker load -i ${{ env.DEPLOY_PATH }}/w3registrar.tar
+            docker tag w3registrar:staging w3registrar:prod
             docker compose -f ./docker-compose.yaml up -d
           EOF

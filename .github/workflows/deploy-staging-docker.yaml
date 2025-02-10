@@ -1,24 +1,24 @@
-# deploy-dev-docker.yaml (DAPI)
-name: Deploy DAPI with dockers
+# deploy-staging-docker.yaml (SAPI)
+name: Deploy SAPI with dockers
 
 on:
-  pull_request:
+  push:
     branches:
       - main
 
 jobs:
   build-and-deploy:
-    name: Build and Deploy DAPI docker
+    name: Build and Deploy SAPI docker
     runs-on: ubuntu-latest
     env:
       SERVER_USER: w3reg
       SERVER_HOST: 135.181.202.179
       SERVER_PORT: 22
-      DEPLOY_PATH: /home/w3reg/dapi.w3reg.org
-      SERVICE_NAME: w3registrar-dapi
-      VERSION_TAG: dev
-      REDIS_PORT: 46379
-      W3REG_PORT: 38080
+      DEPLOY_PATH: /home/w3reg/sapi.w3reg.org
+      SERVICE_NAME: w3registrar-sapi
+      VERSION_TAG: staging
+      REDIS_PORT: 26379
+      W3REG_PORT: 28080
 
     steps:
       - name: Checkout repository
@@ -50,8 +50,9 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Create Required files
+        env:
         run: |
-          echo "${{ secrets.CONFIG_DAPI_DOCKER }}" | base64 -d > config.docker.toml
+          echo "${{ secrets.CONFIG_SAPI_DOCKER }}" | base64 -d > config.docker.toml
           echo "${{ secrets.KEYFILE_ROCOCO }}" > .keyfile.rococo 
           echo "${{ secrets.KEYFILE_PASEO }}" > .keyfile.paseo
           scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} config.docker.toml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}
