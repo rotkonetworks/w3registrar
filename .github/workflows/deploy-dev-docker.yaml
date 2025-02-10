@@ -5,6 +5,7 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   build-and-deploy:
@@ -16,6 +17,9 @@ jobs:
       SERVER_PORT: 22
       DEPLOY_PATH: /home/w3reg/dapi.w3reg.org
       SERVICE_NAME: w3registrar-dapi
+      VERSION_TAG: dev
+      REDIS_PORT: 46379
+      W3REG_PORT: 38080
 
     steps:
       - name: Checkout repository
@@ -26,8 +30,8 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t w3registrar:dev .
-          docker save w3registrar:dev -o w3registrar.tar
+          docker build -t w3registrar:${{ env.VERSION_TAG }} .
+          docker save w3registrar:${{ env.VERSION_TAG }} -o w3registrar.tar
 
       - name: Transfer Docker image to remote server
         uses: appleboy/scp-action@v0.1.4
@@ -48,7 +52,7 @@ jobs:
 
       - name: Create Required files
         run: |
-          echo "${{ secrets.CONFIG_DAPI_DOCKER }}" > config.docker.toml 
+          echo "${{ secrets.CONFIG_DAPI_DOCKER }}" | base64 -d > config.docker.toml
           echo "${{ secrets.KEYFILE_ROCOCO }}" > .keyfile.rococo 
           echo "${{ secrets.KEYFILE_PASEO }}" > .keyfile.paseo
           scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} config.docker.toml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}
@@ -61,14 +65,18 @@ jobs:
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
             docker compose -f ./docker-compose.yaml down || true
-            docker image rm w3registrar:dev || true
+            docker image rm w3registrar:${{ env.VERSION_TAG }} || true
           EOF
 
-          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} dockers/docker-compose-dev.yaml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/docker-compose.yaml
+          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} docker-compose.yaml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/docker-compose.yaml
             
           ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
             set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
+            echo "SERVICE_NAME=${{ env.SERVICE_NAME }}" > .env
+            echo "VERSION_TAG=${{ env.VERSION_TAG }}" >> .env
+            echo "REDIS_PORT=${{ env.REDIS_PORT }}" >> .env
+            echo "W3REG_PORT=${{ env.W3REG_PORT }}" >> .env
             docker load -i ${{ env.DEPLOY_PATH }}/w3registrar.tar
             docker compose -f ./docker-compose.yaml up -d
           EOF

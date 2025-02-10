@@ -1,8 +1,9 @@
 services:
   redis:
     image: redis:7-alpine
+    container_name: redis-${VERSION_TAG}
     ports:
-      - "6379:6379"
+      - "127.0.0.1:${REDIS_PORT}:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -12,25 +13,29 @@ services:
       interval: 5s
       timeout: 3s
       retries: 3
+    command: ["redis-server", "--bind", "0.0.0.0"] 
 
   w3registrar:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    container_name: ${SERVICE_NAME}
+    image: w3registrar:${VERSION_TAG}
     depends_on:
       redis:
         condition: service_healthy
+    ports:
+      - "${W3REG_PORT}:8080"
     networks:
       - w3r_network
     volumes:
-      - ./config.toml:/etc/w3registrar/config.toml:ro
-      - ./.keyfile:/etc/w3registrar/keyfile:ro
+      - ./config.docker.toml:/etc/w3registrar/config.toml:ro
+      - ./.keyfile.rococo:/etc/w3registrar/.keyfile.rococo:ro
+      - ./.keyfile.paseo:/etc/w3registrar/.keyfile.paseo:ro
     environment:
       - CONFIG_PATH=/etc/w3registrar/config.toml
       - RUST_LOG=info
       - KEYFILE_PATH=/etc/w3registrar/keyfile
     healthcheck:
-      test: ["CMD-SHELL", "test -f /etc/w3registrar/config.toml && test -f /etc/w3registrar/keyfile"]
+      test:
+        [ "CMD-SHELL", "test -f /etc/w3registrar/config.toml && test -f /etc/w3registrar/.keyfile.rococo && test -f /etc/w3registrar/.keyfile.paseo", ]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -41,4 +46,5 @@ volumes:
 
 networks:
   w3r_network:
+    name: w3r_${VERSION_TAG}_network
     driver: bridge
