@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 echo "Creating SubscribeAccountState payload..."
 
@@ -14,6 +14,9 @@ SUBSCRIBE_MSG=$(cat << EOF | jq -c .
 }
 EOF
 )
+#WS_URL="ws://135.181.202.179:18080"
+WS_URL="wss://api.w3reg.org"
+#WS_URL="wss://sapi.w3reg.org"
 
 test_websocket() {
     local message=$1
@@ -23,7 +26,7 @@ test_websocket() {
     while [ $attempt -le $max_attempts ]; do
         echo "Attempt $attempt to connect..."
         # Use websocket client mode with explicit text framing
-        response=$(echo "$message" | websocat --text ws://127.0.0.1:8080)
+        response=$(echo "$message" | websocat --text $WS_URL)
         if [ $? -eq 0 ]; then
             echo "Connection successful!"
 

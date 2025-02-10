@@ -2,6 +2,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: redis-${VERSION_TAG}
+    restart: always
     ports:
       - "127.0.0.1:${REDIS_PORT}:6379"
     volumes:
@@ -16,8 +17,9 @@ services:
     command: ["redis-server", "--bind", "0.0.0.0"] 
 
   w3registrar:
-    container_name: ${SERVICE_NAME}
     image: w3registrar:${VERSION_TAG}
+    container_name: ${SERVICE_NAME}
+    restart: always
     depends_on:
       redis:
         condition: service_healthy
@@ -26,20 +28,15 @@ services:
     networks:
       - w3r_network
     volumes:
-      - ./config.docker.toml:/etc/w3registrar/config.toml:ro
-      - ./.keyfile.rococo:/etc/w3registrar/.keyfile.rococo:ro
-      - ./.keyfile.paseo:/etc/w3registrar/.keyfile.paseo:ro
+      - ${CONFIG_PATH:-./config.docker.toml}:/etc/w3registrar/config.toml:ro
+      - ${KEYFILE_POLKADOT:-./keyfile.polkadot}:/etc/w3registrar/.keyfile.polkadot:ro
+      - ${KEYFILE_KUSAMA:-./keyfile.kusama}:/etc/w3registrar/.keyfile.kusama:ro
+      - ${KEYFILE_PASEO:-./keyfile.paseo}:/etc/w3registrar/.keyfile.paseo:ro
+      - ${KEYFILE_ROCOCO:-./keyfile.rococo}:/etc/w3registrar/.keyfile.rococo:ro
     environment:
       - CONFIG_PATH=/etc/w3registrar/config.toml
       - RUST_LOG=info
       - KEYFILE_PATH=/etc/w3registrar/keyfile
-    healthcheck:
-      test:
-        [ "CMD-SHELL", "test -f /etc/w3registrar/config.toml && test -f /etc/w3registrar/.keyfile.rococo && test -f /etc/w3registrar/.keyfile.paseo", ]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
 
 volumes:
   redis_data:
