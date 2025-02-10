@@ -7,7 +7,7 @@ services:
     volumes:
       - redis_data:/data
     networks:
-      - w3r_${VERSION_TAG}_network
+      - w3r_network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -24,7 +24,7 @@ services:
     ports:
       - "${W3REG_PORT}:8080"
     networks:
-      - w3r_${VERSION_TAG}_network
+      - w3r_network
     volumes:
       - ./config.docker.toml:/etc/w3registrar/config.toml:ro
       - ./.keyfile.rococo:/etc/w3registrar/.keyfile.rococo:ro
@@ -45,5 +45,6 @@ volumes:
   redis_data:
 
 networks:
-  w3r_${VERSION_TAG}_network:
+  w3r_network:
+    name: w3r_${VERSION_TAG}_network
     driver: bridge
