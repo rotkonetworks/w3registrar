@@ -19,7 +19,7 @@ jobs:
       SERVER_PORT: 22
       DEPLOY_PATH: /home/w3reg/api.w3reg.org
       SERVICE_NAME: w3registrar-api
-      VERSION_TAG: staging
+      VERSION_TAG: prod
       REDIS_PORT: 16379
       W3REG_PORT: 18080
 
