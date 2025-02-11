@@ -23,6 +23,7 @@ jobs:
       VERSION_TAG: prod
       REDIS_PORT: 16379
       W3REG_PORT: 18080
+      CONFIG_PATH: ./config.docker.toml
 
     steps:
       - name: Checkout repository
@@ -67,6 +68,7 @@ jobs:
             echo "VERSION_TAG=${{ env.VERSION_TAG }}" >> .env
             echo "REDIS_PORT=${{ env.REDIS_PORT }}" >> .env
             echo "W3REG_PORT=${{ env.W3REG_PORT }}" >> .env
+            echo "CONFIG_PATH=${{ env.CONFIG_PATH }}" >> .env
             docker tag w3registrar:staging w3registrar:prod
             docker compose -f ./docker-compose.yaml up -d
           EOF

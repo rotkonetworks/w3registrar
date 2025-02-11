@@ -33,7 +33,7 @@ services:
     networks:
       - w3r_network
     volumes:
-      - ${CONFIG_PATH:-./config.docker.toml}:/etc/w3registrar/config.toml:ro
+      - ${CONFIG_PATH:-./config.toml}:/etc/w3registrar/config.toml:ro
       - ${KEYFILE:-./keyfile}:/etc/w3registrar:ro
     environment:
       - CONFIG_PATH=/etc/w3registrar/config.toml
