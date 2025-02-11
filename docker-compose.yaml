@@ -28,11 +28,11 @@ services:
     networks:
       - w3r_network
     volumes:
-      - ${CONFIG_PATH:-./config.docker.toml}:/etc/w3registrar/config.toml:ro
-      - ${KEYFILE_POLKADOT:-./keyfile.polkadot}:/etc/w3registrar/.keyfile.polkadot:ro
-      - ${KEYFILE_KUSAMA:-./keyfile.kusama}:/etc/w3registrar/.keyfile.kusama:ro
-      - ${KEYFILE_PASEO:-./keyfile.paseo}:/etc/w3registrar/.keyfile.paseo:ro
-      - ${KEYFILE_ROCOCO:-./keyfile.rococo}:/etc/w3registrar/.keyfile.rococo:ro
+      - ${CONFIG_PATH:-/.config.docker.toml}:/etc/w3registrar/config.toml:ro
+      - ${KEYFILE_POLKADOT:-/.keyfile.polkadot}:/etc/w3registrar/.keyfile.polkadot:ro
+      - ${KEYFILE_KUSAMA:-/.keyfile.kusama}:/etc/w3registrar/.keyfile.kusama:ro
+      - ${KEYFILE_PASEO:-/.keyfile.paseo}:/etc/w3registrar/.keyfile.paseo:ro
+      - ${KEYFILE_ROCOCO:-/.keyfile.rococo}:/etc/w3registrar/.keyfile.rococo:ro
     environment:
       - CONFIG_PATH=/etc/w3registrar/config.toml
       - RUST_LOG=info
