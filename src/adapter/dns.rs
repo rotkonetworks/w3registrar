@@ -127,7 +127,7 @@ impl DnsChallenge {
     }
 }
 
-pub async fn watch_dns() -> Result<()> {
+pub async fn watch_dns() -> anyhow::Result<()> {
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");

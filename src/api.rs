@@ -1544,7 +1544,8 @@ impl Default for VerificationFields {
     }
 }
 
-pub async fn spawn_redis_subscriber(redis_cfg: RedisConfig) -> anyhow::Result<()> {
+pub async fn spawn_redis_subscriber() -> anyhow::Result<()> {
+    let redis_cfg = GLOBAL_CONFIG.get().unwrap().redis.clone();
     let span = span!(Level::INFO, "redis_subscriber");
     info!(parent: &span, "Starting Redis subscriber service");
 
