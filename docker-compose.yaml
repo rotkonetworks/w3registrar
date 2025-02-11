@@ -1,10 +1,10 @@
 services:
   redis:
     image: redis:7-alpine
-    container_name: redis-${VERSION_TAG}
+    container_name: redis-${VERSION_TAG:-prod}
     restart: always
     ports:
-      - "127.0.0.1:${REDIS_PORT}:6379"
+      - "127.0.0.1:${REDIS_PORT:-16379}:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -17,22 +17,24 @@ services:
     command: ["redis-server", "--bind", "0.0.0.0"] 
 
   w3registrar:
-    image: w3registrar:${VERSION_TAG}
-    container_name: ${SERVICE_NAME}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      tags:
+        - "w3registrar:${VERSION_TAG:-prod}"
+    image: w3registrar:${VERSION_TAG:-prod}
+    container_name: ${SERVICE_NAME:-w3registrar}
     restart: always
     depends_on:
       redis:
         condition: service_healthy
     ports:
-      - "${W3REG_PORT}:8080"
+      - "${W3REG_PORT:-18080}:8080"
     networks:
       - w3r_network
     volumes:
       - ${CONFIG_PATH:-./config.docker.toml}:/etc/w3registrar/config.toml:ro
-      - ${KEYFILE_POLKADOT:-./.keyfile.polkadot}:/etc/w3registrar/.keyfile.polkadot:ro
-      - ${KEYFILE_KUSAMA:-./.keyfile.kusama}:/etc/w3registrar/.keyfile.kusama:ro
-      - ${KEYFILE_PASEO:-./.keyfile.paseo}:/etc/w3registrar/.keyfile.paseo:ro
-      - ${KEYFILE_ROCOCO:-./.keyfile.rococo}:/etc/w3registrar/.keyfile.rococo:ro
+      - ${KEYFILE:-./keyfile}:/etc/w3registrar:ro
     environment:
       - CONFIG_PATH=/etc/w3registrar/config.toml
       - RUST_LOG=info
@@ -43,5 +45,5 @@ volumes:
 
 networks:
   w3r_network:
-    name: w3r_${VERSION_TAG}_network
+    name: w3r_${VERSION_TAG:-prod}_network
     driver: bridge

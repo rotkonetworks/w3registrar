@@ -57,10 +57,10 @@ jobs:
           echo "${{ secrets.KEYFILE_ROCOCO }}" > .keyfile.rococo
           echo "${{ secrets.KEYFILE_PASEO }}" > .keyfile.paseo
           scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} config.docker.toml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}
-          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} .keyfile.polkadot ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}
-          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} .keyfile.kusama ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}
-          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} .keyfile.rococo ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}
-          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} .keyfile.paseo ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}
+          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} .keyfile.polkadot ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/keyfile
+          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} .keyfile.kusama ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/keyfile
+          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} .keyfile.rococo ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/keyfile
+          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} .keyfile.paseo ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/keyfile
 
       - name: Deploy on Remote Server
         run: |
