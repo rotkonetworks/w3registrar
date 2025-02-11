@@ -14,7 +14,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 3
-    command: ["redis-server", "--bind", "0.0.0.0"] 
+    command: ["redis-server", "--bind", "0.0.0.0"]
 
   w3registrar:
     build:
@@ -34,7 +34,7 @@ services:
       - w3r_network
     volumes:
       - ${CONFIG_PATH:-./config.toml}:/etc/w3registrar/config.toml:ro
-      - ${KEYFILE:-./keyfile}:/etc/w3registrar:ro
+      - ${KEYFILE:-./keyfile}:/etc/w3registrar/keyfile:ro
     environment:
       - CONFIG_PATH=/etc/w3registrar/config.toml
       - RUST_LOG=info
