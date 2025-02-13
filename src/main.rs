@@ -11,9 +11,8 @@ use crate::adapter::dns::watch_dns;
 use crate::api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv};
 use crate::config::{Config, GLOBAL_CONFIG};
 use crate::email::watch_mailserver;
-use tracing::{error, info};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
-use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -33,35 +32,9 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting services...");
     let mut runner = runner::Runner::default();
 
-    runner
-        .push(tokio::spawn({
-            let redis_config = config.redis.clone();
-            async move {
-                if let Err(e) = spawn_redis_subscriber(redis_config).await {
-                    error!("Redis subscriber error: {}", e);
-                }
-            }
-        }))
-        .await;
-
-    // init node connections
-    runner
-        .push(tokio::spawn(async move {
-            info!("Spawning node listener...");
-            if let Err(e) = spawn_node_listener().await {
-                error!("Node listener error: {}", e);
-            }
-        }))
-        .await;
-
-    runner
-        .push(tokio::spawn(async move {
-            info!("Spawning websocket server...");
-            if let Err(e) = spawn_ws_serv().await {
-                error!("WebSocket server error: {}", e);
-            }
-        }))
-        .await;
+    runner.push(spawn_redis_subscriber).await;
+    runner.push(spawn_node_listener).await;
+    runner.push(spawn_ws_serv).await;
 
     // mail watcher
     let needs_email = config
@@ -71,25 +44,7 @@ async fn main() -> anyhow::Result<()> {
         .any(|r| r.fields.contains(&"email".to_string()));
 
     if needs_email {
-        runner
-            .push(tokio::spawn(async move {
-                info!("Spawning mailserver...");
-                loop {
-                    match watch_mailserver().await {
-                        Ok(_) => {
-                            error!("Mailserver watcher exited unexpectedly");
-                        }
-                        Err(e) => {
-                            error!("Mailserver watcher error: {}", e);
-                        }
-                    }
-
-                    // wait before attempting to restart
-                    tokio::time::sleep(Duration::from_secs(30)).await;
-                    info!("Attempting to restart mailserver watcher...");
-                }
-            }))
-        .await;
+        runner.push(watch_mailserver).await;
     }
 
     // matrix bot (spawn only once if *any* network needs matrix/discord/twitter)
@@ -100,14 +55,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     if needs_matrix_bot {
-        runner
-            .push(tokio::spawn(async move {
-                info!("Spawning matrix bot...");
-                if let Err(e) = matrix::start_bot().await {
-                    error!("Matrix bot error: {}", e);
-                }
-            }))
-            .await;
+        runner.push(matrix::start_bot).await;
     }
 
     // web query
@@ -118,17 +66,7 @@ async fn main() -> anyhow::Result<()> {
         .any(|r| r.fields.contains(&"web".to_string()));
 
     if needs_web {
-        runner
-            .push(tokio::spawn(async move {
-                info!("Spawning DNS...");
-                if let Err(e) = watch_dns().await {
-                    error!("DNS watcher error: {}", e);
-                    return;
-                } else {
-                    info!("DNS watcher is exiting");
-                }
-            }))
-            .await;
+        runner.push(watch_dns).await;
     }
 
     runner.run().await;

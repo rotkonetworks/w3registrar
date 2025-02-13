@@ -1,5 +1,7 @@
+use std::future::Future;
+
 use tokio::task::JoinHandle;
-use tracing::{info,error};
+use tracing::{error, info};
 /// NOTE: I hate how short this file is
 
 #[derive(Default)]
@@ -8,9 +10,27 @@ pub struct Runner {
 }
 
 impl Runner {
+    /// Neat wrapper around [tokio::spawn]
+    async fn spawn<F, Fut>(spawner: F) -> JoinHandle<()>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = anyhow::Result<()>> + Send,
+    {
+        tokio::spawn(async move {
+            info!("Spawning listener...");
+            if let Err(e) = spawner().await {
+                error!("listener error: {}", e);
+            }
+        })
+    }
+
     /// Push a job to the queue
-    pub async fn push(&mut self, handler: JoinHandle<()>) {
-        self.handlers.push(handler);
+    pub async fn push<F, Fut>(&mut self, handler: F)
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = anyhow::Result<()>> + Send,
+    {
+        self.handlers.push(Self::spawn(handler).await);
     }
 
     /// Run jobs, Ctr-C for gracefully shutdown
