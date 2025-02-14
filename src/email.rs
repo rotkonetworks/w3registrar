@@ -6,6 +6,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use crate::{
+    adapter::Adapter,
     api::{Account, AccountType, RedisConnection},
     config::RedisConfig,
     node::register_identity,
@@ -24,6 +25,8 @@ pub struct Mail {
     pub body: Option<String>,
     pub sender: String,
 }
+
+impl Adapter for Mail {}
 
 impl Mail {
     /// Creates a new Mail instance with the given sender and optional body
@@ -125,7 +128,7 @@ impl Mail {
 
     /// Entry point for processing incoming emails
     /// Uses a single Redis connection for processing all accounts
-    async fn handle_content(&self, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
+    async fn handle_content__(&self, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
         let account = Account::Email(self.sender.clone());
         let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
 
@@ -149,8 +152,16 @@ impl Mail {
             let id = info[3];
             if let Ok(wallet_id) = AccountId32::from_str(id) {
                 // reuse the same redis connection for each account
-                self.handle_content_(&mut redis_connection, &wallet_id, network)
-                    .await?;
+                let text = self
+                    .body
+                    .as_ref()
+                    .and_then(|b| b.lines().next())
+                    .map(|l| l.trim().to_owned())
+                    .unwrap();
+                Self::handle_content(&text, &mut redis_connection, network, &wallet_id, &account)
+                    .await;
+                // self.handle_content_(&mut redis_connection, &wallet_id, network)
+                //     .await?;
             }
         }
         Ok(())
@@ -336,7 +347,7 @@ impl MailServer {
                         mail.body.as_deref().unwrap_or("(no content)")
                     );
 
-                    match mail.handle_content(&self.redis_cfg).await {
+                    match mail.handle_content__(&self.redis_cfg).await {
                         Ok(_) => info!("Successfully processed mail from {}", mail.sender),
                         Err(e) => error!("Failed to process mail content: {}", e),
                     }

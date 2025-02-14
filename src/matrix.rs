@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::config::MatrixConfig;
+use crate::{adapter::Adapter, config::MatrixConfig};
 use matrix_sdk::{
     config::{RequestConfig, StoreConfig, SyncSettings},
     deserialized_responses::RawSyncOrStrippedState,
@@ -34,6 +34,288 @@ use crate::api::Account;
 use crate::GLOBAL_CONFIG;
 use crate::{api::RedisConnection, node::register_identity};
 
+// TODO: move those "independent" functions inside the Matrix struct (handle_content, etc.)
+
+struct Matrix {
+    client: Client,
+    settings: SyncSettings,
+}
+
+impl Adapter for Matrix {}
+
+impl Matrix {
+    async fn login() -> anyhow::Result<Client> {
+        let cfg = GLOBAL_CONFIG.get().unwrap().adapter.matrix.clone();
+        let state_dir = Path::new(&cfg.state_dir);
+        let session_path = state_dir.join("session.json");
+
+        info!("Creating matrix client");
+        let client = Client::builder()
+            .homeserver_url(cfg.homeserver)
+            .store_config(StoreConfig::default())
+            .request_config(
+                RequestConfig::new()
+                    .timeout(Duration::from_secs(60))
+                    .retry_timeout(Duration::from_secs(60)),
+            )
+            .sqlite_store(state_dir, None)
+            .with_encryption_settings(EncryptionSettings {
+                auto_enable_cross_signing: true,
+                auto_enable_backups: true,
+                backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
+            })
+            .build()
+            .await?;
+
+        if session_path.exists() {
+            info!("Restoring session in {}", session_path.display());
+            let session = tokio::fs::read_to_string(session_path).await?;
+            let session: MatrixSession = serde_json::from_str(&session)?;
+            client.restore_session(session).await?;
+            info!("Logged in as {}", cfg.username);
+        } else {
+            info!("Logging in as {}", cfg.username);
+            client
+                .matrix_auth()
+                .login_username(cfg.username, cfg.password.as_str())
+                .initial_device_display_name("w3r")
+                .await?;
+
+            info!("Writing session to {}", session_path.display());
+            let session = client.matrix_auth().session().expect("Session missing");
+            let session = serde_json::to_string(&session)?;
+            info!("Session content before save: {}", session);
+            tokio::fs::write(session_path, session).await?;
+        }
+
+        info!("Importing secrets");
+        let secret_store = client
+            .encryption()
+            .secret_storage()
+            .open_secret_store(cfg.security_key.as_str())
+            .await?;
+        secret_store.import_secrets().await?;
+
+        let device = client
+            .encryption()
+            .get_device(client.user_id().unwrap(), client.device_id().unwrap())
+            .await?;
+        match device {
+            Some(d) => {
+                if d.is_verified() {
+                    info!(
+                        "Session {:?}:{:?} is verified!",
+                        d.display_name(),
+                        d.device_id()
+                    );
+                } else {
+                    info!("Session is NOT verified!");
+                    info!(
+                        "Verifying session {:?}:{:?}",
+                        d.display_name(),
+                        d.device_id()
+                    );
+                    verify_device(&d).await?;
+                    info!("Verification done!");
+                }
+            }
+            None => {
+                info!("Could not retrieve the device from client, {:?}", client);
+            }
+        }
+
+        Ok(client)
+    }
+
+    async fn new() -> anyhow::Result<Self> {
+        let client = Self::login().await?;
+        let mut room = RoomEventFilter::default();
+        room.lazy_load_options = LazyLoadOptions::Enabled {
+            include_redundant_members: true,
+        };
+        let mut room_ev = RoomFilter::default();
+        room_ev.state = room;
+        let mut filter = FilterDefinition::default();
+        filter.room = room_ev;
+        let settings = SyncSettings::new()
+            .filter(filter.into())
+            .timeout(Duration::from_secs(30));
+        Ok(Self { client, settings })
+    }
+
+    async fn listen(self) -> anyhow::Result<()> {
+        // initial sync and handler setup
+        self.client.sync_once(self.settings.clone()).await?;
+        // self.client
+        //     .add_event_handler_context((redis_cfg.to_owned(), registrar_cfg.to_owned()));
+        self.client
+            .add_event_handler(Self::on_stripped_state_member);
+        self.client.add_event_handler(Self::on_room_message);
+
+        info!(
+            "Encryption Status: {:#?}",
+            self.client.encryption().cross_signing_status().await
+        );
+
+        info!("Listening for messages...");
+        if let Some(device_id) = self.client.device_id() {
+            info!("Logged in with device ID {:#?}", device_id);
+        }
+
+        self.client.sync(self.settings).await?;
+        Ok(())
+    }
+
+    async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
+        let MessageType::Text(text_content) = ev.content.msgtype else {
+            return;
+        };
+        info!("Recieved a text message!");
+
+        let state_events = match _room
+            .get_state_events(ruma::events::StateEventType::RoomMember)
+            .await
+        {
+            Ok(events) => events,
+            Err(e) => {
+                error!("Failed to get state events: {:?}", e);
+                return;
+            }
+        };
+
+        for state in state_events {
+            let state_cast: RawSyncOrStrippedState<RoomCreateEventContent> = state.cast();
+
+            info!("Extracting sender account..");
+            let Some(account) = extract_sender_account(&state_cast) else {
+                continue;
+            };
+            info!("Account: {:?}", account);
+
+            if let Err(e) = Self::handle_incoming(account.clone(), &text_content).await {
+                error!(
+                    "Error handling incoming message for account {:?}: {:?}",
+                    account, e
+                );
+                continue;
+            }
+        }
+    }
+
+    async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client, room: Room) {
+        if event.state_key != client.user_id().unwrap() {
+            return;
+        }
+
+        tokio::spawn(async move {
+            const MAX_RETRY_DELAY: u64 = 16;
+            const MAX_RETRIES: u32 = 3;
+
+            // early return if unable to determine DM status
+            let is_dm = match room.is_direct().await {
+                Ok(is_direct) => is_direct,
+                Err(e) => {
+                    error!("Failed to check DM status: {}", e);
+                    return;
+                }
+            };
+
+            if !is_dm {
+                return;
+            }
+
+            // join room with exponential backoff
+            let mut retry_count = 0;
+            let mut delay = 2;
+
+            while retry_count < MAX_RETRIES {
+                match room.join().await {
+                    Ok(_) => {
+                        info!("Joined DM room {}", room.room_id());
+
+                        if let Err(e) = room
+                            .send(RoomMessageEventContent::text_plain(
+                                "Please submit your verification challenge.",
+                            ))
+                            .await
+                        {
+                            error!("Failed to send challenge prompt: {}", e);
+                        }
+                        return;
+                    }
+                    Err(e) => {
+                        retry_count += 1;
+                        if retry_count == MAX_RETRIES {
+                            error!("Failed to join room after {} attempts: {}", MAX_RETRIES, e);
+                            return;
+                        }
+                        sleep(Duration::from_secs(delay)).await;
+                        delay = delay.saturating_mul(2).min(MAX_RETRY_DELAY);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Entry point for handling incoming messages
+    /// Looks up associated accounts and delegates to handle_content
+    ///
+    /// # Arguments
+    /// * `acc` - Parsed account information from message
+    /// * `text_content` - Content of the message
+    async fn handle_incoming(
+        acc: Account,
+        text_content: &TextMessageEventContent,
+    ) -> anyhow::Result<()> {
+        info!(
+            "\nMatrix Message\nSender: {:#?}\nMessage: {}\nRaw Content: {:#?}",
+            acc, text_content.body, text_content
+        );
+        let cfg = GLOBAL_CONFIG.get().unwrap();
+        let redis_cfg = cfg.redis.clone();
+        let mut redis_connection = RedisConnection::create_conn(&redis_cfg)?;
+        let querry = format!("{}|*", acc);
+        info!("Search querry: {}", querry);
+
+        // handle each instance of the account
+        let accounts_key = redis_connection.search(&querry)?;
+
+        if accounts_key.is_empty() {
+            return Ok(());
+        }
+
+        for acc_str in accounts_key {
+            info!("Account: {}", acc_str);
+
+            // extract account ID from the account string
+            // <acc:name>:<acc_type>:<wallet_id>
+            let parts: Vec<&str> = acc_str.splitn(4, '|').collect();
+            if parts.len() != 4 {
+                continue;
+            }
+            info!("Parts: {:#?}", parts);
+            let account = Account::from_str(&format!("{}|{}", parts[0], parts[1]))?;
+            let network = parts[2];
+
+            // this unwrap is fine, we checked above
+            if let Ok(account_id) = AccountId32::from_str(parts[3]) {
+                if Self::handle_content(
+                    &text_content.body,
+                    &mut redis_connection,
+                    network,
+                    &account_id,
+                    &account,
+                )
+                .await?
+                {
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Verifies a Matrix device for secure communication
 /// This is required for end-to-end encryption functionality
 async fn verify_device(device: &Device) -> anyhow::Result<()> {
@@ -43,200 +325,10 @@ async fn verify_device(device: &Device) -> anyhow::Result<()> {
     }
 }
 
-/// Establishes authenticated connection to Matrix server
-/// Handles session persistence and restoration from disk
-/// Sets up encryption and verifies device if needed
-///
-/// # Arguments
-/// * `cfg` - Matrix configuration including server details and credentials
-async fn login(cfg: MatrixConfig) -> anyhow::Result<Client> {
-    let state_dir = Path::new(&cfg.state_dir);
-    let session_path = state_dir.join("session.json");
-
-    info!("Creating matrix client");
-    let client = Client::builder()
-        .homeserver_url(cfg.homeserver)
-        .store_config(StoreConfig::default())
-        .request_config(
-            RequestConfig::new()
-                .timeout(Duration::from_secs(60))
-                .retry_timeout(Duration::from_secs(60)),
-        )
-        .sqlite_store(state_dir, None)
-        .with_encryption_settings(EncryptionSettings {
-            auto_enable_cross_signing: true,
-            auto_enable_backups: true,
-            backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
-        })
-        .build()
-        .await?;
-
-    if session_path.exists() {
-        info!("Restoring session in {}", session_path.display());
-        let session = tokio::fs::read_to_string(session_path).await?;
-        let session: MatrixSession = serde_json::from_str(&session)?;
-        client.restore_session(session).await?;
-        info!("Logged in as {}", cfg.username);
-    } else {
-        info!("Logging in as {}", cfg.username);
-        client
-            .matrix_auth()
-            .login_username(cfg.username, cfg.password.as_str())
-            .initial_device_display_name("w3r")
-            .await?;
-
-        info!("Writing session to {}", session_path.display());
-        let session = client.matrix_auth().session().expect("Session missing");
-        let session = serde_json::to_string(&session)?;
-        info!("Session content before save: {}", session);
-        tokio::fs::write(session_path, session).await?;
-    }
-
-    info!("Importing secrets");
-    let secret_store = client
-        .encryption()
-        .secret_storage()
-        .open_secret_store(cfg.security_key.as_str())
-        .await?;
-    secret_store.import_secrets().await?;
-
-    let device = client
-        .encryption()
-        .get_device(client.user_id().unwrap(), client.device_id().unwrap())
-        .await?;
-    match device {
-        Some(d) => {
-            if d.is_verified() {
-                info!(
-                    "Session {:?}:{:?} is verified!",
-                    d.display_name(),
-                    d.device_id()
-                );
-            } else {
-                info!("Session is NOT verified!");
-                info!(
-                    "Verifying session {:?}:{:?}",
-                    d.display_name(),
-                    d.device_id()
-                );
-                verify_device(&d).await?;
-                info!("Verification done!");
-            }
-        }
-        None => {
-            info!("Could not retrieve the device from client, {:?}", client);
-        }
-    }
-
-    Ok(client)
-}
-
-struct MatrixBot {
-    redis_conn: redis::Connection,
-}
-
 /// Initializes and runs the Matrix bot
 /// Sets up event handlers for room invites and messages
 pub async fn start_bot() -> anyhow::Result<()> {
-    let cfg = GLOBAL_CONFIG
-        .get()
-        .expect("GLOBAL_CONFIG is not initialized");
-
-    let redis_cfg = cfg.redis.clone();
-    let matrix_cfg = cfg.adapter.matrix.clone();
-    let registrar_cfg = cfg.registrar.clone();
-
-    let client = login(matrix_cfg).await?;
-
-    // setup event filters
-    let mut room = RoomEventFilter::default();
-    room.lazy_load_options = LazyLoadOptions::Enabled {
-        include_redundant_members: true,
-    };
-    let mut room_ev = RoomFilter::default();
-    room_ev.state = room;
-    let mut filter = FilterDefinition::default();
-    filter.room = room_ev;
-    let settings = SyncSettings::new().filter(filter.into());
-
-    // initial sync and handler setup
-    client.sync_once(settings).await?;
-    client.add_event_handler_context((redis_cfg.to_owned(), registrar_cfg.to_owned()));
-    client.add_event_handler(on_stripped_state_member);
-    client.add_event_handler(on_room_message);
-
-    info!(
-        "Encryption Status: {:#?}",
-        client.encryption().cross_signing_status().await
-    );
-
-    info!("Listening for messages...");
-    if let Some(device_id) = client.device_id() {
-        info!("Logged in with device ID {:#?}", device_id);
-    }
-
-    let settings = SyncSettings::default().timeout(Duration::from_secs(30));
-    client.sync(settings).await?;
-
-    Ok(())
-}
-
-/// Handles room member state changes (e.g. invites)
-/// Automatically joins rooms when invited
-/// Uses exponential backoff for retrying failed joins
-async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client, room: Room) {
-    if event.state_key != client.user_id().unwrap() {
-        return;
-    }
-
-    tokio::spawn(async move {
-        const MAX_RETRY_DELAY: u64 = 16;
-        const MAX_RETRIES: u32 = 3;
-
-        // early return if unable to determine DM status
-        let is_dm = match room.is_direct().await {
-            Ok(is_direct) => is_direct,
-            Err(e) => {
-                error!("Failed to check DM status: {}", e);
-                return;
-            }
-        };
-
-        if !is_dm {
-            return;
-        }
-
-        // join room with exponential backoff
-        let mut retry_count = 0;
-        let mut delay = 2;
-
-        while retry_count < MAX_RETRIES {
-            match room.join().await {
-                Ok(_) => {
-                    info!("Joined DM room {}", room.room_id());
-
-                    if let Err(e) = room
-                        .send(RoomMessageEventContent::text_plain(
-                            "Please submit your verification challenge.",
-                        ))
-                        .await
-                    {
-                        error!("Failed to send challenge prompt: {}", e);
-                    }
-                    return;
-                }
-                Err(e) => {
-                    retry_count += 1;
-                    if retry_count == MAX_RETRIES {
-                        error!("Failed to join room after {} attempts: {}", MAX_RETRIES, e);
-                        return;
-                    }
-                    sleep(Duration::from_secs(delay)).await;
-                    delay = delay.saturating_mul(2).min(MAX_RETRY_DELAY);
-                }
-            }
-        }
-    });
+    Matrix::new().await?.listen().await
 }
 
 /// Extract sender account from state event
@@ -261,101 +353,6 @@ fn extract_sender_account(
     info!("Sender: {}", sender);
 
     Account::from_str(sender).ok()
-}
-
-/// Processes incoming room messages
-async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
-    let MessageType::Text(text_content) = ev.content.msgtype else {
-        return;
-    };
-    info!("Recieved a text message!");
-
-    let state_events = match _room
-        .get_state_events(ruma::events::StateEventType::RoomMember)
-        .await
-    {
-        Ok(events) => events,
-        Err(e) => {
-            error!("Failed to get state events: {:?}", e);
-            return;
-        }
-    };
-
-    for state in state_events {
-        let state_cast: RawSyncOrStrippedState<RoomCreateEventContent> = state.cast();
-
-        info!("Extracting sender account..");
-        let Some(account) = extract_sender_account(&state_cast) else {
-            continue;
-        };
-        info!("Account: {:?}", account);
-
-        if let Err(e) = handle_incoming(account.clone(), &text_content).await {
-            error!(
-                "Error handling incoming message for account {:?}: {:?}",
-                account, e
-            );
-            continue;
-        }
-    }
-}
-
-/// Entry point for handling incoming messages
-/// Looks up associated accounts and delegates to handle_content
-///
-/// # Arguments
-/// * `acc` - Parsed account information from message
-/// * `text_content` - Content of the message
-async fn handle_incoming(
-    acc: Account,
-    text_content: &TextMessageEventContent,
-) -> anyhow::Result<()> {
-    info!(
-        "\nMatrix Message\nSender: {:#?}\nMessage: {}\nRaw Content: {:#?}",
-        acc, text_content.body, text_content
-    );
-    let cfg = GLOBAL_CONFIG.get().unwrap();
-    let redis_cfg = cfg.redis.clone();
-    let mut redis_connection = RedisConnection::create_conn(&redis_cfg)?;
-    let querry = format!("{}|*", acc);
-    info!("Search querry: {}", querry);
-
-    // handle each instance of the account
-    let accounts_key = redis_connection.search(&querry)?;
-
-    if accounts_key.is_empty() {
-        return Ok(());
-    }
-
-    for acc_str in accounts_key {
-        info!("Account: {}", acc_str);
-
-        // extract account ID from the account string
-        // <acc:name>:<acc_type>:<wallet_id>
-        let parts: Vec<&str> = acc_str.splitn(4, '|').collect();
-        if parts.len() != 4 {
-            continue;
-        }
-        info!("Parts: {:#?}", parts);
-        let account = Account::from_str(&format!("{}|{}", parts[0], parts[1]))?;
-        let network = parts[2];
-
-        // this unwrap is fine, we checked above
-        if let Ok(account_id) = AccountId32::from_str(parts[3]) {
-            if handle_content(
-                text_content,
-                &mut redis_connection,
-                network,
-                &account_id,
-                &account,
-            )
-            .await?
-            {
-                break;
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Processes message content for verification
