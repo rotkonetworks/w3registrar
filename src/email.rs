@@ -312,11 +312,14 @@ impl MailServer {
     /// Polls mailbox for new unread messages and processes them
     /// Uses IMAP IDLE for efficient notification of new messages
     async fn check_mailbox(&mut self) -> anyhow::Result<()> {
-        let idle_handle = self.session.idle()?;
+        let mut idle_handle = self.session.idle()?;
         info!("Waiting for incoming mails...");
 
+        // TODO: make this duration cofigurable
+        idle_handle.set_keepalive(Duration::from_secs(60));
+
         idle_handle
-            .wait()
+            .wait_keepalive()
             .map_err(|e| anyhow!("IMAP IDLE error: {}", e))?;
         info!("Received new mail notification");
 
