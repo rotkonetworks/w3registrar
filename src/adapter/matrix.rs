@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::{adapter::Adapter, config::MatrixConfig};
+use crate::adapter::Adapter;
 use matrix_sdk::{
     config::{RequestConfig, StoreConfig, SyncSettings},
     deserialized_responses::RawSyncOrStrippedState,
@@ -21,7 +21,6 @@ use matrix_sdk::{
     },
     Client,
 };
-use redis;
 use serde_json::Value;
 use std::str::FromStr;
 use subxt::utils::AccountId32;

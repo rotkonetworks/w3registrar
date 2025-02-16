@@ -1,16 +1,14 @@
 mod adapter;
 mod api;
 mod config;
-mod email;
-mod matrix;
 mod node;
 mod runner;
 mod token;
 
 use crate::adapter::dns::watch_dns;
+use crate::adapter::{mail::watch_mailserver, matrix};
 use crate::api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv};
 use crate::config::{Config, GLOBAL_CONFIG};
-use crate::email::watch_mailserver;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
