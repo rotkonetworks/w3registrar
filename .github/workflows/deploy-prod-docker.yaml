@@ -16,7 +16,7 @@ jobs:
     if: github.event.inputs.confirm_deploy == 'DEPLOY'
     env:
       SERVER_USER: w3reg
-      SERVER_HOST: 65.21.151.227
+      SERVER_HOST: 135.181.202.179
       SERVER_PORT: 22
       DEPLOY_PATH: /home/w3reg/api.w3reg.org
       SERVICE_NAME: w3registrar-api
