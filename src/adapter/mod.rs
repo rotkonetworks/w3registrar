@@ -1,4 +1,3 @@
-use matrix_sdk::ruma::events::room::message::TextMessageEventContent;
 use subxt::utils::AccountId32;
 use tracing::info;
 
@@ -7,9 +6,10 @@ use crate::{
     node::register_identity,
 };
 
-// TODO: add other mods (matrix + mail)
 
 pub mod dns;
+pub mod mail;
+pub mod matrix;
 
 pub trait Adapter {
     async fn handle_content(
