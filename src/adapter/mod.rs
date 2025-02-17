@@ -6,7 +6,6 @@ use crate::{
     node::register_identity,
 };
 
-
 pub mod dns;
 pub mod mail;
 pub mod matrix;
