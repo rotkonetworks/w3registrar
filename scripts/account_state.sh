@@ -1,8 +1,11 @@
 #!/bin/sh
 
-echo "Creating SubscribeAccountState payload..."
+# Default endpoint with override from first argument
+WS_URL=${1:-"wss://api.w3reg.org"}
 
-# Create Subscribe JSON message
+echo "Using WebSocket endpoint: $WS_URL"
+
+echo "Creating SubscribeAccountState payload..."
 SUBSCRIBE_MSG=$(cat << EOF | jq -c .
 {
   "version": "1.0",
@@ -14,43 +17,10 @@ SUBSCRIBE_MSG=$(cat << EOF | jq -c .
 }
 EOF
 )
-#WS_URL="ws://135.181.202.179:18080"
-WS_URL="wss://api.w3reg.org"
-#WS_URL="wss://sapi.w3reg.org"
-
-test_websocket() {
-    local message=$1
-    local max_attempts=3
-    local attempt=1
-
-    while [ $attempt -le $max_attempts ]; do
-        echo "Attempt $attempt to connect..."
-        # Use websocket client mode with explicit text framing
-        response=$(echo "$message" | websocat --text $WS_URL)
-        if [ $? -eq 0 ]; then
-            echo "Connection successful!"
-
-            # Process with jq if it's valid JSON
-            if echo "$response" | jq . >/dev/null 2>&1; then
-                echo "$response" | jq .
-            else
-                echo "Response is not valid JSON: $response"
-            fi
-
-            return 0
-        else
-            echo "Connection failed, waiting before retry..."
-            sleep 2
-        fi
-        attempt=$((attempt + 1))
-    done
-
-    echo "Failed to connect after $max_attempts attempts"
-    return 1
-}
 
 echo "Subscribe payload:"
-echo $SUBSCRIBE_MSG | jq .
+echo "$SUBSCRIBE_MSG" | jq .
 echo
-echo "Testing subscription..."
-test_websocket "$SUBSCRIBE_MSG"
+
+echo "Starting WebSocket connection and keeping it open..."
+echo "$SUBSCRIBE_MSG" | websocat --text "$WS_URL" --no-close
