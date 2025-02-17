@@ -532,16 +532,16 @@ impl Listener {
         request: SubscribeAccountStateRequest,
         network: &str,
         subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<serde_json::Value> {
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
         let cfg = GLOBAL_CONFIG
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
 
         if !cfg.registrar.is_network_supported(network) {
-            return Ok(serde_json::json!({
+            return Ok(vec![serde_json::json!({
                 "type": "error",
                 "message": format!("Network {} not supported", network)
-            }));
+            })]);
         }
 
         let network_cfg = cfg
@@ -604,13 +604,18 @@ impl Listener {
         conn.init_verification_state(network, &request.payload, &verification, &accounts)
             .await?;
 
+        // state notify
+        let notification = conn
+            .notify_state_change(network, &request.payload, &verification)
+            .await?;
+
         // everything below is unchanged: hashing, building JSON response, etc.
         let hash = self.hash_identity_info(&registration.info);
 
         let fields = conn.extract_info(network, &request.payload).await?;
         let pending_challenges = conn.get_challenges(network, &request.payload).await?;
 
-        Ok(serde_json::json!({
+        let initial_state = serde_json::json!({
             "type": "JsonResult",
             "payload": {
                 "type": "ok",
@@ -626,7 +631,9 @@ impl Listener {
                     }
                 }
             }
-        }))
+        });
+
+        Ok(vec![initial_state, notification])
     }
 
     /// Generates a hex-encoded blake2 hash of the identity info with 0x prefix
@@ -640,7 +647,7 @@ impl Listener {
         &mut self,
         message: VersionedMessage,
         subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<serde_json::Value> {
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
         match message.message_type.as_str() {
             "SubscribeAccountState" => {
                 let incoming: IncomingSubscribeRequest = serde_json::from_value(message.payload)
@@ -654,7 +661,6 @@ impl Listener {
                 self.handle_subscription_request(internal_request, &incoming.network, subscriber)
                     .await
             }
-            // TODO: NotifyAccountState to send updates to frontend
             _ => Err(anyhow!(
                 "Unsupported message type: {}",
                 message.message_type
@@ -666,44 +672,40 @@ impl Listener {
         &mut self,
         message: Message,
         subscriber: &mut Option<AccountId32>,
-    ) -> Result<serde_json::Value> {
-        // 1) ensure the message is text
+    ) -> Result<Vec<serde_json::Value>> {
         let text = match message {
             Message::Text(t) => t,
             _ => {
-                return Ok(json!({
+                return Ok(vec![json!({
                     "type": "error",
                     "message": "Unsupported message format"
-                }))
+                })])
             }
         };
 
-        // 2) attempt to parse the JSON into a VersionedMessage
         let versioned_msg: VersionedMessage = match serde_json::from_str(&text) {
             Ok(v) => v,
             Err(e) => {
-                return Ok(json!({
+                return Ok(vec![json!({
                     "type": "error",
                     "message": format!("Failed to parse message: {}", e)
-                }))
+                })])
             }
         };
 
-        // 3) check the version
         if versioned_msg.version.as_str() != "1.0" {
-            return Ok(json!({
+            return Ok(vec![json!({
                 "type": "error",
                 "message": format!("Unsupported version: {}", versioned_msg.version),
-            }));
+            })]);
         }
 
-        // 4) handle the v1 version
         match self.process_v1(versioned_msg, subscriber).await {
-            Ok(response) => Ok(response),
-            Err(e) => Ok(json!({
+            Ok(messages) => Ok(messages),
+            Err(e) => Ok(vec![json!({
                 "type": "error",
                 "message": e.to_string()
-            })),
+            })]),
         }
     }
 
@@ -960,35 +962,41 @@ impl Listener {
         };
 
         info!(
-            parent: span,
-            message_version = %parsed.version,
-            message_type = %parsed.message_type,
-            "Received WebSocket message"
+        parent: span,
+        message_version = %parsed.version,
+        message_type = %parsed.message_type,
+        "Received WebSocket message"
         );
 
         match self
             ._handle_incoming(Message::Text(text.into()), subscriber)
             .await
         {
-            Ok(response) => {
-                let serialized = match serde_json::to_string(&response) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!(parent: span, error = %e, "Failed to serialize response");
-                        return true;
-                    }
-                };
+            Ok(messages) => {
+                let initial_state = messages[0].clone();
 
-                if let Err(e) = Self::send_message(write, serialized).await {
-                    error!(parent: span, error = %e, "Failed to send response");
-                    return false;
+                for message in &messages {
+                    let serialized = match serde_json::to_string(message) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!(parent: span, error = %e, "Failed to serialize message");
+                            continue;
+                        }
+                    };
+
+                    if let Err(e) = Self::send_message(write, serialized).await {
+                        error!(parent: span, error = %e, "Failed to send message");
+                        return false;
+                    }
                 }
 
                 if let Some(id) = subscriber.take() {
                     info!(parent: span, subscriber_id = %id, "New subscriber registered");
                     let mut cloned_self = self.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = cloned_self.spawn_redis_listener(sender, id, response).await
+                        if let Err(e) = cloned_self
+                            .spawn_redis_listener(sender, id, initial_state)
+                            .await
                         {
                             error!(error = %e, "Redis listener error");
                         }
@@ -1811,6 +1819,25 @@ impl RedisConnection {
         Ok(())
     }
 
+    pub async fn notify_state_change(
+        &mut self,
+        network: &str,
+        account_id: &AccountId32,
+        _state: &AccountVerification,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(serde_json::json!({
+            "type": "NotifyAccountState",
+            "payload": {
+                "network": network,
+                "account": account_id.to_string(),
+                "verification_state": {
+                    "fields": self.extract_info(network, account_id).await?
+                },
+                "pending_challenges": self.get_challenges(network, account_id).await?
+            }
+        }))
+    }
+
     pub async fn init_verification_state(
         &mut self,
         network: &str,
@@ -1849,6 +1876,10 @@ impl RedisConnection {
         if let Some(mut state) = self.get_verification_state(network, account_id).await? {
             if state.mark_challenge_done(account_type) {
                 self.update_verification_state(network, account_id, &state)
+                    .await?;
+
+                let _notification = self
+                    .notify_state_change(network, account_id, &state)
                     .await?;
                 Ok(true)
             } else {
