@@ -56,7 +56,7 @@ jobs:
       - name: Create Required files
         run: |
           echo "${{ secrets.CONFIG_DAPI_DOCKER }}" | base64 -d > config.docker.toml
-          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} "mkdir -p ${{ env.DEPLOY_PATH }}/keyfile"
+          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} "mkdir -p ${{ env.DEPLOY_PATH }}/keyfile 2>/dev/null || true"
           scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} config.docker.toml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}
 
           # loop through potential network keyfiles
