@@ -408,7 +408,6 @@ pub enum WebSocketMessage {
     SubscribeAccountState(SubscribeAccountStateRequest),
     RequestVerificationChallenge(VerificationRequest),
     VerifyIdentity(VerifyIdentityRequest),
-    NotifyAccountState(NotifyAccountState),
     JsonResult(JsonResultPayload),
 }
 
@@ -443,10 +442,6 @@ pub struct JsonResultPayload {
     message: serde_json::Value,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum NotifyAccountState {
-    NotifyAccountState,
-}
 // --------------------------------------
 pub async fn spawn_node_listener() -> anyhow::Result<()> {
     let node_listener = NodeListener::new().await?;
@@ -564,7 +559,7 @@ impl Listener {
         let mut verification =
             existing_verification.unwrap_or_else(|| AccountVerification::new(network.to_string()));
 
-        // get the accounts from the chain’s identity info
+        // get the accounts from the chain's identity info
         let accounts = filter_accounts(
             &registration.info,
             &request.payload,
@@ -604,29 +599,12 @@ impl Listener {
         conn.init_verification_state(network, &request.payload, &verification, &accounts)
             .await?;
 
-        // everything below is unchanged: hashing, building JSON response, etc.
+        // get hash and build state message
         let hash = self.hash_identity_info(&registration.info);
 
-        let fields = conn.extract_info(network, &request.payload).await?;
-        let pending_challenges = conn.get_challenges(network, &request.payload).await?;
-
-        Ok(serde_json::json!({
-            "type": "JsonResult",
-            "payload": {
-                "type": "ok",
-                "message": {
-                    "AccountState": {
-                        "account": request.payload.to_string(),
-                        "network": network,
-                        "hashed_info": hash,
-                        "verification_state": {
-                            "fields": fields
-                        },
-                        "pending_challenges": pending_challenges
-                    }
-                }
-            }
-        }))
+        // return state in json
+        conn.build_account_state_message(network, &request.payload, Some(hash))
+            .await
     }
 
     /// Generates a hex-encoded blake2 hash of the identity info with 0x prefix
@@ -654,7 +632,7 @@ impl Listener {
                 self.handle_subscription_request(internal_request, &incoming.network, subscriber)
                     .await
             }
-            // TODO: NotifyAccountState to send updates to frontend
+            // TODO: Add endpoint for inputting verifications
             _ => Err(anyhow!(
                 "Unsupported message type: {}",
                 message.message_type
@@ -1869,6 +1847,34 @@ impl RedisConnection {
         Ok(())
     }
 
+    async fn build_account_state_message(
+        &mut self,
+        network: &str,
+        account_id: &AccountId32,
+        hash: Option<String>, // optional for state updates
+    ) -> anyhow::Result<serde_json::Value> {
+        let fields = self.extract_info(network, account_id).await?;
+        let pending_challenges = self.get_challenges(network, account_id).await?;
+
+        Ok(serde_json::json!({
+            "type": "JsonResult",
+            "payload": {
+                "type": "ok",
+                "message": {
+                    "AccountState": {
+                        "account": account_id.to_string(),
+                        "network": network,
+                        "hashed_info": hash,
+                        "verification_state": {
+                            "fields": fields
+                        },
+                        "pending_challenges": pending_challenges
+                    }
+                }
+            }
+        }))
+    }
+
     pub async fn process_state_change(
         redis_cfg: &RedisConfig,
         msg: &redis::Msg,
@@ -1905,20 +1911,8 @@ impl RedisConnection {
             Err(_) => return Ok(None),
         };
 
-        // get verification state
-        let state = match conn.get_verification_state(network, &id).await? {
-            Some(s) => s,
-            None => return Ok(None),
-        };
+        let account_state = conn.build_account_state_message(network, &id, None).await?;
 
-        Ok(Some((
-            id,
-            serde_json::json!({
-                "type": "AccountState",
-                "network": network,
-                "verification_state": state,
-                "operation": payload,
-            }),
-        )))
+        Ok(Some((id, account_state)))
     }
 }
