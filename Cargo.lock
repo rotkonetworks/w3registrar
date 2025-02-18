@@ -12905,7 +12905,7 @@ dependencies = [
 
 [[package]]
 name = "w3registrar"
-version = "0.4.2"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "async-stream",

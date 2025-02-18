@@ -3,64 +3,37 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+
 jobs:
   release:
-    name: Release - ${{ matrix.platform.release_for }}
-    runs-on: ${{ matrix.platform.os }}
+    name: Release - ${{ matrix.platform.os_name }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         platform:
-          - release_for: Linux-x86_64
-            os: ubuntu-latest
+          - os_name: Linux-x86_64
             target: x86_64-unknown-linux-gnu
-            bin: w3registrar
-            name: w3registrar-linux-amd64
-
-          - release_for: Linux-aarch64
-            os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            bin: w3registrar
-            name: w3registrar-linux-arm64
-
+    
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform.target }}
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Install cross-compilation tools
-        if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            protobuf-compiler \
-            cmake \
-            pkg-config \
-            clang \
-            llvm
+      - name: Update lockfile
+        run: cargo update
 
       - name: Build binary
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_AR: aarch64-linux-gnu-ar
-        run: cargo build --verbose --release --target ${{ matrix.platform.target }}
-
-      - name: Prepare binary
-        run: |
-          cd target/${{ matrix.platform.target }}/release
-          cp ${{ matrix.platform.bin }} ${{ matrix.platform.name }}
-
-      - name: Upload binaries to release
-        uses: softprops/action-gh-release@v1
+        uses: houseabsolute/actions-rust-cross@v1
         with:
-          files: target/${{ matrix.platform.target }}/release/${{ matrix.platform.name }}
+          command: build
+          target: ${{ matrix.platform.target }}
+          args: "--release"
+          strip: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: target/${{ matrix.platform.target }}/release/w3registrar
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

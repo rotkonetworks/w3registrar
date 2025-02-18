@@ -11,6 +11,7 @@ pkgs.mkShell {
     clang
     llvm
     libiconv
+    redis
   ];
 
   LD_LIBRARY_PATH = with pkgs; lib.makeLibraryPath [
