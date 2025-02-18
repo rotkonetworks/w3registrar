@@ -25,7 +25,7 @@ use serde_json::Value;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
 use tokio::time::{sleep, Duration};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use std::path::Path;
 
@@ -142,11 +142,19 @@ impl Matrix {
         Ok(Self { client, settings })
     }
 
-    async fn listen(self) -> anyhow::Result<()> {
-        // initial sync and handler setup
+    async fn listen(self) {
+        loop {
+            if let Err(e) = self.run_sync().await {
+                error!("Matrix listener failed: {}. Restarting in 5s...", e);
+                sleep(Duration::from_secs(5)).await;
+            } else {
+                warn!("Matrix sync exited unexpectedly. Restarting...");
+            }
+        }
+    }
+
+    async fn run_sync(&self) -> anyhow::Result<()> {
         self.client.sync_once(self.settings.clone()).await?;
-        // self.client
-        //     .add_event_handler_context((redis_cfg.to_owned(), registrar_cfg.to_owned()));
         self.client
             .add_event_handler(Self::on_stripped_state_member);
         self.client.add_event_handler(Self::on_room_message);
@@ -155,14 +163,14 @@ impl Matrix {
             "Encryption Status: {:#?}",
             self.client.encryption().cross_signing_status().await
         );
-
-        info!("Listening for messages...");
         if let Some(device_id) = self.client.device_id() {
             info!("Logged in with device ID {:#?}", device_id);
         }
 
-        self.client.sync(self.settings).await?;
-        Ok(())
+        info!("Listening for messages...");
+        self.client.sync(self.settings.clone()).await?;
+
+        panic!("FATAL: Matrix sync stopped unexpectedly. Forcing restart.");
     }
 
     async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
@@ -327,7 +335,8 @@ async fn verify_device(device: &Device) -> anyhow::Result<()> {
 /// Initializes and runs the Matrix bot
 /// Sets up event handlers for room invites and messages
 pub async fn start_bot() -> anyhow::Result<()> {
-    Matrix::new().await?.listen().await
+    Matrix::new().await?.listen().await;
+    unreachable!("Matrix listener should never return");
 }
 
 /// Extract sender account from state event
