@@ -1,81 +1,51 @@
 name: Release binaries
+
 on:
   push:
     tags:
       - 'v*'
-  #testing
   workflow_dispatch:
+
 jobs:
   release:
-    name: Release - ${{ matrix.platform.release_for }}
-    runs-on: ${{ matrix.platform.os }}
+    name: Release - ${{ matrix.platform.os-name }}
     strategy:
       matrix:
         platform:
-          - release_for: Linux-x86_64
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            bin: w3registrar
-            name: w3registrar-linux-amd64
+          - os-name: FreeBSD-x86_64
+            runs-on: ubuntu-24.04
+            target: x86_64-unknown-freebsd
+          - os-name: Linux-x86_64
+            runs-on: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - os-name: Linux-aarch64
+            runs-on: ubuntu-24.04
+            target: aarch64-unknown-linux-musl
+          - os-name: Linux-riscv64
+            runs-on: ubuntu-24.04
+            target: riscv64gc-unknown-linux-gnu
+          # - os-name: Windows-x86_64
+          #   runs-on: windows-latest
+          #   target: x86_64-pc-windows-msvc
+          - os-name: macOS-x86_64
+            runs-on: macOS-latest
+            target: x86_64-apple-darwin
 
-          - release_for: Linux-aarch64
-            os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            bin: w3registrar
-            name: w3registrar-linux-arm64
-
+    runs-on: ${{ matrix.platform.runs-on }}
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform.target }}
-
-      - name: Install cross-compilation tools
-        if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libssl-dev
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            protobuf-compiler \
-            cmake \
-            pkg-config \
-            clang \
-            llvm 
-
-      - name: Set OpenSSL environment variables
-        run: |
-          echo "OPENSSL_DIR=/usr" >> $GITHUB_ENV
-          if [ "${{ matrix.platform.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
-          else
-            echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
-          fi
-          echo "OPENSSL_INCLUDE_DIR=/usr/include" >> $GITHUB_ENV
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Build binary
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_AR: aarch64-linux-gnu-ar
-          PKG_CONFIG_ALLOW_CROSS: 1
-          PKG_CONFIG_SYSROOT_DIR: /
-        run: cargo build --verbose --release --target ${{ matrix.platform.target }}
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: build
+          target: ${{ matrix.platform.target }}
+          args: "--locked --release"
+          strip: true
 
-      - name: Prepare binary
-        run: |
-          cd target/${{ matrix.platform.target }}/release
-          cp ${{ matrix.platform.bin }} ${{ matrix.platform.name }}
-
-        # NOTE: test workflow
-      # - name: Upload binaries to release
-      #   uses: softprops/action-gh-release@v1
-      #   with:
-      #     files: target/${{ matrix.platform.target }}/release/${{ matrix.platform.name }}
-      #   env:
-      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish artifacts and release
+        uses: houseabsolute/actions-rust-release@v0
+        with:
+          executable-name: w3registrar
+          target: ${{ matrix.platform.target }}
