@@ -604,7 +604,6 @@ impl Listener {
         conn.init_verification_state(network, &request.payload, &verification, &accounts)
             .await?;
 
-
         // everything below is unchanged: hashing, building JSON response, etc.
         let hash = self.hash_identity_info(&registration.info);
 
