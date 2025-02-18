@@ -603,7 +603,8 @@ impl Listener {
         let hash = self.hash_identity_info(&registration.info);
 
         // return state in json
-        conn.build_account_state_message(network, &request.payload, Some(hash)).await
+        conn.build_account_state_message(network, &request.payload, Some(hash))
+            .await
     }
 
     /// Generates a hex-encoded blake2 hash of the identity info with 0x prefix
