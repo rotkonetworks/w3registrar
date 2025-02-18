@@ -532,7 +532,7 @@ impl Listener {
         request: SubscribeAccountStateRequest,
         network: &str,
         subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
+    ) -> anyhow::Result<serde_json::Value> {
         let cfg = GLOBAL_CONFIG
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
@@ -604,36 +604,15 @@ impl Listener {
         conn.init_verification_state(network, &request.payload, &verification, &accounts)
             .await?;
 
-        // state notify
-        let notification = conn
-            .notify_state_change(network, &request.payload, &verification)
-            .await?;
 
         // everything below is unchanged: hashing, building JSON response, etc.
         let hash = self.hash_identity_info(&registration.info);
 
-        let fields = conn.extract_info(network, &request.payload).await?;
-        let pending_challenges = conn.get_challenges(network, &request.payload).await?;
+        let initial_state = conn
+            .build_account_state_message(network, &request.payload, Some(hash))
+            .await?;
 
-        let initial_state = serde_json::json!({
-            "type": "JsonResult",
-            "payload": {
-                "type": "ok",
-                "message": {
-                    "AccountState": {
-                        "account": request.payload.to_string(),
-                        "network": network,
-                        "hashed_info": hash,
-                        "verification_state": {
-                            "fields": fields
-                        },
-                        "pending_challenges": pending_challenges
-                    }
-                }
-            }
-        });
-
-        Ok(vec![initial_state, notification])
+        Ok(initial_state)
     }
 
     /// Generates a hex-encoded blake2 hash of the identity info with 0x prefix
@@ -1206,8 +1185,8 @@ impl Listener {
                     None => continue,
                 };
 
-                // send message, break if channel closed
-                if let Err(_) = sender.send(obj).await {
+                // send message&notification, break if channel closed
+                if let Err(_) = sender.send(serde_json::Value::Array(obj)).await {
                     info!("WebSocket channel closed, stopping Redis listener");
                     break;
                 }
@@ -1819,6 +1798,8 @@ impl RedisConnection {
         Ok(())
     }
 
+    // TODO: only inform what was verified
+    // now quite duplicate with AccountState
     pub async fn notify_state_change(
         &mut self,
         network: &str,
@@ -1900,10 +1881,38 @@ impl RedisConnection {
         Ok(())
     }
 
+    async fn build_account_state_message(
+        &mut self,
+        network: &str,
+        account_id: &AccountId32,
+        hash: Option<String>, // optional for state updates
+    ) -> anyhow::Result<serde_json::Value> {
+        let fields = self.extract_info(network, account_id).await?;
+        let pending_challenges = self.get_challenges(network, account_id).await?;
+
+        Ok(serde_json::json!({
+            "type": "JsonResult",
+            "payload": {
+                "type": "ok",
+                "message": {
+                    "AccountState": {
+                        "account": account_id.to_string(),
+                        "network": network,
+                        "hashed_info": hash,
+                        "verification_state": {
+                            "fields": fields
+                        },
+                        "pending_challenges": pending_challenges
+                    }
+                }
+            }
+        }))
+    }
+
     pub async fn process_state_change(
         redis_cfg: &RedisConfig,
         msg: &redis::Msg,
-    ) -> anyhow::Result<Option<(AccountId32, serde_json::Value)>> {
+    ) -> anyhow::Result<Option<(AccountId32, Vec<serde_json::Value>)>> {
         let mut conn = RedisConnection::create_conn(redis_cfg)?;
         let payload: String = msg.get_payload()?;
         let channel = msg.get_channel_name();
@@ -1942,14 +1951,9 @@ impl RedisConnection {
             None => return Ok(None),
         };
 
-        Ok(Some((
-            id,
-            serde_json::json!({
-                "type": "AccountState",
-                "network": network,
-                "verification_state": state,
-                "operation": payload,
-            }),
-        )))
+        let account_state = conn.build_account_state_message(network, &id, None).await?;
+        let notification = conn.notify_state_change(network, &id, &state).await?;
+
+        Ok(Some((id, vec![account_state, notification])))
     }
 }
