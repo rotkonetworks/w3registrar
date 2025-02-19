@@ -1,61 +1,105 @@
+// runner.rs
 use std::future::Future;
-
-use tokio::task::JoinHandle;
+use tokio::{sync::broadcast, task::JoinHandle, time::Duration};
 use tracing::{error, info};
-/// NOTE: I hate how short this file is
+use std::collections::HashMap;
 
-#[derive(Default)]
+// tracks which services are running to avoid duplicates
+pub struct ServiceTracker { // TODO: track full adapter state/connections
+    services: HashMap<&'static str, bool>,
+}
+
+impl ServiceTracker {
+    fn new() -> Self {
+        Self {
+            services: HashMap::new(),
+        }
+    }
+
+    fn is_running(&self, service: &'static str) -> bool {
+        self.services.get(service).copied().unwrap_or(false)
+    }
+
+    fn mark_running(&mut self, service: &'static str) {
+        self.services.insert(service, true);
+    }
+}
+
 pub struct Runner {
-    handlers: Vec<JoinHandle<()>>,
+    tasks: Vec<JoinHandle<()>>,
+    shutdown: broadcast::Sender<()>,  
+    services: ServiceTracker,
 }
 
 impl Runner {
-    /// Neat wrapper around [tokio::spawn]
-    async fn spawn<F, Fut>(spawner: F) -> JoinHandle<()>
+    pub fn new() -> Self {
+        let (shutdown_tx, _) = broadcast::channel(1);
+        Self {
+            tasks: Vec::new(),
+            shutdown: shutdown_tx,
+            services: ServiceTracker::new(),
+        }
+    }
+
+    // spawn a task only if it's not already running
+    pub async fn spawn<F, Fut>(&mut self, f: F, service_name: Option<&'static str>)
     where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = anyhow::Result<()>> + Send,
     {
-        tokio::spawn(async move {
-            info!("Spawning listener...");
-            if let Err(e) = spawner().await {
-                error!("listener error: {}", e);
+        // check if this is a unique service that's already running
+        if let Some(name) = service_name {
+            if self.services.is_running(name) {
+                info!("service {} already running, skipping", name);
+                return;
             }
-        })
-    }
+            self.services.mark_running(name);
+        }
 
-    /// Push a job to the queue
-    pub async fn push<F, Fut>(&mut self, handler: F)
-    where
-        F: FnOnce() -> Fut + Send + 'static,
-        Fut: Future<Output = anyhow::Result<()>> + Send,
-    {
-        self.handlers.push(Self::spawn(handler).await);
-    }
-
-    /// Run jobs, Ctr-C for gracefully shutdown
-    pub async fn run(self) {
-        info!("Spawning {} jobs", self.handlers.len());
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                info!("Shutdown signal received");
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                std::process::exit(0);
-            }
-            result = futures::future::join_all(self.handlers) => {
-                // check if any tasks failed
-                let failed_tasks: Vec<_> = result
-                    .into_iter()
-                    .filter(|r| r.is_err())
-                    .collect();
-
-                if !failed_tasks.is_empty() {
-                    error!("{} tasks failed - system needs restart", failed_tasks.len());
-                    std::process::exit(1);
-                } else {
-                    info!("All services completed successfully");
+        let mut shutdown_rx = self.shutdown.subscribe();
+        self.tasks.push(tokio::spawn(async move {
+            tokio::select! {
+                res = f() => {
+                    if let Err(e) = res {
+                        error!("task error: {}", e);
+                    }
+                }
+                _ = shutdown_rx.recv() => {
+                    info!("task received shutdown signal");
                 }
             }
+        }));
+    }
+
+    pub async fn run(self) {
+        info!("running {} tasks", self.tasks.len());
+
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                info!("received interrupt signal");
+                let _ = self.shutdown.send(());
+                
+                // give tasks time to clean up
+                tokio::time::sleep(Duration::from_secs(1)).await;
+
+                // force abort any remaining tasks
+                for task in self.tasks.iter() {
+                    task.abort();
+                }
+
+                info!("forced shutdown complete");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                error!("failed to listen for interrupt: {}", e);
+                std::process::exit(1);
+            }
         }
+    }
+}
+
+impl Default for Runner {
+    fn default() -> Self {
+        Self::new()
     }
 }
