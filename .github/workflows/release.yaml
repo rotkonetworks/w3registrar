@@ -23,7 +23,7 @@ jobs:
         run: nix build .#defaultPackage.x86_64-linux
         
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: result/bin/w3registrar
