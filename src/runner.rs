@@ -1,11 +1,12 @@
 // runner.rs
+use std::collections::HashMap;
 use std::future::Future;
 use tokio::{sync::broadcast, task::JoinHandle, time::Duration};
 use tracing::{error, info};
-use std::collections::HashMap;
 
 // tracks which services are running to avoid duplicates
-pub struct ServiceTracker { // TODO: track full adapter state/connections
+pub struct ServiceTracker {
+    // TODO: track full adapter state/connections
     services: HashMap<&'static str, bool>,
 }
 
@@ -27,7 +28,7 @@ impl ServiceTracker {
 
 pub struct Runner {
     tasks: Vec<JoinHandle<()>>,
-    shutdown: broadcast::Sender<()>,  
+    shutdown: broadcast::Sender<()>,
     services: ServiceTracker,
 }
 
@@ -78,7 +79,7 @@ impl Runner {
             Ok(()) => {
                 info!("received interrupt signal");
                 let _ = self.shutdown.send(());
-                
+
                 // give tasks time to clean up
                 tokio::time::sleep(Duration::from_secs(1)).await;
 

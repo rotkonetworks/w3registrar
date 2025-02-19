@@ -23,7 +23,7 @@ fn setup_logging() -> Result<()> {
              matrix_sdk=error,\
              matrix_sdk_crypto=error,\
              matrix_sdk_base=error,\
-             ruma_common::push=error"
+             ruma_common::push=error",
         )
     });
 
@@ -83,9 +83,9 @@ async fn main() -> Result<()> {
 
     info!("starting w3registrar...");
 
-    // load configuration 
-    let config = Config::set_global_config()
-        .context("failed to load and set global configuration")?;
+    // load configuration
+    let config =
+        Config::set_global_config().context("failed to load and set global configuration")?;
 
     // initialize runner
     let mut runner = runner::Runner::new();
@@ -107,7 +107,9 @@ async fn main() -> Result<()> {
 
     if needs_matrix_bot {
         info!("starting matrix bot service...");
-        runner.spawn(matrix::start_bot, Some("matrix_service")).await;
+        runner
+            .spawn(matrix::start_bot, Some("matrix_service"))
+            .await;
     }
 
     if needs_web {

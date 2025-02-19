@@ -566,7 +566,7 @@ impl Listener {
             network_cfg.registrar_index,
             network,
         )
-            .await?;
+        .await?;
 
         // 3) for each discovered account, only create a token if we do not
         //    already have one stored. Otherwise, reuse the old token/challenge.
@@ -634,8 +634,8 @@ impl Listener {
             }
             // TODO: Add endpoint for inputting verifications
             _ => Err(anyhow!(
-                    "Unsupported message type: {}",
-                    message.message_type
+                "Unsupported message type: {}",
+                message.message_type
             )),
         }
     }
@@ -728,8 +728,8 @@ impl Listener {
 
             if !supported {
                 return Err(anyhow!(
-                        "Account type {} is not supported on this network",
-                        acc_type,
+                    "Account type {} is not supported on this network",
+                    acc_type,
                 ));
             }
         }
@@ -741,7 +741,7 @@ impl Listener {
     fn has_paid_fee(judgements: Vec<(u32, Judgement<u128>)>) -> anyhow::Result<(), anyhow::Error> {
         if judgements
             .iter()
-                .any(|(_, j)| matches!(j, Judgement::FeePaid(_)))
+            .any(|(_, j)| matches!(j, Judgement::FeePaid(_)))
         {
             Ok(())
         } else {
@@ -947,35 +947,35 @@ impl Listener {
         match self
             ._handle_incoming(Message::Text(text.into()), subscriber)
             .await
-            {
-                Ok(response) => {
-                    let serialized = match serde_json::to_string(&response) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!(parent: span, error = %e, "Failed to serialize response");
-                            return true;
-                        }
-                    };
-
-                    if let Err(e) = Self::send_message(write, serialized).await {
-                        error!(parent: span, error = %e, "Failed to send response");
-                        return false;
+        {
+            Ok(response) => {
+                let serialized = match serde_json::to_string(&response) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!(parent: span, error = %e, "Failed to serialize response");
+                        return true;
                     }
+                };
 
-                    if let Some(id) = subscriber.take() {
-                        info!(parent: span, subscriber_id = %id, "New subscriber registered");
-                        let mut cloned_self = self.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = cloned_self.spawn_redis_listener(sender, id, response).await
-                            {
-                                error!(error = %e, "Redis listener error");
-                            }
-                        });
-                    }
-                    true
+                if let Err(e) = Self::send_message(write, serialized).await {
+                    error!(parent: span, error = %e, "Failed to send response");
+                    return false;
                 }
-                Err(e) => self.handle_error_response(write, e, span).await,
+
+                if let Some(id) = subscriber.take() {
+                    info!(parent: span, subscriber_id = %id, "New subscriber registered");
+                    let mut cloned_self = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = cloned_self.spawn_redis_listener(sender, id, response).await
+                        {
+                            error!(error = %e, "Redis listener error");
+                        }
+                    });
+                }
+                true
             }
+            Err(e) => self.handle_error_response(write, e, span).await,
+        }
     }
 
     async fn handle_successful_response(
@@ -1287,7 +1287,7 @@ impl NodeListener {
             network_cfg.registrar_index,
             network,
         )
-            .await?;
+        .await?;
 
         let mut verification = AccountVerification::new(network.to_string());
 
@@ -1636,7 +1636,7 @@ impl RedisConnection {
                     .as_ref()
                     .map(|token| vec![acc_type.clone(), token.clone()])
             })
-        .collect();
+            .collect();
 
         Ok(pending)
     }
@@ -1783,7 +1783,7 @@ impl RedisConnection {
             pipe.cmd("SET")
                 .arg(&key)
                 .arg(&serde_json::to_string(&info)?);
-            }
+        }
 
         pipe.exec(&mut self.conn)?;
         Ok(())
