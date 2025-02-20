@@ -48,7 +48,7 @@ pub struct AccountVerification {
     pub network: String,
     /// AccountType: challengeInfo
     pub challenges: HashMap<String, ChallengeInfo>,
-    pub all_done: bool,
+    pub completed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,7 +66,7 @@ impl AccountVerification {
             updated_at: Utc::now(),
             network,
             challenges: HashMap::new(),
-            all_done: false,
+            completed: false,
         }
     }
 
@@ -80,12 +80,11 @@ impl AccountVerification {
             },
         );
         self.updated_at = Utc::now();
-        self.update_all_done();
+        self.complete_all_challenges();
     }
 
-    // TODO: change the name of this method!!!
-    fn update_all_done(&mut self) {
-        self.all_done = !self.challenges.is_empty() && self.challenges.values().all(|c| c.done);
+    fn complete_all_challenges(&mut self) {
+        self.completed = !self.challenges.is_empty() && self.challenges.values().all(|c| c.done);
     }
 
     pub fn mark_challenge_done(&mut self, account_type: &str) -> bool {
@@ -93,7 +92,7 @@ impl AccountVerification {
             challenge.done = true;
             challenge.token = None;
             self.updated_at = Utc::now();
-            self.update_all_done();
+            self.complete_all_challenges();
             true
         } else {
             false
@@ -1146,7 +1145,7 @@ impl Listener {
                 return;
             }
 
-            // TODO: make this kill iteslf when an all_done state is true, since we don't want
+            // TODO: make this kill iteslf when an completed state is true, since we don't want
             // to listen for events forever!
             debug!("Starting message processing loop");
             loop {
