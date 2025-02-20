@@ -281,11 +281,10 @@ impl Matrix {
         let cfg = GLOBAL_CONFIG.get().unwrap();
         let redis_cfg = cfg.redis.clone();
         let mut redis_connection = RedisConnection::create_conn(&redis_cfg)?;
-        let querry = format!("{}|*", acc);
-        info!("Search querry: {}", querry);
+        let query = format!("{}|*", acc);
+        info!("Search query: {}", query);
 
-        // handle each instance of the account
-        let accounts_key = redis_connection.search(&querry)?;
+        let accounts_key = redis_connection.search(&query)?;
 
         if accounts_key.is_empty() {
             return Ok(());
@@ -293,9 +292,6 @@ impl Matrix {
 
         for acc_str in accounts_key {
             info!("Account: {}", acc_str);
-
-            // extract account ID from the account string
-            // <acc:name>:<acc_type>:<wallet_id>
             let parts: Vec<&str> = acc_str.splitn(4, '|').collect();
             if parts.len() != 4 {
                 continue;
@@ -304,16 +300,15 @@ impl Matrix {
             let account = Account::from_str(&format!("{}|{}", parts[0], parts[1]))?;
             let network = parts[2];
 
-            // this unwrap is fine, we checked above
             if let Ok(account_id) = AccountId32::from_str(parts[3]) {
-                if Self::handle_content(
+                if let Ok(true) = <Matrix as Adapter>::handle_content(
                     &text_content.body,
                     &mut redis_connection,
                     network,
                     &account_id,
                     &account,
                 )
-                .await?
+                .await
                 {
                     break;
                 }

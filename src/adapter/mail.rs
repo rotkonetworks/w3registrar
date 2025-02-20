@@ -33,106 +33,20 @@ impl Mail {
     fn new(sender: String, body: Option<String>) -> Self {
         Self { body, sender }
     }
-    /// Processes the content of an email message for account verification
-    /// Checks if the email body matches the expected verification token and updates
-    /// verification state in Redis accordingly
+
+    /// Process an incoming email for verification
+    /// Handles finding associated accounts and validating the verification token
     ///
     /// # Arguments
-    /// * `redis_connection` - Active Redis connection for state management
-    /// * `account_id` - The account ID being verified
-    /// * `network` - The network identifier (e.g., "polkadot", "kusama")
-    async fn handle_content_(
-        &self,
-        redis_connection: &mut RedisConnection,
-        account_id: &AccountId32,
-        network: &str,
-    ) -> anyhow::Result<()> {
-        let account_type = AccountType::Email.to_string();
-
-        let state = match redis_connection
-            .get_verification_state(network, account_id)
-            .await?
-        {
-            Some(state) => state,
-            None => {
-                info!(
-                    "No verification state found for {} on {}",
-                    account_id, network
-                );
-                return Ok(());
-            }
-        };
-        info!("Verification state: {:?}", state);
-
-        let challenge = match state.challenges.get(&account_type) {
-            Some(challenge) => challenge,
-            None => {
-                info!("No email challenge found in state");
-                return Ok(());
-            }
-        };
-        info!("Challenge: {:?}", challenge);
-
-        if challenge.done {
-            info!("Challenge already completed");
-            return Ok(());
-        }
-
-        let token = match &challenge.token {
-            Some(token) => token,
-            None => {
-                info!("No token found in challenge");
-                return Ok(());
-            }
-        };
-        info!("Expected token: {:?}", token);
-
-        let body_token = self
-            .body
-            .as_ref()
-            .and_then(|b| b.lines().next())
-            .map(|l| l.trim().to_owned());
-
-        info!("Received email body: {:?}", self.body);
-        info!("Extracted token from email: {:?}", body_token);
-
-        if body_token.ne(&Some(token.to_owned())) {
-            info!(
-                "Token mismatch - Expected: {:?}, Got: {:?}",
-                token, body_token
-            );
-            return Ok(());
-        }
-
-        info!("Token matched! Updating challenge status..");
-
-        redis_connection
-            .update_challenge_status(network, account_id, &account_type)
-            .await?;
-
-        let state = match redis_connection
-            .get_verification_state(network, account_id)
-            .await?
-        {
-            Some(state) => state,
-            None => return Ok(()),
-        };
-
-        if state.all_done {
-            info!("All challenges are done!");
-            let judgement_result = register_identity(account_id, network).await?;
-            info!("Judgement result: {:?}", judgement_result);
-        }
-        Ok(())
-    }
-
-    /// Entry point for processing incoming emails
-    /// Uses a single Redis connection for processing all accounts
-    async fn handle_content__(&self, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
+    /// * `redis_cfg` - Redis configuration for connecting to the database
+    ///
+    /// This is the main entry point for processing incoming verification emails.
+    /// It extracts the first line of the email body as the verification token
+    /// and uses the Adapter trait's handle_content implementation for validation.
+    async fn process_email(&self, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
         let account = Account::Email(self.sender.clone());
         let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
 
-        // <<type>|<name>>|<network>|<wallet_id>
         let search_query = format!("{}|*", account);
         let accounts = redis_connection.search(&search_query)?;
 
@@ -151,17 +65,26 @@ impl Mail {
             let network = info[2];
             let id = info[3];
             if let Ok(wallet_id) = AccountId32::from_str(id) {
-                // reuse the same redis connection for each account
-                let text = self
+                // Extract first line of email body as verification token
+                if let Some(text) = self
                     .body
                     .as_ref()
                     .and_then(|b| b.lines().next())
                     .map(|l| l.trim().to_owned())
-                    .unwrap();
-                Self::handle_content(&text, &mut redis_connection, network, &wallet_id, &account)
-                    .await;
-                // self.handle_content_(&mut redis_connection, &wallet_id, network)
-                //     .await?;
+                {
+                    // Use the trait's handle_content implementation for verification
+                    if let Err(e) = <Mail as Adapter>::handle_content(
+                        &text,
+                        &mut redis_connection,
+                        network,
+                        &wallet_id,
+                        &account,
+                    )
+                    .await
+                    {
+                        error!("Failed to handle content: {}", e);
+                    }
+                }
             }
         }
         Ok(())
@@ -350,7 +273,7 @@ impl MailServer {
                         mail.body.as_deref().unwrap_or("(no content)")
                     );
 
-                    match mail.handle_content__(&self.redis_cfg).await {
+                    match mail.process_email(&self.redis_cfg).await {
                         Ok(_) => info!("Successfully processed mail from {}", mail.sender),
                         Err(e) => error!("Failed to process mail content: {}", e),
                     }
