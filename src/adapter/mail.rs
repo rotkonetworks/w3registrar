@@ -16,6 +16,7 @@ use native_tls::{TlsConnector, TlsStream};
 use subxt::utils::AccountId32;
 use tracing::{error, info};
 
+use crate::api::{RedisPool, RedisPoolExt};
 use crate::config::GLOBAL_CONFIG;
 
 /// Represents an email message with optional body content and sender information
@@ -37,56 +38,57 @@ impl Mail {
     /// Process an incoming email for verification
     /// Handles finding associated accounts and validating the verification token
     ///
-    /// # Arguments
-    /// * `redis_cfg` - Redis configuration for connecting to the database
-    ///
     /// This is the main entry point for processing incoming verification emails.
     /// It extracts the first line of the email body as the verification token
     /// and uses the Adapter trait's handle_content implementation for validation.
-    async fn process_email(&self, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
+    async fn process_email(&self) -> anyhow::Result<()> {
         let account = Account::Email(self.sender.clone());
-        let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
 
-        let search_query = format!("{}|*", account);
-        let accounts = redis_connection.search(&search_query)?;
+        RedisPool::with_connection(|redis_connection| async {
+            let search_query = format!("{}|*", account);
+            let accounts = redis_connection.search(&search_query)?;
 
-        if accounts.is_empty() {
-            info!("No account found for {}", search_query);
-            return Ok(());
-        }
-
-        for acc_str in accounts {
-            info!("Account: {}", acc_str);
-            let info: Vec<&str> = acc_str.split("|").collect();
-            if info.len() != 4 {
-                continue;
+            if accounts.is_empty() {
+                info!("No account found for {}", search_query);
+                return Ok(());
             }
 
-            let network = info[2];
-            let id = info[3];
-            if let Ok(wallet_id) = AccountId32::from_str(id) {
-                // Extract first line of email body as verification token
-                if let Some(text) = self
-                    .body
-                    .as_ref()
-                    .and_then(|b| b.lines().next())
-                    .map(|l| l.trim().to_owned())
-                {
-                    // Use the trait's handle_content implementation for verification
-                    if let Err(e) = <Mail as Adapter>::handle_content(
-                        &text,
-                        &mut redis_connection,
-                        network,
-                        &wallet_id,
-                        &account,
-                    )
-                    .await
+            for acc_str in accounts {
+                info!("Account: {}", acc_str);
+                let info: Vec<&str> = acc_str.split("|").collect();
+                if info.len() != 4 {
+                    continue;
+                }
+
+                let network = info[2];
+                let id = info[3];
+                if let Ok(wallet_id) = AccountId32::from_str(id) {
+                    // Extract first line of email body as verification token
+                    if let Some(text) = self
+                        .body
+                        .as_ref()
+                        .and_then(|b| b.lines().next())
+                        .map(|l| l.trim().to_owned())
                     {
-                        error!("Failed to handle content: {}", e);
+                        // Use the trait's handle_content implementation for verification
+                        if let Err(e) = <Mail as Adapter>::handle_content(
+                            &text,
+                            redis_connection,
+                            network,
+                            &wallet_id,
+                            &account,
+                        )
+                        .await
+                        {
+                            error!("Failed to handle content: {}", e);
+                        }
                     }
                 }
             }
-        }
+            Ok(())
+        })
+        .await?;
+
         Ok(())
     }
 }
@@ -94,7 +96,6 @@ impl Mail {
 /// IMAP mail server connection manager that handles email verification messages
 pub struct MailServer {
     session: Session<TlsStream<TcpStream>>,
-    redis_cfg: RedisConfig,
     mailbox: String,
 }
 
@@ -162,7 +163,6 @@ impl MailServer {
         info!("Sucessfull login to mail account {}", email_cfg.email);
 
         Ok(Self {
-            redis_cfg: cfg.redis.clone(),
             mailbox: email_cfg.mailbox.clone(),
             session,
         })
@@ -273,7 +273,7 @@ impl MailServer {
                         mail.body.as_deref().unwrap_or("(no content)")
                     );
 
-                    match mail.process_email(&self.redis_cfg).await {
+                    match mail.process_email().await {
                         Ok(_) => info!("Successfully processed mail from {}", mail.sender),
                         Err(e) => error!("Failed to process mail content: {}", e),
                     }

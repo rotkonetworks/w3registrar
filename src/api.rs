@@ -6,9 +6,12 @@ use chrono::{DateTime, Utc};
 use futures::channel::mpsc::{self, Sender};
 use futures::stream::SplitSink;
 use futures::stream::SplitStream;
+use std::future::Future;
 use futures::StreamExt;
 use futures_util::SinkExt;
+use once_cell::sync::OnceCell;
 use redis::{self, Client as RedisClient, Commands};
+use redis::{aio::MultiplexedConnection as ConnectionManager, Client, RedisResult, ConnectionInfo};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -547,63 +550,68 @@ impl Listener {
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
         let registration = node::get_registration(&client, &request.payload).await?;
 
-        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
+        RedisPool::with_connection(|redis_connection| async move {
 
-        // 1) attempt to load existing verification state, if any
-        let existing_verification = conn
-            .get_verification_state(network, &request.payload)
+            // 1) attempt to load existing verification state, if any
+            let existing_verification = redis_connection
+                .get_verification_state(network, &request.payload)
+                .await?;
+
+            // 2) if none found, create a fresh AccountVerification
+            let mut verification =
+                existing_verification.unwrap_or_else(|| AccountVerification::new(network.to_string()));
+
+            // get the accounts from the chain's identity info
+            let accounts = filter_accounts(
+                &registration.info,
+                &request.payload,
+                network_cfg.registrar_index,
+                network,
+            )
             .await?;
 
-        // 2) if none found, create a fresh AccountVerification
-        let mut verification =
-            existing_verification.unwrap_or_else(|| AccountVerification::new(network.to_string()));
-
-        // get the accounts from the chain's identity info
-        let accounts = filter_accounts(
-            &registration.info,
-            &request.payload,
-            network_cfg.registrar_index,
-            network,
-        )
-        .await?;
-
-        // 3) for each discovered account, only create a token if we do not
-        //    already have one stored. Otherwise, reuse the old token/challenge.
-        for (account, is_done) in &accounts {
-            let (acc_type, name) = match account {
-                Account::Discord(name) => ("discord", name),
-                Account::Twitter(name) => ("twitter", name),
-                Account::Matrix(name) => ("matrix", name),
-                Account::Display(name) => ("display_name", name),
-                Account::Email(name) => ("email", name),
-                Account::Github(name) => ("github", name),
-                Account::Legal(name) => ("legal", name),
-                Account::Web(name) => ("web", name),
-                Account::PGPFingerprint(bytes) => ("pgp_fingerprint", &hex::encode(bytes)),
-            };
-
-            // only add a new challenge if not already present.
-            // if *is_done or it's a display_name, we set `token=None` so it's considered done.
-            if !verification.challenges.contains_key(acc_type) {
-                let token = if account.should_skip_token(*is_done) {
-                    None
-                } else {
-                    Some(Token::generate().await.show())
+            // 3) for each discovered account, only create a token if we do not
+            //    already have one stored. Otherwise, reuse the old token/challenge.
+            for (account, is_done) in &accounts {
+                let (acc_type, name) = match account {
+                    Account::Discord(name) => ("discord", name),
+                    Account::Twitter(name) => ("twitter", name),
+                    Account::Matrix(name) => ("matrix", name),
+                    Account::Display(name) => ("display_name", name),
+                    Account::Email(name) => ("email", name),
+                    Account::Github(name) => ("github", name),
+                    Account::Legal(name) => ("legal", name),
+                    Account::Web(name) => ("web", name),
+                    Account::PGPFingerprint(bytes) => ("pgp_fingerprint", &hex::encode(bytes)),
                 };
-                verification.add_challenge(acc_type, name.clone(), token);
+
+                // only add a new challenge if not already present.
+                // if *is_done or it's a display_name, we set `token=None` so it's considered done.
+                if !verification.challenges.contains_key(acc_type) {
+                    let token = if account.should_skip_token(*is_done) {
+                        None
+                    } else {
+                        Some(Token::generate().await.show())
+                    };
+                    verification.add_challenge(acc_type, name.clone(), token);
+                }
             }
-        }
 
-        // save new state
-        conn.init_verification_state(network, &request.payload, &verification, &accounts)
-            .await?;
+            // save new state
+            redis_connection
+                .init_verification_state(network, &request.payload, &verification, &accounts)
+                .await?;
 
-        // get hash and build state message
-        let hash = self.hash_identity_info(&registration.info);
+            // get hash and build state message
+            let hash = self.hash_identity_info(&registration.info);
 
-        // return state in json
-        conn.build_account_state_message(network, &request.payload, Some(hash))
-            .await
+            // return state in json
+            redis_connection
+                .build_account_state_message(network, &request.payload, Some(hash))
+                .await
+
+        }).await? // end the pool connection
+
     }
 
     /// Generates a hex-encoded blake2 hash of the identity info with 0x prefix
@@ -1123,15 +1131,15 @@ impl Listener {
         info!("Starting Redis listener task!");
 
         tokio::spawn(async move {
-            let mut redis_conn = match RedisConnection::create_conn(&redis_cfg) {
-                Ok(conn) => conn,
+            RedisPool::with_connection(|redis_connection| async move {
+                Ok(redis_connection) => redis_connection,
                 Err(e) => {
                     error!("Failed to create Redis connection: {}", e);
                     return;
                 }
-            };
+            }).await?;
 
-            let mut pubsub = redis_conn.as_pubsub();
+            let mut pubsub = redis_connection.as_pubsub();
             let network = &response["payload"]["message"]["AccountState"]["network"];
             let channel = format!(
                 "__keyspace@0__:{}|{}",
@@ -1276,47 +1284,49 @@ impl NodeListener {
         // validation
         Listener::check_node(who.clone(), accounts.clone(), network).await?;
 
-        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
-        conn.clear_all_related_to(network, who).await?;
+        RedisPool::with_connection(|redis_connection| async move {
+            redis_connection.clear_all_related_to(network, who).await?;
 
-        // filter accounts and create verification state
-        let filtered_accounts = filter_accounts(
-            &registration.info,
-            who,
-            network_cfg.registrar_index,
-            network,
-        )
-        .await?;
-
-        let mut verification = AccountVerification::new(network.to_string());
-
-        // set up verification challenges
-        for (account, is_done) in &filtered_accounts {
-            let (acc_type, name) = match account {
-                Account::Discord(name) => ("discord", name.clone()),
-                Account::Twitter(name) => ("twitter", name.clone()),
-                Account::Matrix(name) => ("matrix", name.clone()),
-                Account::Display(name) => ("display_name", name.clone()),
-                Account::Email(name) => ("email", name.clone()),
-                Account::Github(name) => ("github", name.clone()),
-                Account::Legal(name) => ("legal", name.clone()),
-                Account::Web(name) => ("web", name.clone()),
-                Account::PGPFingerprint(bytes) => ("pgp_fingerprint", hex::encode(bytes)),
-            };
-
-            let token = if account.should_skip_token(*is_done) {
-                None
-            } else {
-                Some(Token::generate().await.show())
-            };
-            verification.add_challenge(acc_type, name.clone(), token);
-        }
-
-        // Save verification state to Redis
-        conn.init_verification_state(network, who, &verification, &filtered_accounts)
+            // filter accounts and create verification state
+            let filtered_accounts = filter_accounts(
+                &registration.info,
+                who,
+                network_cfg.registrar_index,
+                network,
+            )
             .await?;
 
-        Ok(())
+            let mut verification = AccountVerification::new(network.to_string());
+
+            // set up verification challenges
+            for (account, is_done) in &filtered_accounts {
+                let (acc_type, name) = match account {
+                    Account::Discord(name) => ("discord", name.clone()),
+                    Account::Twitter(name) => ("twitter", name.clone()),
+                    Account::Matrix(name) => ("matrix", name.clone()),
+                    Account::Display(name) => ("display_name", name.clone()),
+                    Account::Email(name) => ("email", name.clone()),
+                    Account::Github(name) => ("github", name.clone()),
+                    Account::Legal(name) => ("legal", name.clone()),
+                    Account::Web(name) => ("web", name.clone()),
+                    Account::PGPFingerprint(bytes) => ("pgp_fingerprint", hex::encode(bytes)),
+                };
+
+                let token = if account.should_skip_token(*is_done) {
+                    None
+                } else {
+                    Some(Token::generate().await.show())
+                };
+                verification.add_challenge(acc_type, name.clone(), token);
+            }
+
+            // Save verification state to Redis
+            redis_connection
+                .init_verification_state(network, who, &verification, &filtered_accounts)
+                .await?;
+
+            Ok(())
+        }).await?
     }
 
     pub async fn handle_node_events(
@@ -1486,9 +1496,9 @@ impl NodeListener {
     /// # Note
     /// this method should be used in conjunction with the `JudgementUnrequested` event
     async fn cancel_registration(&self, who: &AccountId32, network: &str) -> anyhow::Result<()> {
-        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
-        conn.clear_all_related_to(network, who).await?;
-        Ok(())
+        RedisPool::with_connection(|redis_connection| async move {
+            redis_connection.clear_all_related_to(network, who).await
+        }).await
     }
 }
 
@@ -1522,26 +1532,26 @@ impl Default for VerificationFields {
 }
 
 pub async fn spawn_redis_subscriber() -> anyhow::Result<()> {
-    let redis_cfg = GLOBAL_CONFIG.get().unwrap().redis.clone();
     let span = span!(Level::INFO, "redis_subscriber");
     info!(parent: &span, "Starting Redis subscriber service");
 
-    let mut redis_conn = RedisConnection::create_conn(&redis_cfg)?;
-    let mut pubsub = redis_conn.as_pubsub();
-
-    while let Ok(msg) = pubsub.get_message() {
-        if let Err(e) = handle_redis_message(&redis_cfg, &msg).await {
-            error!(parent: &span, error = %e, "Failed to handle Redis message");
-            continue;
+    RedisPool::with_connection(|redis_connection| async move {
+        let mut pubsub = redis_connection.as_pubsub();
+        
+        while let Ok(msg) = pubsub.get_message() {
+            if let Err(e) = handle_redis_message(&msg).await {
+                error!(parent: &span, error = %e, "Failed to handle Redis message");
+                continue;
+            }
         }
-    }
 
-    info!(parent: &span, "Redis subscription ended");
-    Ok(())
+        info!(parent: &span, "Redis subscription ended");
+        Ok(())
+    }).await
 }
 
-async fn handle_redis_message(redis_cfg: &RedisConfig, msg: &redis::Msg) -> anyhow::Result<()> {
-    if let Ok(Some((id, value))) = RedisConnection::process_state_change(redis_cfg, msg).await {
+async fn handle_redis_message(msg: &redis::Msg) -> anyhow::Result<()> {
+    if let Ok(Some((id, value))) = RedisConnection::process_state_change(msg).await {
         info!("Processed state change for {}: {:?}", id, value);
     }
     Ok(())
@@ -1549,7 +1559,7 @@ async fn handle_redis_message(redis_cfg: &RedisConfig, msg: &redis::Msg) -> anyh
 
 // TODO: move this to another file?
 pub struct RedisConnection {
-    conn: redis::Connection,
+    connection: redis::Connection,
 }
 
 impl RedisConnection {
@@ -1563,28 +1573,30 @@ impl RedisConnection {
             anyhow!("Cannot open Redis client: {}", e)
         })?;
 
-        let mut conn = client.get_connection().map_err(|e| {
+        let mut redis_connection = client.get_connection().map_err(|e| {
             error!(parent: &span, error = %e, "Failed to establish Redis connection");
             anyhow!("Cannot establish Redis connection: {}", e)
         })?;
 
         info!(parent: &span, "Enabling keyspace notifications");
-        RedisConnection::enable_keyspace_notifications(&mut conn)?;
+        RedisConnection::enable_keyspace_notifications(&mut redis_connection)?;
 
         info!(parent: &span, "Redis connection successfully established");
-        Ok(Self { conn })
+        Ok(Self { redis_connection })
     }
 
     pub fn as_pubsub(&mut self) -> redis::PubSub<'_> {
-        self.conn.as_pubsub()
+        self.redis_connection.as_pubsub()
     }
 
-    fn enable_keyspace_notifications(conn: &mut redis::Connection) -> anyhow::Result<()> {
+    fn enable_keyspace_notifications(
+        redis_connection: &mut redis::Connection,
+    ) -> anyhow::Result<()> {
         redis::cmd("CONFIG")
             .arg("SET")
             .arg("notify-keyspace-events")
             .arg("KEA")
-            .query::<()>(&mut *conn)
+            .query::<()>(&mut *redis_connection)
             .map_err(|e| anyhow!("Cannot set notify-keyspace-events: {}", e))
     }
 
@@ -1594,7 +1606,7 @@ impl RedisConnection {
         account_id: &AccountId32,
     ) -> anyhow::Result<redis::PubSub> {
         let related_keys = self.search(&format!("*|{}", account_id.to_string()))?;
-        let mut pubsub = self.conn.as_pubsub();
+        let mut pubsub = self.redis_connection.as_pubsub();
 
         for key in related_keys {
             let channel = format!("__keyspace@0__:{}", key);
@@ -1608,7 +1620,7 @@ impl RedisConnection {
     /// Search through the redis for keys that are similar to the `pattern`
     pub fn search(&mut self, pattern: &str) -> anyhow::Result<Vec<String>> {
         Ok(self
-            .conn
+            .redis_connection
             .scan_match::<&str, String>(pattern)?
             .collect::<Vec<String>>())
     }
@@ -1724,7 +1736,7 @@ impl RedisConnection {
             pipe.cmd("DEL").arg(account);
         }
 
-        pipe.exec(&mut self.conn)?;
+        pipe.exec(&mut self.redis_connection)?;
         Ok(())
     }
 
@@ -1744,7 +1756,7 @@ impl RedisConnection {
                 pipe.arg(&serde_json::to_string(&challenge_info)?);
             }
         }
-        let _ = pipe.exec(&mut self.conn);
+        let _ = pipe.exec(&mut self.redis_connection);
         Ok(())
     }
 
@@ -1761,7 +1773,7 @@ impl RedisConnection {
             .cmd("SET")
             .arg(&key)
             .arg(value)
-            .exec(&mut self.conn)?;
+            .exec(&mut self.redis_connection)?;
 
         Ok(())
     }
@@ -1784,7 +1796,7 @@ impl RedisConnection {
                 .arg(&serde_json::to_string(&info)?);
         }
 
-        pipe.exec(&mut self.conn)?;
+        pipe.exec(&mut self.redis_connection)?;
         Ok(())
     }
 
@@ -1809,7 +1821,7 @@ impl RedisConnection {
     ) -> anyhow::Result<Option<AccountVerification>> {
         let key = format!("{}|{}", account_id, network);
         info!("key: {}", key);
-        let value: Option<String> = self.conn.get(&key)?;
+        let value: Option<String> = self.redis_connection.get(&key)?;
 
         match value {
             Some(json) => Ok(Some(serde_json::from_str(&json)?)),
@@ -1842,7 +1854,7 @@ impl RedisConnection {
         account_id: &AccountId32,
     ) -> anyhow::Result<()> {
         let key = format!("{}|{}", account_id, network);
-        let _: () = self.conn.del(&key)?;
+        let _: () = self.redis_connection.del(&key)?;
         Ok(())
     }
 
@@ -1875,10 +1887,8 @@ impl RedisConnection {
     }
 
     pub async fn process_state_change(
-        redis_cfg: &RedisConfig,
         msg: &redis::Msg,
     ) -> anyhow::Result<Option<(AccountId32, serde_json::Value)>> {
-        let mut conn = RedisConnection::create_conn(redis_cfg)?;
         let payload: String = msg.get_payload()?;
         let channel = msg.get_channel_name();
 
@@ -1910,8 +1920,54 @@ impl RedisConnection {
             Err(_) => return Ok(None),
         };
 
-        let account_state = conn.build_account_state_message(network, &id, None).await?;
+        RedisPool::with_connection(|redis_connection| async move {
+            redis_connection
+                .build_account_state_message(network, &id, None)
+                .await
+                .map(|account_state| Some((id, account_state)))
+        }).await
+    }
+}
 
-        Ok(Some((id, account_state)))
+static REDIS_POOL: OnceCell<Mutex<ConnectionManager>> = OnceCell::new();
+
+pub struct RedisPool;
+
+impl RedisPool {
+pub async fn init(config: &crate::config::RedisConfig) -> Result<()> {
+        let client = Client::open(config.url()?)?;
+        let (manager, connection_fut) = ConnectionManager::new(client).await?;
+        tokio::spawn(connection_fut);
+        REDIS_POOL.set(Mutex::new(manager))
+            .map_err(|_| anyhow!("Redis pool already initialized"))?;
+        Ok(())
+    }
+
+    pub async fn get() -> RedisResult<&'static Mutex<ConnectionManager>> {
+        REDIS_POOL.get().ok_or(redis::RedisError::from((
+            redis::ErrorKind::ClientError,
+            "Redis pool not initialized",
+        )))
+    }
+}
+
+#[async_trait::async_trait]
+pub trait RedisPoolExt {
+    async fn with_connection<F, Fut, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut ConnectionManager) -> Fut + Send,
+        Fut: Future<Output = Result<T>> + Send;
+}
+
+#[async_trait::async_trait]
+impl RedisPoolExt for RedisPool {
+    async fn with_connection<F, Fut, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut ConnectionManager) -> Fut + Send,
+        Fut: Future<Output = Result<T>> + Send,
+    {
+        let pool = Self::get().await?;
+        let mut conn = pool.lock().await;
+        f(&mut conn).await
     }
 }

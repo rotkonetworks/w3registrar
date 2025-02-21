@@ -30,8 +30,9 @@ use tracing::{error, info, warn};
 use std::path::Path;
 
 use crate::api::Account;
+use crate::api::{RedisPool, RedisPoolExt};
+use crate::node::register_identity;
 use crate::GLOBAL_CONFIG;
-use crate::{api::RedisConnection, node::register_identity};
 
 // TODO: move those "independent" functions inside the Matrix struct (handle_content, etc.)
 
@@ -278,42 +279,47 @@ impl Matrix {
             "\nMatrix Message\nSender: {:#?}\nMessage: {}\nRaw Content: {:#?}",
             acc, text_content.body, text_content
         );
+
         let cfg = GLOBAL_CONFIG.get().unwrap();
-        let redis_cfg = cfg.redis.clone();
-        let mut redis_connection = RedisConnection::create_conn(&redis_cfg)?;
-        let query = format!("{}|*", acc);
-        info!("Search query: {}", query);
 
-        let accounts_key = redis_connection.search(&query)?;
+        RedisPool::with_connection(|redis_connection| async {
+            let query = format!("{}|*", acc);
+            info!("Search query: {}", query);
 
-        if accounts_key.is_empty() {
-            return Ok(());
-        }
+            let accounts_key = redis_connection.search(&query)?;
 
-        for acc_str in accounts_key {
-            info!("Account: {}", acc_str);
-            let parts: Vec<&str> = acc_str.splitn(4, '|').collect();
-            if parts.len() != 4 {
-                continue;
+            if accounts_key.is_empty() {
+                return Ok(());
             }
-            info!("Parts: {:#?}", parts);
-            let account = Account::from_str(&format!("{}|{}", parts[0], parts[1]))?;
-            let network = parts[2];
 
-            if let Ok(account_id) = AccountId32::from_str(parts[3]) {
-                if let Ok(true) = <Matrix as Adapter>::handle_content(
-                    &text_content.body,
-                    &mut redis_connection,
-                    network,
-                    &account_id,
-                    &account,
-                )
-                .await
-                {
-                    break;
+            for acc_str in accounts_key {
+                info!("Account: {}", acc_str);
+                let parts: Vec<&str> = acc_str.splitn(4, '|').collect();
+                if parts.len() != 4 {
+                    continue;
+                }
+                info!("Parts: {:#?}", parts);
+                let account = Account::from_str(&format!("{}|{}", parts[0], parts[1]))?;
+                let network = parts[2];
+
+                if let Ok(account_id) = AccountId32::from_str(parts[3]) {
+                    if let Ok(true) = <Matrix as Adapter>::handle_content(
+                        &text_content.body,
+                        redis_connection,
+                        network,
+                        &account_id,
+                        &account,
+                    )
+                    .await
+                    {
+                        break;
+                    }
                 }
             }
-        }
+            Ok(())
+        })
+        .await?;
+
         Ok(())
     }
 }
@@ -423,7 +429,7 @@ async fn handle_content(
     };
 
     // register identity if all challenges are completed
-    if state.all_done {
+    if state.completed {
         register_identity(account_id, network).await?;
     }
 

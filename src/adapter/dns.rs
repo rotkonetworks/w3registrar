@@ -1,4 +1,5 @@
-use crate::{api::RedisConnection, config::GLOBAL_CONFIG, node::register_identity};
+use crate::api::{RedisConnection, RedisPool, RedisPoolExt};
+use crate::node::register_identity;
 use anyhow::Result;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
@@ -10,6 +11,7 @@ use trust_dns_resolver::{
     proto::rr::{RData, RecordType},
     AsyncResolver,
 };
+
 
 const DNS_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -63,7 +65,7 @@ struct DnsChallenge {
 }
 
 impl DnsChallenge {
-    async fn from_key(key: &str, redis_conn: &mut RedisConnection) -> Result<Option<Self>> {
+    async fn from_key(key: &str, redis_connection: &mut RedisConnection) -> Result<Option<Self>> {
         let parts: Vec<&str> = key.split('|').collect();
         if parts.len() != 4 {
             return Ok(None);
@@ -79,7 +81,7 @@ impl DnsChallenge {
         let network = parts[2].to_string();
         let account_id = AccountId32::from_str(parts[3])?;
 
-        let state = match redis_conn
+        let state = match redis_connection
             .get_verification_state(&network, &account_id)
             .await?
         {
@@ -103,23 +105,23 @@ impl DnsChallenge {
         }))
     }
 
-    async fn verify(&self, redis_conn: &mut RedisConnection) -> Result<()> {
+    async fn verify(&self, redis_connection: &mut RedisConnection) -> Result<()> {
         if !verify_txt(&self.domain, &self.token).await {
             return Ok(());
         }
 
-        redis_conn
+        redis_connection
             .update_challenge_status(&self.network, &self.account_id, "web")
             .await?;
-        self.check_completion(redis_conn).await
+        self.check_completion(redis_connection).await
     }
 
-    async fn check_completion(&self, redis_conn: &mut RedisConnection) -> Result<()> {
-        if let Some(state) = redis_conn
+    async fn check_completion(&self, redis_connection: &mut RedisConnection) -> Result<()> {
+        if let Some(state) = redis_connection
             .get_verification_state(&self.network, &self.account_id)
             .await?
         {
-            if state.all_done {
+            if state.completed {
                 register_identity(&self.account_id, &self.network).await?;
             }
         }
@@ -128,22 +130,20 @@ impl DnsChallenge {
 }
 
 pub async fn watch_dns() -> anyhow::Result<()> {
-    let cfg = GLOBAL_CONFIG
-        .get()
-        .expect("GLOBAL_CONFIG is not initialized");
-    let mut redis_conn = RedisConnection::create_conn(&cfg.redis)?;
-
     loop {
-        if let Err(e) = process_challenges(&mut redis_conn).await {
+        if let Err(e) =
+            RedisPool::with_connection(|redis_connection| process_challenges(redis_connection))
+                .await
+        {
             error!("DNS challenge processing error: {}", e);
         }
         sleep(DNS_CHECK_INTERVAL).await;
     }
 }
 
-async fn process_challenges(redis_conn: &mut RedisConnection) -> Result<()> {
-    for challenge_key in redis_conn.search("web|*")? {
-        if let Err(e) = process_single_challenge(&challenge_key, redis_conn).await {
+async fn process_challenges(redis_connection: &mut RedisConnection) -> Result<()> {
+    for challenge_key in redis_connection.search("web|*")? {
+        if let Err(e) = process_single_challenge(&challenge_key, redis_connection).await {
             error!("Challenge processing failed {}: {}", challenge_key, e);
         }
     }
@@ -152,10 +152,10 @@ async fn process_challenges(redis_conn: &mut RedisConnection) -> Result<()> {
 
 async fn process_single_challenge(
     challenge_key: &str,
-    redis_conn: &mut RedisConnection,
+    redis_connection: &mut RedisConnection,
 ) -> Result<()> {
-    if let Some(challenge) = DnsChallenge::from_key(challenge_key, redis_conn).await? {
-        challenge.verify(redis_conn).await?;
+    if let Some(challenge) = DnsChallenge::from_key(challenge_key, redis_connection).await? {
+        challenge.verify(redis_connection).await?;
     }
     Ok(())
 }
