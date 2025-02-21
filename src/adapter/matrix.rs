@@ -280,7 +280,7 @@ impl Matrix {
         );
         let cfg = GLOBAL_CONFIG.get().unwrap();
         let redis_cfg = cfg.redis.clone();
-        let mut redis_connection = RedisConnection::create_conn(&redis_cfg)?;
+        let mut redis_connection = RedisConnection::get_connection(&redis_cfg)?;
         let query = format!("{}|*", acc);
         info!("Search query: {}", query);
 
