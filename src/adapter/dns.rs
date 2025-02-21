@@ -119,7 +119,7 @@ impl DnsChallenge {
             .get_verification_state(&self.network, &self.account_id)
             .await?
         {
-            if state.all_done {
+            if state.completed {
                 register_identity(&self.account_id, &self.network).await?;
             }
         }

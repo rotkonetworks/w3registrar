@@ -423,7 +423,7 @@ async fn handle_content(
     };
 
     // register identity if all challenges are completed
-    if state.all_done {
+    if state.completed {
         register_identity(account_id, network).await?;
     }
 
