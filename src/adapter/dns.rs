@@ -131,7 +131,7 @@ pub async fn watch_dns() -> anyhow::Result<()> {
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
-    let mut redis_conn = RedisConnection::create_conn(&cfg.redis)?;
+    let mut redis_conn = RedisConnection::get_connection(&cfg.redis)?;
 
     loop {
         if let Err(e) = process_challenges(&mut redis_conn).await {

@@ -45,7 +45,7 @@ impl Mail {
     /// and uses the Adapter trait's handle_content implementation for validation.
     async fn process_email(&self, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
         let account = Account::Email(self.sender.clone());
-        let mut redis_connection = RedisConnection::create_conn(redis_cfg)?;
+        let mut redis_connection = RedisConnection::get_connection(redis_cfg)?;
 
         let search_query = format!("{}|*", account);
         let accounts = redis_connection.search(&search_query)?;

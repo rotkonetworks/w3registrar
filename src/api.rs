@@ -9,6 +9,7 @@ use futures::stream::SplitStream;
 use futures::StreamExt;
 use futures_util::SinkExt;
 use redis::{self, Client as RedisClient, Commands};
+use once_cell::sync::OnceCell;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -547,7 +548,7 @@ impl Listener {
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
         let registration = node::get_registration(&client, &request.payload).await?;
 
-        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
+        let mut conn = RedisConnection::get_connection(&self.redis_cfg)?;
 
         // 1) attempt to load existing verification state, if any
         let existing_verification = conn
@@ -1123,7 +1124,7 @@ impl Listener {
         info!("Starting Redis listener task!");
 
         tokio::spawn(async move {
-            let mut redis_conn = match RedisConnection::create_conn(&redis_cfg) {
+            let mut redis_conn = match RedisConnection::get_connection(&redis_cfg) {
                 Ok(conn) => conn,
                 Err(e) => {
                     error!("Failed to create Redis connection: {}", e);
@@ -1276,7 +1277,7 @@ impl NodeListener {
         // validation
         Listener::check_node(who.clone(), accounts.clone(), network).await?;
 
-        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
+        let mut conn = RedisConnection::get_connection(&self.redis_cfg)?;
         conn.clear_all_related_to(network, who).await?;
 
         // filter accounts and create verification state
@@ -1486,7 +1487,7 @@ impl NodeListener {
     /// # Note
     /// this method should be used in conjunction with the `JudgementUnrequested` event
     async fn cancel_registration(&self, who: &AccountId32, network: &str) -> anyhow::Result<()> {
-        let mut conn = RedisConnection::create_conn(&self.redis_cfg)?;
+        let mut conn = RedisConnection::get_connection(&self.redis_cfg)?;
         conn.clear_all_related_to(network, who).await?;
         Ok(())
     }
@@ -1526,7 +1527,7 @@ pub async fn spawn_redis_subscriber() -> anyhow::Result<()> {
     let span = span!(Level::INFO, "redis_subscriber");
     info!(parent: &span, "Starting Redis subscriber service");
 
-    let mut redis_conn = RedisConnection::create_conn(&redis_cfg)?;
+    let mut redis_conn = RedisConnection::get_connection(&redis_cfg)?;
     let mut pubsub = redis_conn.as_pubsub();
 
     while let Ok(msg) = pubsub.get_message() {
@@ -1548,20 +1549,35 @@ async fn handle_redis_message(redis_cfg: &RedisConfig, msg: &redis::Msg) -> anyh
 }
 
 // TODO: move this to another file?
+static REDIS_CLIENT: OnceCell<Arc<RedisClient>> = OnceCell::new();
+
 pub struct RedisConnection {
     conn: redis::Connection,
 }
 
 impl RedisConnection {
-    pub fn create_conn(addr: &RedisConfig) -> anyhow::Result<Self> {
+    pub fn initialize_pool(addr: &RedisConfig) -> anyhow::Result<()> {
         let span = span!(Level::INFO, "redis_connection", url = %addr.url()?);
+        info!(parent: &span, "Initializing Redis client");
 
-        info!(parent: &span, "Attempting to establish Redis connection");
-
-        let client = RedisClient::open(addr.url()?).map_err(|e| {
+        let client = redis::Client::open(addr.url()?).map_err(|e| {
             error!(parent: &span, error = %e, "Failed to open Redis client");
             anyhow!("Cannot open Redis client: {}", e)
         })?;
+
+        REDIS_CLIENT.set(Arc::new(client))
+            .map_err(|_| anyhow!("Redis client already initialized"))?;
+
+        info!(parent: &span, "Redis client initialized successfully");
+        Ok(())
+    }
+
+    pub fn get_connection(_config: &RedisConfig) -> anyhow::Result<Self> {
+        let span = span!(Level::INFO, "redis_connection");
+
+        let client = REDIS_CLIENT
+            .get()
+            .ok_or_else(|| anyhow!("Redis client not initialized"))?;
 
         let mut conn = client.get_connection().map_err(|e| {
             error!(parent: &span, error = %e, "Failed to establish Redis connection");
@@ -1569,7 +1585,7 @@ impl RedisConnection {
         })?;
 
         info!(parent: &span, "Enabling keyspace notifications");
-        RedisConnection::enable_keyspace_notifications(&mut conn)?;
+        Self::enable_keyspace_notifications(&mut conn)?;
 
         info!(parent: &span, "Redis connection successfully established");
         Ok(Self { conn })
@@ -1878,7 +1894,7 @@ impl RedisConnection {
         redis_cfg: &RedisConfig,
         msg: &redis::Msg,
     ) -> anyhow::Result<Option<(AccountId32, serde_json::Value)>> {
-        let mut conn = RedisConnection::create_conn(redis_cfg)?;
+        let mut conn = RedisConnection::get_connection(redis_cfg)?;
         let payload: String = msg.get_payload()?;
         let channel = msg.get_channel_name();
 
