@@ -7,7 +7,7 @@ declare -a PIDS
 trap 'kill ${PIDS[@]} 2>/dev/null' EXIT
 
 for i in $(seq 1 $CONNS); do
-    account=$(subkey generate --output-type json --scheme ed25519 | jq -r .ss58Address)
+    account=$(polkadot key generate | grep "SS58 Address:" | cut -d':' -f2- | tr -d ' ')
     echo "{\"version\":\"1.0\",\"type\":\"SubscribeAccountState\",\"payload\":{\"network\":\"paseo\",\"account\":\"$account\"}}" | \
         timeout $TIMEOUT websocat --text "$WS_URL" --no-close 2>&1 &
     PIDS+=($!)
