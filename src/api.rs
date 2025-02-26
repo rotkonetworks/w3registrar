@@ -1140,11 +1140,15 @@ impl Listener {
                 network.as_str().unwrap_or_default(),
             );
 
-            let timeout = std::time::Duration::from_secs(10);
-            info!("Setting notification read timeout to {:?}", timeout);
-            pubsub
-                .set_read_timeout(Some(timeout))
-                .unwrap();
+            // NOTE: this hack breaks functionality and is not real solution
+            // instead we should do proper async handling of the redis connections
+            // and remember to drop completed/dropped connections
+            //
+            // let timeout = std::time::Duration::from_secs(10);
+            // info!("Setting notification read timeout to {:?}", timeout);
+            // pubsub
+            //     .set_read_timeout(Some(timeout))
+            //     .unwrap();
 
             info!("Subscribing to channel: {}", channel);
             if let Err(e) = pubsub.subscribe(&channel) {
