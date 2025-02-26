@@ -8,8 +8,8 @@ use futures::stream::SplitSink;
 use futures::stream::SplitStream;
 use futures::StreamExt;
 use futures_util::SinkExt;
-use redis::{self, Client as RedisClient, Commands};
 use once_cell::sync::OnceCell;
+use redis::{self, Client as RedisClient, Commands};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -1571,7 +1571,8 @@ impl RedisConnection {
             anyhow!("Cannot open Redis client: {}", e)
         })?;
 
-        REDIS_CLIENT.set(Arc::new(client))
+        REDIS_CLIENT
+            .set(Arc::new(client))
             .map_err(|_| anyhow!("Redis client already initialized"))?;
 
         info!(parent: &span, "Redis client initialized successfully");
