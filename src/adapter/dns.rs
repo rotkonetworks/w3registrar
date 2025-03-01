@@ -148,7 +148,7 @@ pub async fn watch_dns() -> anyhow::Result<()> {
         let cfg = GLOBAL_CONFIG
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
-        let mut redis_conn = RedisConnection::get_connection(&cfg.redis)?;
+        let mut redis_conn = RedisConnection::get_connection(&cfg.redis).await?;
 
         if let Err(e) = process_challenges(&mut redis_conn).await {
             error!("DNS challenge processing error: {}", e);
@@ -159,9 +159,7 @@ pub async fn watch_dns() -> anyhow::Result<()> {
 }
 
 async fn process_challenges(redis_conn: &mut RedisConnection) -> Result<()> {
-    let challenge_keys = redis_conn.search("web|*")?;
-
-    const BATCH_SIZE: usize = 10;
+    let challenge_keys = redis_conn.search("web|*").await?;
 
     for challenge_key in &challenge_keys {
         if let Err(e) = process_single_challenge(challenge_key, redis_conn).await {
@@ -193,7 +191,7 @@ pub async fn _verify_dns_challenge(
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
-    let mut redis_conn = RedisConnection::get_connection(&cfg.redis)?;
+    let mut redis_conn = RedisConnection::get_connection(&cfg.redis).await?;
 
     let clean_domain = domain
         .trim()

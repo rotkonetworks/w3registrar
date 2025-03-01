@@ -45,10 +45,10 @@ impl Mail {
     /// and uses the Adapter trait's handle_content implementation for validation.
     async fn process_email(&self, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
         let account = Account::Email(self.sender.clone());
-        let mut redis_connection = RedisConnection::get_connection(redis_cfg)?;
+        let mut redis_connection = RedisConnection::get_connection(redis_cfg).await?;
 
         let search_query = format!("{}|*", account);
-        let accounts = redis_connection.search(&search_query)?;
+        let accounts = redis_connection.search(&search_query).await?;
 
         if accounts.is_empty() {
             info!("No account found for {}", search_query);
@@ -176,8 +176,6 @@ impl MailServer {
             .expect("Unable to select mailbox");
         info!("Selected mailbox `{}`", self.mailbox);
 
-        info!("Checking existing emails on startup...");
-        self.check_mailbox().await?;
 
         loop {
             if let Err(e) = self.check_mailbox().await {

@@ -280,11 +280,11 @@ impl Matrix {
         );
         let cfg = GLOBAL_CONFIG.get().unwrap();
         let redis_cfg = cfg.redis.clone();
-        let mut redis_connection = RedisConnection::get_connection(&redis_cfg)?;
+        let mut redis_connection = RedisConnection::get_connection(&redis_cfg).await?;
         let query = format!("{}|*", acc);
         info!("Search query: {}", query);
 
-        let accounts_key = redis_connection.search(&query)?;
+        let accounts_key = redis_connection.search(&query).await?;
 
         if accounts_key.is_empty() {
             return Ok(());
