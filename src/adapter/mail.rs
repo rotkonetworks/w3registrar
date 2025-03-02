@@ -132,10 +132,7 @@ impl MailServer {
     }
 
     fn new() -> Option<Self> {
-        let (session, redis_cfg, mailbox) = match Self::connect() {
-            Some(connection) => connection,
-            None => return None,
-        };
+        let (session, redis_cfg, mailbox) = Self::connect()?;
 
         Some(Self {
             session,
@@ -157,7 +154,10 @@ impl MailServer {
             .to_string();
 
         // use UNSEEN or not?
-        let unseen_ids = match self.session.search(&format!("UNSEEN SENTSINCE {}", search_date)) {
+        let unseen_ids = match self
+            .session
+            .search(format!("UNSEEN SENTSINCE {}", search_date))
+        {
             Ok(ids) => ids,
             Err(e) => {
                 error!("Search failed: {}", e);
@@ -203,7 +203,7 @@ impl MailServer {
         }
 
         let mail = fetch_result
-            .get(0)
+            .first()
             .ok_or_else(|| anyhow!("Failed to get email {}", id))?;
 
         let parsed = mail_parser::MessageParser::default()

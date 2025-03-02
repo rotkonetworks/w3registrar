@@ -314,7 +314,7 @@ impl FromStr for Account {
                 info!("This {s} is a matrix account");
                 let acc_name: &str = &account["name"];
                 let domain: &str = &account["domain"];
-                return Ok(Self::Matrix(format!("@{}:{}", acc_name, domain)));
+                Ok(Self::Matrix(format!("@{}:{}", acc_name, domain)))
             }
             None => {
                 let (account_type, value) = s
@@ -327,10 +327,10 @@ impl FromStr for Account {
                 info!("Parsing the account type...");
                 let account_type: AccountType = account_type.parse()?;
                 info!("Account type {:?}", account_type);
-                return Ok(Self::from_type_and_value(
+                Ok(Self::from_type_and_value(
                     account_type,
                     value.trim().to_owned(),
-                ));
+                ))
             }
         }
     }
@@ -1174,7 +1174,7 @@ impl Listener {
                 };
 
                 // send message, break if channel closed
-                if let Err(_) = sender.send(obj).await {
+                if (sender.send(obj).await).is_err() {
                     info!("WebSocket channel closed, stopping Redis listener");
                     break;
                 }
@@ -1268,7 +1268,7 @@ impl NodeListener {
             .get(network)
             .ok_or_else(|| anyhow!("No client for network {}", network))?;
 
-        let registration = node::get_registration(&client, who).await?;
+        let registration = node::get_registration(client, who).await?;
         let accounts = Account::into_accounts(&registration.info);
 
         // validation
@@ -1490,7 +1490,7 @@ impl NodeListener {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct VerificationFields {
     pub discord: bool,
     pub twitter: bool,
@@ -1501,22 +1501,6 @@ pub struct VerificationFields {
     pub legal: bool,
     pub web: bool,
     pub pgp_fingerprint: bool,
-}
-
-impl Default for VerificationFields {
-    fn default() -> Self {
-        Self {
-            matrix: false,
-            display_name: false,
-            discord: false,
-            email: false,
-            twitter: false,
-            github: false,
-            web: false,
-            pgp_fingerprint: false,
-            legal: false,
-        }
-    }
 }
 
 pub async fn spawn_redis_subscriber() -> anyhow::Result<()> {
@@ -1598,9 +1582,7 @@ impl RedisConnection {
         self.pubsub.on_message()
     }
 
-    async fn enable_keyspace_notifications(
-        conn: &mut ConnectionManager,
-    ) -> anyhow::Result<()> {
+    async fn enable_keyspace_notifications(conn: &mut ConnectionManager) -> anyhow::Result<()> {
         match conn
             .send_packed_command(
                 redis::cmd("CONFIG")
@@ -1614,7 +1596,6 @@ impl RedisConnection {
             Err(e) => Err(anyhow!("Cannot set notify-keyspace-events: {}", e)),
         }
     }
-
 
     /// Search through the redis for keys that are similar to the `pattern`
     pub async fn search(&mut self, pattern: &str) -> anyhow::Result<Vec<String>> {
@@ -1730,8 +1711,7 @@ impl RedisConnection {
         who: &AccountId32,
     ) -> anyhow::Result<()> {
         let mut pipe = redis::pipe();
-        pipe.cmd("DEL")
-            .arg(&format!("{}|{}", who.to_string(), network));
+        pipe.cmd("DEL").arg(&format!("{}|{}", who, network));
 
         let accounts = self.search(&format!("*|{}|{}", network, who)).await?;
         for account in accounts {
@@ -1750,7 +1730,7 @@ impl RedisConnection {
         accounts: &HashMap<Account, bool>,
     ) -> anyhow::Result<()> {
         let mut pipe = redis::pipe();
-        for (account, _) in accounts {
+        for account in accounts.keys() {
             let key = format!("{}|{}|{}", account, network, account_id);
             let pipe = pipe.cmd("SET").arg(&key);
             if let Some(challenge_info) = state.challenges.get(&account.account_type().to_string())
