@@ -1711,7 +1711,7 @@ impl RedisConnection {
         who: &AccountId32,
     ) -> anyhow::Result<()> {
         let mut pipe = redis::pipe();
-        pipe.cmd("DEL").arg(&format!("{}|{}", who, network));
+        pipe.cmd("DEL").arg(format!("{}|{}", who, network));
 
         let accounts = self.search(&format!("*|{}|{}", network, who)).await?;
         for account in accounts {

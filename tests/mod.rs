@@ -36,14 +36,11 @@ mod test {
             .await
             .unwrap();
         while let stream = tx.next().await {
-            match stream {
-                Some(data) => {
-                    if let Ok(msg) = data {
-                        println!("recived: {}\n", msg);
-                        break;
-                    }
+            if let Some(data) = stream {
+                if let Ok(msg) = data {
+                    println!("recived: {}\n", msg);
+                    break;
                 }
-                None => {}
             }
         }
         let request_verification_challange_msg = to_string_pretty(&serde_json::json!({
@@ -60,14 +57,11 @@ mod test {
             .await
             .unwrap();
         while let stream = tx.next().await {
-            match stream {
-                Some(data) => {
-                    if let Ok(msg) = data {
-                        println!("recived: {}\n", msg);
-                        break;
-                    }
+            if let Some(data) = stream {
+                if let Ok(msg) = data {
+                    println!("recived: {}\n", msg);
+                    break;
                 }
-                None => {}
             }
         }
     }
@@ -88,14 +82,11 @@ mod test {
             .await
             .unwrap();
         while let stream = tx.next().await {
-            match stream {
-                Some(data) => {
-                    if let Ok(msg) = data {
-                        println!("recived: {}\n", msg);
-                        break;
-                    }
+            if let Some(data) = stream {
+                if let Ok(msg) = data {
+                    println!("recived: {}\n", msg);
+                    break;
                 }
-                None => {}
             }
         }
     }
@@ -116,14 +107,11 @@ mod test {
             .await
             .unwrap();
         while let stream = tx.next().await {
-            match stream {
-                Some(data) => {
-                    if let Ok(msg) = data {
-                        println!("recived: {}\n", msg);
-                        break;
-                    }
+            if let Some(data) = stream {
+                if let Ok(msg) = data {
+                    println!("recived: {}\n", msg);
+                    break;
                 }
-                None => {}
             }
         }
         let verify_identity_msg = to_string_pretty(&serde_json::json!({
@@ -139,14 +127,11 @@ mod test {
         println!("seinding: {}\n", verify_identity_msg);
         rx.send(Message::from(verify_identity_msg)).await.unwrap();
         while let stream = tx.next().await {
-            match stream {
-                Some(data) => {
-                    if let Ok(msg) = data {
-                        println!("recived: {}\n", msg);
-                        break;
-                    }
+            if let Some(data) = stream {
+                if let Ok(msg) = data {
+                    println!("recived: {}\n", msg);
+                    break;
                 }
-                None => {}
             }
         }
     }
