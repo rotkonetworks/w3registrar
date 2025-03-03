@@ -39,12 +39,12 @@ impl Mail {
         let accounts = redis_connection.search(&search_query).await?;
 
         if accounts.is_empty() {
-            info!("No account found for {}", search_query);
+            info!("verification: no account found for {}", search_query);
             return Ok(());
         }
 
         for acc_str in accounts {
-            info!("Account: {}", acc_str);
+            info!("verification: processing account {}", acc_str);
             let info: Vec<&str> = acc_str.split("|").collect();
             if info.len() != 4 {
                 continue;
@@ -59,7 +59,7 @@ impl Mail {
                     .and_then(|b| b.lines().next())
                     .map(|l| l.trim().to_owned())
                 {
-                    if let Err(e) = <Mail as Adapter>::handle_content(
+                    match <Mail as Adapter>::handle_content(
                         &text,
                         &mut redis_connection,
                         network,
@@ -68,7 +68,8 @@ impl Mail {
                     )
                     .await
                     {
-                        error!("Failed to handle content: {}", e);
+                        Ok(_) => info!("verification: success for {}/{}", account, network),
+                        Err(e) => error!("verification: failed for {}/{}: {}", account, network, e),
                     }
                 }
             }
@@ -88,18 +89,18 @@ impl MailServer {
         let cfg = match GLOBAL_CONFIG.get() {
             Some(cfg) => cfg,
             None => {
-                error!("GLOBAL_CONFIG is not initialized");
+                error!("mail: global config not initialized");
                 return None;
             }
         };
 
         let email_cfg = cfg.adapter.email.clone();
-        info!("Connecting to IMAP server: {}", email_cfg.server);
+        info!("mail: connecting to {}", email_cfg.server);
 
         let tls_connector = match TlsConnector::builder().build() {
             Ok(tls) => tls,
             Err(e) => {
-                error!("Failed to build TLS connector: {}", e);
+                error!("mail: tls connector failed: {}", e);
                 return None;
             }
         };
@@ -111,22 +112,22 @@ impl MailServer {
         ) {
             Ok(client) => client,
             Err(e) => {
-                error!("Failed to connect to IMAP server: {}", e);
+                error!("mail: connection failed: {}", e);
                 return None;
             }
         };
 
-        info!("Logging in as {}", email_cfg.username);
+        info!("mail: login as {}", email_cfg.username);
 
         let session = match client.login(email_cfg.username.clone(), email_cfg.password.clone()) {
             Ok(session) => session,
             Err((e, _)) => {
-                error!("Login failed: {:?}", e);
+                error!("mail: login failed: {:?}", e);
                 return None;
             }
         };
 
-        info!("Successfully logged in to {}", email_cfg.email);
+        info!("mail: connected to {}", email_cfg.email);
 
         Some((session, cfg.redis.clone(), email_cfg.mailbox.clone()))
     }
@@ -143,13 +144,13 @@ impl MailServer {
 
     fn check_emails(&mut self) -> Option<Vec<Mail>> {
         if let Err(e) = self.session.select(&self.mailbox) {
-            error!("Failed to select mailbox {}: {}", self.mailbox, e);
+            error!("mail: mailbox select failed: {}: {}", self.mailbox, e);
             return None;
         }
 
-        info!("Checking for emails in {}", self.mailbox);
+        info!("mail: checking {}", self.mailbox);
 
-        let search_date = (chrono::Utc::now() - chrono::Duration::minutes(30))
+        let search_date = (chrono::Utc::now() - chrono::Duration::minutes(1))
             .format("%d-%b-%Y")
             .to_string();
 
@@ -159,34 +160,33 @@ impl MailServer {
         {
             Ok(ids) => ids,
             Err(e) => {
-                error!("Search failed: {}", e);
+                error!("mail: search failed: {}", e);
                 return None;
             }
         };
 
         if unseen_ids.is_empty() {
-            info!("No new unseen emails found");
             return Some(Vec::new());
         }
 
-        info!("Found {} unseen emails", unseen_ids.len());
+        info!("mail: found {} new messages", unseen_ids.len());
 
         let mut emails = Vec::new();
         for id in unseen_ids {
             match self.fetch_mail(id) {
                 Ok(mail) => {
-                    info!("Processed email from {}", mail.sender);
+                    info!("mail: received from {}", mail.sender);
                     emails.push(mail);
 
                     // mark as seen and immediately expunge to apply the change
                     if let Err(e) = self.session.uid_store(format!("{}", id), "+FLAGS (\\Seen)") {
-                        error!("Failed to mark email as seen: {}", e);
+                        error!("mail: failed to mark as seen: {}", e);
                     }
                     // force server to apply the flag changes
                     let _ = self.session.expunge();
                 }
                 Err(e) => {
-                    error!("Failed to process email {}: {}", id, e);
+                    error!("mail: fetch failed for {}: {}", id, e);
                 }
             }
         }
@@ -221,14 +221,14 @@ impl MailServer {
 }
 
 pub async fn watch_mailserver() -> anyhow::Result<()> {
-    info!("Starting mail watcher");
+    info!("mail: watcher started");
 
     loop {
         let redis_and_emails = tokio::task::spawn_blocking(|| {
             let mut server = match MailServer::new() {
                 Some(server) => server,
                 None => {
-                    error!("Failed to create mail server connection");
+                    error!("mail: server connection failed");
                     return None;
                 }
             };
@@ -236,7 +236,7 @@ pub async fn watch_mailserver() -> anyhow::Result<()> {
             let emails = match server.check_emails() {
                 Some(emails) => emails,
                 None => {
-                    error!("Failed to check emails");
+                    error!("mail: check failed");
                     return None;
                 }
             };
@@ -253,20 +253,20 @@ pub async fn watch_mailserver() -> anyhow::Result<()> {
             Ok(Some((redis_cfg, emails))) => {
                 for mail in emails {
                     match mail.process_email(&redis_cfg).await {
-                        Ok(_) => info!("Successfully processed email from {}", mail.sender),
-                        Err(e) => error!("Error processing email: {}", e),
+                        Ok(_) => info!("mail: processed {}", mail.sender),
+                        Err(e) => error!("mail: process failed for {}: {}", mail.sender, e),
                     }
                 }
             }
             Ok(None) => {
-                info!("no new mails found");
+                // no need to log when no emails found
             }
             Err(e) => {
-                error!("Task panicked while checking emails: {}", e);
+                error!("mail: watcher task failed: {}", e);
             }
         }
 
         // check emails at regular intervals
-        tokio::time::sleep(Duration::from_secs(60)).await;
+        tokio::time::sleep(Duration::from_secs(30)).await;
     }
 }
