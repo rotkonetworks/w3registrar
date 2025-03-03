@@ -149,14 +149,13 @@ impl MailServer {
 
         info!("Checking for emails in {}", self.mailbox);
 
-        let search_date = (chrono::Utc::now() - chrono::Duration::hours(24))
+        let search_date = (chrono::Utc::now() - chrono::Duration::minutes(30))
             .format("%d-%b-%Y")
             .to_string();
 
-        // use UNSEEN or not?
         let unseen_ids = match self
             .session
-            .search(format!("UNSEEN SENTSINCE {}", search_date))
+            .search(format!("SENTSINCE {}", search_date))
         {
             Ok(ids) => ids,
             Err(e) => {
