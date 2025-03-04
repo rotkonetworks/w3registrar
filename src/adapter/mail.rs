@@ -7,14 +7,14 @@ use std::time::Duration;
 
 use crate::{
     adapter::Adapter,
-    api::{Account, AccountType, RedisConnection},
+    api::{Account, RedisConnection},
     config::RedisConfig,
-    node::register_identity,
 };
 use imap::Session;
 use native_tls::{TlsConnector, TlsStream};
 use subxt::utils::AccountId32;
-use tracing::{error, info};
+
+use tracing::{error, info, Level};
 
 use crate::config::GLOBAL_CONFIG;
 
@@ -78,24 +78,24 @@ impl Mail {
     }
 }
 
-struct MailServer {
+struct MailListener {
     session: Session<TlsStream<TcpStream>>,
     redis_cfg: RedisConfig,
     mailbox: String,
 }
 
-impl MailServer {
+impl MailListener {
     fn connect() -> Option<(Session<TlsStream<TcpStream>>, RedisConfig, String)> {
         let cfg = match GLOBAL_CONFIG.get() {
             Some(cfg) => cfg,
             None => {
-                error!("mail: global config not initialized");
+                error!("Global config not initialized");
                 return None;
             }
         };
 
         let email_cfg = cfg.adapter.email.clone();
-        info!("mail: connecting to {}", email_cfg.server);
+        info!("connecting to {}", email_cfg.server);
 
         let tls_connector = match TlsConnector::builder().build() {
             Ok(tls) => tls,
@@ -142,131 +142,128 @@ impl MailServer {
         })
     }
 
-    fn check_emails(&mut self) -> Option<Vec<Mail>> {
-        if let Err(e) = self.session.select(&self.mailbox) {
-            error!("mail: mailbox select failed: {}: {}", self.mailbox, e);
-            return None;
+    // TODO: care about only first line
+    async fn get_mail(&mut self, id: u32) -> anyhow::Result<Mail> {
+        let mail = self.session.uid_fetch(format!("{}", id), "RFC822")?;
+        for msg in mail.iter() {
+            let parsed = mail_parser::MessageParser::default()
+                .parse(msg.body().unwrap_or_default())
+                .unwrap_or_default();
+            let address = parsed.return_address().unwrap().to_string();
+            let x = parsed.body_text(0).map(|body| body.to_string());
+            return Ok(Mail::new(address, x));
         }
-
-        info!("mail: checking {}", self.mailbox);
-
-        let search_date = (chrono::Utc::now() - chrono::Duration::minutes(1))
-            .format("%d-%b-%Y")
-            .to_string();
-
-        let unseen_ids = match self
-            .session
-            .search(format!("SENTSINCE {}", search_date))
-        {
-            Ok(ids) => ids,
-            Err(e) => {
-                error!("mail: search failed: {}", e);
-                return None;
-            }
-        };
-
-        if unseen_ids.is_empty() {
-            return Some(Vec::new());
-        }
-
-        info!("mail: found {} new messages", unseen_ids.len());
-
-        let mut emails = Vec::new();
-        for id in unseen_ids {
-            match self.fetch_mail(id) {
-                Ok(mail) => {
-                    info!("mail: received from {}", mail.sender);
-                    emails.push(mail);
-
-                    // mark as seen and immediately expunge to apply the change
-                    if let Err(e) = self.session.uid_store(format!("{}", id), "+FLAGS (\\Seen)") {
-                        error!("mail: failed to mark as seen: {}", e);
-                    }
-                    // force server to apply the flag changes
-                    let _ = self.session.expunge();
-                }
-                Err(e) => {
-                    error!("mail: fetch failed for {}: {}", id, e);
-                }
-            }
-        }
-
-        Some(emails)
+        return Err(anyhow!("No message found"));
     }
 
-    fn fetch_mail(&mut self, id: u32) -> anyhow::Result<Mail> {
-        let fetch_result = self.session.fetch(format!("{}", id), "RFC822")?;
+    async fn flag_mail_as_seen(&mut self, id: u32) -> anyhow::Result<()> {
+        self.session
+            .uid_store(format!("{}", id), "+FLAGS (\\SEEN)")?;
+        self.session.expunge()?;
+        Ok(())
+    }
 
-        if fetch_result.is_empty() {
-            return Err(anyhow!("No email found with ID {}", id));
+    async fn check_mailbox(&mut self) -> anyhow::Result<()> {
+        info!("Selecting mailbox {}", self.mailbox);
+        self.session.select(&self.mailbox).map_err(|e| {
+            anyhow!(
+                "{}:{} Unable to select mail box {} {}",
+                file!(),
+                line!(),
+                &self.mailbox,
+                e
+            )
+        })?;
+
+        loop {
+            info!("Starting idle session");
+            let mut idle_handle = self.session.idle().map_err(|e| {
+                anyhow!(
+                    "{}:{} Unable to start idle IMAP session {}",
+                    file!(),
+                    line!(),
+                    e
+                )
+            })?;
+
+            let keep_alive_duration = Duration::from_secs(60);
+            idle_handle.set_keepalive(keep_alive_duration);
+
+            info!("Waiting for a mail");
+            idle_handle
+                .wait_keepalive()
+                .map_err(|e| anyhow!("{}:{} Unable to wait for mail, {}", file!(), line!(), e))?;
+            info!("Received a new mail");
+
+            info!("Searching for unseen mails...");
+            let mail_id = self.session.search("UNSEEN").map_err(|e| {
+                anyhow!(
+                    "{}:{} Unable search for `NEW` mails {}",
+                    file!(),
+                    line!(),
+                    e
+                )
+            })?;
+
+            for id in mail_id {
+                info!("Flagging mail with ID {id} as `SEEN`");
+                self.flag_mail_as_seen(id).await.map_err(|e| {
+                    anyhow!(
+                        "{}:{} Unable to flag mail with ID {id} as seen, Reason: {}",
+                        file!(),
+                        line!(),
+                        e
+                    )
+                })?;
+
+                let mail = match self.get_mail(id).await {
+                    Ok(mail) => mail,
+                    Err(e) => {
+                        error!(
+                            "{}:{} Unable get mail from ID {id}, Reason: {}",
+                            file!(),
+                            line!(),
+                            e
+                        );
+                        continue;
+                    }
+                };
+                info!("Mail: {:#?}", mail);
+
+                mail.process_email(&self.redis_cfg).await.map_err(|e| {
+                    anyhow!(
+                        "{}:{} Unable to process mail with ID {id}, Reason: {}",
+                        file!(),
+                        line!(),
+                        e
+                    )
+                })?;
+            }
         }
-
-        let mail = fetch_result
-            .first()
-            .ok_or_else(|| anyhow!("Failed to get email {}", id))?;
-
-        let parsed = mail_parser::MessageParser::default()
-            .parse(mail.body().unwrap_or_default())
-            .ok_or_else(|| anyhow!("Failed to parse email content"))?;
-
-        let address = parsed
-            .return_address()
-            .ok_or_else(|| anyhow!("No sender address found"))?
-            .to_string();
-
-        let body = parsed.body_text(0).map(|body| body.to_string());
-
-        Ok(Mail::new(address, body))
     }
 }
 
 pub async fn watch_mailserver() -> anyhow::Result<()> {
-    info!("mail: watcher started");
+    // NOTE: this duplicate exist since the guard is dropped after the end of watch_mailserver and
+    // since we spawn a task that will out live this function which should inherit this context (span)
+    let span = tracing::span!(Level::INFO, "mail_watcher");
+    let _guard = span.enter();
+    info!("watcher started");
 
-    loop {
-        let redis_and_emails = tokio::task::spawn_blocking(|| {
-            let mut server = match MailServer::new() {
-                Some(server) => server,
-                None => {
-                    error!("mail: server connection failed");
-                    return None;
-                }
-            };
-
-            let emails = match server.check_emails() {
-                Some(emails) => emails,
-                None => {
-                    error!("mail: check failed");
-                    return None;
-                }
-            };
-
-            if emails.is_empty() {
-                return None;
-            }
-
-            Some((server.redis_cfg, emails))
-        })
-        .await;
-
-        match redis_and_emails {
-            Ok(Some((redis_cfg, emails))) => {
-                for mail in emails {
-                    match mail.process_email(&redis_cfg).await {
-                        Ok(_) => info!("mail: processed {}", mail.sender),
-                        Err(e) => error!("mail: process failed for {}: {}", mail.sender, e),
-                    }
-                }
-            }
-            Ok(None) => {
-                // no need to log when no emails found
-            }
-            Err(e) => {
-                error!("mail: watcher task failed: {}", e);
-            }
+    let mut server = match MailListener::new() {
+        Some(server) => server,
+        None => {
+            return Err(anyhow!("Failed to create a MailListener instance"));
         }
+    };
 
-        // check emails at regular intervals
-        tokio::time::sleep(Duration::from_secs(30)).await;
-    }
+    tokio::task::spawn(async move {
+        let span = tracing::span!(Level::INFO, "mail_watcher");
+        let _guard = span.enter();
+        if let Err(e) = server.check_mailbox().await {
+            error!(error = %e, "Error occurred while checking mailbox");
+        }
+    });
+
+    Ok(())
 }
