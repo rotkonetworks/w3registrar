@@ -221,7 +221,7 @@ fn load_signer(network_cfg: &crate::config::RegistrarConfig) -> Result<PairSigne
     let seed = std::fs::read_to_string(&network_cfg.keystore_path)
         .map_err(|e| anyhow!("Failed to read keystore: {}", e))?;
 
-    let acc = Sr25519Pair::from_string(&seed.trim(), None)?;
+    let acc = Sr25519Pair::from_string(seed.trim(), None)?;
     let signer = PairSigner::new(acc);
 
     info!("Signer account: {}", signer.account_id());

@@ -6,10 +6,16 @@ use chrono::{DateTime, Utc};
 use futures::channel::mpsc::{self, Sender};
 use futures::stream::SplitSink;
 use futures::stream::SplitStream;
+use futures::Stream;
 use futures::StreamExt;
 use futures_util::SinkExt;
 use once_cell::sync::OnceCell;
-use redis::{self, Client as RedisClient, Commands};
+use redis::aio::ConnectionManager;
+use redis::aio::PubSub;
+use redis::AsyncCommands;
+use redis::Msg;
+use redis::RedisResult;
+use redis::{self, Client as RedisClient};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -308,7 +314,7 @@ impl FromStr for Account {
                 info!("This {s} is a matrix account");
                 let acc_name: &str = &account["name"];
                 let domain: &str = &account["domain"];
-                return Ok(Self::Matrix(format!("@{}:{}", acc_name, domain)));
+                Ok(Self::Matrix(format!("@{}:{}", acc_name, domain)))
             }
             None => {
                 let (account_type, value) = s
@@ -321,10 +327,10 @@ impl FromStr for Account {
                 info!("Parsing the account type...");
                 let account_type: AccountType = account_type.parse()?;
                 info!("Account type {:?}", account_type);
-                return Ok(Self::from_type_and_value(
+                Ok(Self::from_type_and_value(
                     account_type,
                     value.trim().to_owned(),
-                ));
+                ))
             }
         }
     }
@@ -548,7 +554,7 @@ impl Listener {
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
         let registration = node::get_registration(&client, &request.payload).await?;
 
-        let mut conn = RedisConnection::get_connection(&self.redis_cfg)?;
+        let mut conn = RedisConnection::get_connection(&self.redis_cfg).await?;
 
         // 1) attempt to load existing verification state, if any
         let existing_verification = conn
@@ -1124,7 +1130,7 @@ impl Listener {
         info!("Starting Redis listener task!");
 
         tokio::spawn(async move {
-            let mut redis_conn = match RedisConnection::get_connection(&redis_cfg) {
+            let mut redis_conn = match RedisConnection::get_connection(&redis_cfg).await {
                 Ok(conn) => conn,
                 Err(e) => {
                     error!("Failed to create Redis connection: {}", e);
@@ -1132,7 +1138,6 @@ impl Listener {
                 }
             };
 
-            let mut pubsub = redis_conn.as_pubsub();
             let network = &response["payload"]["message"]["AccountState"]["network"];
             let channel = format!(
                 "__keyspace@0__:{}|{}",
@@ -1140,35 +1145,17 @@ impl Listener {
                 network.as_str().unwrap_or_default(),
             );
 
-            // NOTE: this hack breaks functionality and is not real solution
-            // instead we should do proper async handling of the redis connections
-            // and remember to drop completed/dropped connections
-            //
-            // let timeout = std::time::Duration::from_secs(10);
-            // info!("Setting notification read timeout to {:?}", timeout);
-            // pubsub
-            //     .set_read_timeout(Some(timeout))
-            //     .unwrap();
-
             info!("Subscribing to channel: {}", channel);
-            if let Err(e) = pubsub.subscribe(&channel) {
-                error!("Failed to subscribe to channel: {}", e);
+            if let Err(e) = redis_conn.subscribe(&channel).await {
+                error!("Unable to subscribe to {} because {:?}", channel, e);
                 return;
-            }
+            };
 
             // TODO: make this kill iteslf when an completed state is true, since we don't want
             // to listen for events forever!
             debug!("Starting message processing loop");
-            loop {
-                // get message or break on error
-                let msg = match pubsub.get_message() {
-                    Ok(msg) => msg,
-                    Err(e) => {
-                        error!("Error getting Redis message: {}", e);
-                        break;
-                    }
-                };
-
+            let mut stream = redis_conn.pubsub_stream().await;
+            while let Some(msg) = stream.next().await {
                 debug!("Redis event received: {:?}", msg);
 
                 // process message, continue on error
@@ -1187,7 +1174,7 @@ impl Listener {
                 };
 
                 // send message, break if channel closed
-                if let Err(_) = sender.send(obj).await {
+                if (sender.send(obj).await).is_err() {
                     info!("WebSocket channel closed, stopping Redis listener");
                     break;
                 }
@@ -1281,13 +1268,13 @@ impl NodeListener {
             .get(network)
             .ok_or_else(|| anyhow!("No client for network {}", network))?;
 
-        let registration = node::get_registration(&client, who).await?;
+        let registration = node::get_registration(client, who).await?;
         let accounts = Account::into_accounts(&registration.info);
 
         // validation
         Listener::check_node(who.clone(), accounts.clone(), network).await?;
 
-        let mut conn = RedisConnection::get_connection(&self.redis_cfg)?;
+        let mut conn = RedisConnection::get_connection(&self.redis_cfg).await?;
         conn.clear_all_related_to(network, who).await?;
 
         // filter accounts and create verification state
@@ -1497,13 +1484,13 @@ impl NodeListener {
     /// # Note
     /// this method should be used in conjunction with the `JudgementUnrequested` event
     async fn cancel_registration(&self, who: &AccountId32, network: &str) -> anyhow::Result<()> {
-        let mut conn = RedisConnection::get_connection(&self.redis_cfg)?;
+        let mut conn = RedisConnection::get_connection(&self.redis_cfg).await?;
         conn.clear_all_related_to(network, who).await?;
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct VerificationFields {
     pub discord: bool,
     pub twitter: bool,
@@ -1516,31 +1503,14 @@ pub struct VerificationFields {
     pub pgp_fingerprint: bool,
 }
 
-impl Default for VerificationFields {
-    fn default() -> Self {
-        Self {
-            matrix: false,
-            display_name: false,
-            discord: false,
-            email: false,
-            twitter: false,
-            github: false,
-            web: false,
-            pgp_fingerprint: false,
-            legal: false,
-        }
-    }
-}
-
 pub async fn spawn_redis_subscriber() -> anyhow::Result<()> {
     let redis_cfg = GLOBAL_CONFIG.get().unwrap().redis.clone();
     let span = span!(Level::INFO, "redis_subscriber");
     info!(parent: &span, "Starting Redis subscriber service");
 
-    let mut redis_conn = RedisConnection::get_connection(&redis_cfg)?;
-    let mut pubsub = redis_conn.as_pubsub();
-
-    while let Ok(msg) = pubsub.get_message() {
+    let mut redis_conn = RedisConnection::get_connection(&redis_cfg).await?;
+    let mut stream = redis_conn.pubsub_stream().await;
+    while let Some(msg) = stream.next().await {
         if let Err(e) = handle_redis_message(&redis_cfg, &msg).await {
             error!(parent: &span, error = %e, "Failed to handle Redis message");
             continue;
@@ -1562,7 +1532,8 @@ async fn handle_redis_message(redis_cfg: &RedisConfig, msg: &redis::Msg) -> anyh
 static REDIS_CLIENT: OnceCell<Arc<RedisClient>> = OnceCell::new();
 
 pub struct RedisConnection {
-    conn: redis::Connection,
+    conn: ConnectionManager,
+    pubsub: PubSub,
 }
 
 impl RedisConnection {
@@ -1583,61 +1554,58 @@ impl RedisConnection {
         Ok(())
     }
 
-    pub fn get_connection(_config: &RedisConfig) -> anyhow::Result<Self> {
+    pub async fn get_connection(_config: &RedisConfig) -> anyhow::Result<Self> {
         let span = span!(Level::INFO, "redis_connection");
 
         let client = REDIS_CLIENT
             .get()
             .ok_or_else(|| anyhow!("Redis client not initialized"))?;
 
-        let mut conn = client.get_connection().map_err(|e| {
+        let mut conn = client.get_connection_manager().await.map_err(|e| {
             error!(parent: &span, error = %e, "Failed to establish Redis connection");
             anyhow!("Cannot establish Redis connection: {}", e)
         })?;
 
         info!(parent: &span, "Enabling keyspace notifications");
-        Self::enable_keyspace_notifications(&mut conn)?;
+        Self::enable_keyspace_notifications(&mut conn).await?;
+        let pubsub = client.get_async_pubsub().await?;
 
         info!(parent: &span, "Redis connection successfully established");
-        Ok(Self { conn })
+        Ok(Self { conn, pubsub })
     }
 
-    pub fn as_pubsub(&mut self) -> redis::PubSub<'_> {
-        self.conn.as_pubsub()
+    pub async fn subscribe(&mut self, channel: &str) -> RedisResult<()> {
+        self.pubsub.psubscribe(channel).await
     }
 
-    fn enable_keyspace_notifications(conn: &mut redis::Connection) -> anyhow::Result<()> {
-        redis::cmd("CONFIG")
-            .arg("SET")
-            .arg("notify-keyspace-events")
-            .arg("KEA")
-            .query::<()>(&mut *conn)
-            .map_err(|e| anyhow!("Cannot set notify-keyspace-events: {}", e))
+    pub async fn pubsub_stream(&mut self) -> impl Stream<Item = Msg> + '_ {
+        self.pubsub.on_message()
     }
 
-    /// Subscribe to all relevant keys for the given account
-    pub async fn subscribe_to_account_changes(
-        &mut self,
-        account_id: &AccountId32,
-    ) -> anyhow::Result<redis::PubSub> {
-        let related_keys = self.search(&format!("*|{}", account_id.to_string()))?;
-        let mut pubsub = self.conn.as_pubsub();
-
-        for key in related_keys {
-            let channel = format!("__keyspace@0__:{}", key);
-            info!("Subscribing to channel - {channel}");
-            pubsub.subscribe(&channel)?;
+    async fn enable_keyspace_notifications(conn: &mut ConnectionManager) -> anyhow::Result<()> {
+        match conn
+            .send_packed_command(
+                redis::cmd("CONFIG")
+                    .arg("SET")
+                    .arg("notify-keyspace-events")
+                    .arg("KEA"),
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(anyhow!("Cannot set notify-keyspace-events: {}", e)),
         }
-
-        Ok(pubsub)
     }
 
     /// Search through the redis for keys that are similar to the `pattern`
-    pub fn search(&mut self, pattern: &str) -> anyhow::Result<Vec<String>> {
+    pub async fn search(&mut self, pattern: &str) -> anyhow::Result<Vec<String>> {
+        // self.conn.s
         Ok(self
             .conn
-            .scan_match::<&str, String>(pattern)?
-            .collect::<Vec<String>>())
+            .scan_match::<&str, String>(pattern)
+            .await?
+            .collect::<Vec<String>>()
+            .await)
     }
 
     /// Get all pending challenges of `wallet_id` as a [Vec<Vec<String>>]
@@ -1743,15 +1711,14 @@ impl RedisConnection {
         who: &AccountId32,
     ) -> anyhow::Result<()> {
         let mut pipe = redis::pipe();
-        pipe.cmd("DEL")
-            .arg(&format!("{}|{}", who.to_string(), network));
+        pipe.cmd("DEL").arg(format!("{}|{}", who, network));
 
-        let accounts = self.search(&format!("*|{}|{}", network, who))?;
+        let accounts = self.search(&format!("*|{}|{}", network, who)).await?;
         for account in accounts {
             pipe.cmd("DEL").arg(account);
         }
 
-        pipe.exec(&mut self.conn)?;
+        pipe.exec_async(&mut self.conn).await?;
         Ok(())
     }
 
@@ -1763,7 +1730,7 @@ impl RedisConnection {
         accounts: &HashMap<Account, bool>,
     ) -> anyhow::Result<()> {
         let mut pipe = redis::pipe();
-        for (account, _) in accounts {
+        for account in accounts.keys() {
             let key = format!("{}|{}|{}", account, network, account_id);
             let pipe = pipe.cmd("SET").arg(&key);
             if let Some(challenge_info) = state.challenges.get(&account.account_type().to_string())
@@ -1771,7 +1738,7 @@ impl RedisConnection {
                 pipe.arg(&serde_json::to_string(&challenge_info)?);
             }
         }
-        let _ = pipe.exec(&mut self.conn);
+        pipe.exec_async(&mut self.conn).await?;
         Ok(())
     }
 
@@ -1788,7 +1755,8 @@ impl RedisConnection {
             .cmd("SET")
             .arg(&key)
             .arg(value)
-            .exec(&mut self.conn)?;
+            .exec_async(&mut self.conn)
+            .await?;
 
         Ok(())
     }
@@ -1811,7 +1779,7 @@ impl RedisConnection {
                 .arg(&serde_json::to_string(&info)?);
         }
 
-        pipe.exec(&mut self.conn)?;
+        pipe.exec_async(&mut self.conn).await?;
         Ok(())
     }
 
@@ -1836,7 +1804,7 @@ impl RedisConnection {
     ) -> anyhow::Result<Option<AccountVerification>> {
         let key = format!("{}|{}", account_id, network);
         info!("key: {}", key);
-        let value: Option<String> = self.conn.get(&key)?;
+        let value: Option<String> = self.conn.get(&key).await?;
 
         match value {
             Some(json) => Ok(Some(serde_json::from_str(&json)?)),
@@ -1861,16 +1829,6 @@ impl RedisConnection {
         } else {
             Ok(false)
         }
-    }
-
-    pub async fn clear_verification_state(
-        &mut self,
-        network: &str,
-        account_id: &AccountId32,
-    ) -> anyhow::Result<()> {
-        let key = format!("{}|{}", account_id, network);
-        let _: () = self.conn.del(&key)?;
-        Ok(())
     }
 
     async fn build_account_state_message(
@@ -1905,7 +1863,7 @@ impl RedisConnection {
         redis_cfg: &RedisConfig,
         msg: &redis::Msg,
     ) -> anyhow::Result<Option<(AccountId32, serde_json::Value)>> {
-        let mut conn = RedisConnection::get_connection(redis_cfg)?;
+        let mut conn = RedisConnection::get_connection(redis_cfg).await?;
         let payload: String = msg.get_payload()?;
         let channel = msg.get_channel_name();
 
