@@ -39,6 +39,40 @@ services:
       - CONFIG_PATH=/etc/w3registrar/config.toml
       - RUST_LOG=info
       - KEYFILE_PATH=/etc/w3registrar/keyfile
+    labels:
+      # Please make sure to run autoheal container to enable restart if the container is unhealthy
+      autoheal: true
+    healthcheck:
+      test: |
+        echo $(
+          echo '{
+            "version":"1.0",
+            "type":"SubscribeAccountState",
+            "payload":{
+              "account":"5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+              "network":"paseo"
+            }
+          }' 
+        ) \
+        | websocat ws://127.0.0.1:${W3REG_PORT:-8080} \
+        | jq 'select(.type == "JsonResult")
+          | select(
+            .payload.message.AccountState.account and
+            .payload.message.AccountState.hashed_info and
+            .payload.message.AccountState.network and
+            (.payload.message.AccountState.pending_challenges | type == "array") and
+            (.payload.message.AccountState.verification_state.fields | type == "object")
+          )
+          | select(
+            all(.payload.message.AccountState.pending_challenges[]; 
+              (type=="array" and length == 2 and (.[0] | type == "string") and (.[1] | type == "string"))
+            )
+          )
+        '
+      interval: 20s
+      timeout: 10s
+      retries: 3
+
 
 volumes:
   redis_data:
