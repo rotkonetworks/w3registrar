@@ -25,7 +25,7 @@ use serde_json::Value;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
 use tokio::time::{sleep, Duration};
-use tracing::{error, info, warn};
+use tracing::{error, info, instrument, warn};
 
 use std::path::Path;
 
@@ -43,6 +43,7 @@ struct Matrix {
 impl Adapter for Matrix {}
 
 impl Matrix {
+    #[instrument(skip_all)]
     async fn login() -> anyhow::Result<Client> {
         let cfg = GLOBAL_CONFIG.get().unwrap().adapter.matrix.clone();
         let state_dir = Path::new(&cfg.state_dir);
@@ -126,6 +127,7 @@ impl Matrix {
         Ok(client)
     }
 
+    #[instrument(skip_all)]
     async fn new() -> anyhow::Result<Self> {
         let client = Self::login().await?;
         let mut room = RoomEventFilter::default();
@@ -173,6 +175,7 @@ impl Matrix {
         panic!("FATAL: Matrix sync stopped unexpectedly. Forcing restart.");
     }
 
+    #[instrument(skip_all)]
     async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
         let MessageType::Text(text_content) = ev.content.msgtype else {
             return;
@@ -209,6 +212,7 @@ impl Matrix {
         }
     }
 
+    #[instrument(skip_all)]
     async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client, room: Room) {
         if event.state_key != client.user_id().unwrap() {
             return;
@@ -270,6 +274,7 @@ impl Matrix {
     /// # Arguments
     /// * `acc` - Parsed account information from message
     /// * `text_content` - Content of the message
+    #[instrument(skip_all)]
     async fn handle_incoming(
         acc: Account,
         text_content: &TextMessageEventContent,
@@ -320,6 +325,7 @@ impl Matrix {
 
 /// Verifies a Matrix device for secure communication
 /// This is required for end-to-end encryption functionality
+#[instrument(skip_all)]
 async fn verify_device(device: &Device) -> anyhow::Result<()> {
     match device.verify().await {
         Ok(_) => Ok(()),
@@ -329,6 +335,7 @@ async fn verify_device(device: &Device) -> anyhow::Result<()> {
 
 /// Initializes and runs the Matrix bot
 /// Sets up event handlers for room invites and messages
+#[instrument(name = "matrix_listener")]
 pub async fn start_bot() -> anyhow::Result<()> {
     Matrix::new().await?.listen().await;
     unreachable!("Matrix listener should never return");
@@ -368,6 +375,7 @@ fn extract_sender_account(
 /// * `network` - Network identifier
 /// * `account_id` - Account being verified
 /// * `account` - Account information
+#[instrument(skip_all)]
 async fn handle_content(
     text_content: &TextMessageEventContent,
     redis_connection: &mut RedisConnection,

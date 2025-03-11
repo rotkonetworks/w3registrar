@@ -1,5 +1,11 @@
 #![allow(dead_code)]
-
+// NOTE: Logging Hygiene
+// 1) Log only base operations (things that are not done by ur own code)
+// 2) Log returned values after they are returned, if possible, by other complex operations (code u've written)
+// 3) Start the log by an Uppercase letter
+// 4) Use the instrument macro whenever is possible
+// 4.5) Use skip()/skip_all for sensitive info (passwords)
+// 5) Log error as they happen and pass then upward if feasible
 use anyhow::anyhow;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -31,7 +37,11 @@ use subxt::SubstrateConfig;
 use tokio::{net::TcpStream, sync::Mutex};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
-use tracing::{debug, error, info, span, Level};
+use tracing::info_span;
+use tracing::instrument;
+use tracing::Span;
+use tracing::{debug, error, info};
+use tungstenite::Error;
 
 use crate::{
     config::{RedisConfig, RegistrarConfig, GLOBAL_CONFIG},
@@ -47,6 +57,9 @@ use crate::{
     },
     token::{AuthToken, Token},
 };
+
+// TODO: move this to another file?
+static REDIS_CLIENT: OnceCell<Arc<RedisClient>> = OnceCell::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountVerification {
@@ -270,7 +283,7 @@ impl Account {
     }
 
     pub fn into_accounts(value: &IdentityInfo) -> Vec<Account> {
-        info!("Converting IdentityInfo into accounts: {:?}", value);
+        info!(identity_info = %format!("{:?}", value), "Converting IdentityInfo into accounts");
         let mut accounts = Vec::new();
 
         let mut add_if_some = |data: &IdentityData, constructor: fn(String) -> Account| {
@@ -308,10 +321,10 @@ impl FromStr for Account {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let matrix_regex = Regex::new(r"@(?<name>[a-z0-9][a-z0-9.=/-]*):(?<domain>(?:[a-zA-Z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?)").unwrap();
-        info!("Determining that account {s} is a valid format...");
+        info!("Checking format for {s}");
         match matrix_regex.captures(s) {
             Some(account) => {
-                info!("This {s} is a matrix account");
+                info!(acc_format = %"valid", acc_type = %"matrix", "Account info");
                 let acc_name: &str = &account["name"];
                 let domain: &str = &account["domain"];
                 Ok(Self::Matrix(format!("@{}:{}", acc_name, domain)))
@@ -320,13 +333,8 @@ impl FromStr for Account {
                 let (account_type, value) = s
                     .split_once('|')
                     .ok_or_else(|| anyhow::anyhow!("Invalid account format, expected Type:Name"))?;
-                info!("Account {s} is valid");
-                info!("Account type: {account_type}");
-                info!("Value: {value}");
-
-                info!("Parsing the account type...");
                 let account_type: AccountType = account_type.parse()?;
-                info!("Account type {:?}", account_type);
+                info!(acc_format = %"valid", acc_type = %account_type, "Account info");
                 Ok(Self::from_type_and_value(
                     account_type,
                     value.trim().to_owned(),
@@ -448,13 +456,14 @@ pub struct JsonResultPayload {
     message: serde_json::Value,
 }
 
-// --------------------------------------
+#[instrument(name = "node_listener")]
 pub async fn spawn_node_listener() -> anyhow::Result<()> {
     let node_listener = NodeListener::new().await?;
     node_listener.listen().await
 }
 
 /// Converts the inner of [IdentityData] to a [String]
+#[instrument(skip_all)]
 pub fn identity_data_tostring(data: &IdentityData) -> Option<String> {
     let result = match data {
         IdentityData::Raw0(v) => Some(String::from_utf8_lossy(v).to_string()),
@@ -498,6 +507,7 @@ pub fn identity_data_tostring(data: &IdentityData) -> Option<String> {
 }
 
 /// helper function to deserialize SS58 string into AccountId32
+#[instrument(skip_all)]
 fn ss58_to_account_id32<'de, D>(deserializer: D) -> Result<AccountId32, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -507,27 +517,32 @@ where
         .map_err(|e| serde::de::Error::custom(format!("Invalid SS58: {e:?}")))
 }
 
+#[deprecated]
 fn string_to_account_id(s: &str) -> anyhow::Result<AccountId32> {
     AccountId32::from_str(s).map_err(|e| anyhow!("Invalid account ID: {}", e))
 }
 
 #[derive(Debug, Clone)]
-struct Listener {
+struct SocketListener {
     redis_cfg: RedisConfig,
+    span: Span,
     socket_addr: SocketAddr,
 }
 
-impl Listener {
+impl SocketListener {
     pub async fn new() -> Self {
         let cfg = GLOBAL_CONFIG
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
+        let span = info_span!("socket_listener");
         Self {
+            span,
             redis_cfg: cfg.redis.clone(),
             socket_addr: cfg.websocket.socket_addrs().unwrap(),
         }
     }
 
+    #[instrument(skip_all, parent = &self.span, name = "subscription_request")]
     pub async fn handle_subscription_request(
         &mut self,
         request: SubscribeAccountStateRequest,
@@ -620,6 +635,7 @@ impl Listener {
         format!("0x{}", hex::encode(hash))
     }
 
+    #[instrument(skip_all, parent = &self.span)]
     async fn process_v1(
         &mut self,
         message: VersionedMessage,
@@ -646,6 +662,7 @@ impl Listener {
         }
     }
 
+    #[instrument(skip_all, parent = &self.span)]
     pub async fn _handle_incoming(
         &mut self,
         message: Message,
@@ -709,7 +726,7 @@ impl Listener {
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
         let registration = node::get_registration(&client, &id).await?;
 
-        info!("registration: {:#?}", registration);
+        info!(registration = %format!("{:?}", registration));
 
         Self::is_complete(&registration, &accounts)?;
         // TODO: instead of using index 0 judgement search for our registrar judgement that its paid
@@ -823,11 +840,28 @@ impl Listener {
         result.map_err(|e| e.into())
     }
 
+    #[instrument(skip_all)]
+    async fn close_ws_connection() {
+        info!("Received close frame, closing...");
+    }
+
+    #[instrument(skip_all)]
+    async fn handle_non_text_message() -> bool {
+        info!("Recived non text message");
+        true
+    }
+
+    #[instrument(skip_all)]
+    async fn handle_connection_errors(error: Error) -> bool {
+        error!(error = %error, "WebSocket error");
+        false
+    }
+
+    #[instrument(skip_all, parent = &self.span)]
     async fn process_websocket(
         &mut self,
         ws_write: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         mut ws_read: SplitStream<WebSocketStream<TcpStream>>,
-        span: tracing::Span,
     ) {
         let mut subscriber: Option<AccountId32> = None;
         let (sender, mut receiver) = mpsc::channel::<serde_json::Value>(100);
@@ -835,7 +869,7 @@ impl Listener {
         loop {
             tokio::select! {
                 Some(msg) = receiver.next() => {
-                    if !self.handle_channel_message(&ws_write, msg, &span).await {
+                    if !self.handle_channel_message(&ws_write, msg).await {
                         break;
                     }
                 }
@@ -843,11 +877,12 @@ impl Listener {
                 Some(msg_result) = ws_read.next() => {
                     match msg_result {
                         Ok(Message::Close(_)) => {
-                            info!(parent: &span, "Received close frame");
+                            Self::close_ws_connection().await;
                             break;
                         }
                         _ => {
-                            if !self.handle_ws_message(&ws_write, msg_result, &mut subscriber, sender.clone(), &span).await {
+                            if !self.handle_ws_message(&ws_write, msg_result, &mut subscriber, sender.clone()).await {
+                                Self::close_ws_connection().await;
                                 break;
                             }
                         }
@@ -855,7 +890,7 @@ impl Listener {
                 }
 
                 else => {
-                    info!(parent: &span, "WebSocket or channel stream ended");
+                    info!("WebSocket or channel stream ended");
                     break;
                 }
             }
@@ -863,16 +898,16 @@ impl Listener {
 
         // Cleanup
         if let Some(id) = subscriber {
-            info!(parent: &span, subscriber_id = %id, "Cleaning up subscriber");
+            info!(subscriber_id = %id, "Cleaning up subscriber");
         }
-        info!(parent: &span, "WebSocket connection closed");
+        info!("WebSocket connection closed");
     }
 
+    #[instrument(skip_all, parent = &self.span)]
     async fn handle_channel_message(
         &self,
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         msg: serde_json::Value,
-        span: &tracing::Span,
     ) -> bool {
         let resp_type = msg
             .get("type")
@@ -881,70 +916,60 @@ impl Listener {
 
         match serde_json::to_string(&msg) {
             Ok(serialized) => {
-                info!(parent: span, response_type = %resp_type, "Sending response");
+                info!(response_type = %resp_type, "Sending response");
                 match Self::send_message(write, serialized).await {
                     Ok(_) => true,
                     Err(e) => {
-                        error!(parent: span, error = %e, "Failed to send message");
+                        error!(error = %e, "Failed to send message");
                         false
                     }
                 }
             }
             Err(e) => {
-                error!(parent: span, error = %e, "Failed to serialize response");
+                error!(error = %e, "Failed to serialize response");
                 true
             }
         }
     }
 
+    #[instrument(skip_all, parent = &self.span)]
     async fn handle_ws_message(
         &mut self,
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         msg_result: Result<Message, tokio_tungstenite::tungstenite::Error>,
         subscriber: &mut Option<AccountId32>,
         sender: Sender<serde_json::Value>,
-        span: &tracing::Span,
     ) -> bool {
         match msg_result {
             Ok(Message::Text(bytes)) => {
                 // Convert Utf8Bytes to string using to_string()
                 let text = bytes.to_string();
-                self.handle_text_message(write, text, subscriber, sender, span)
+                self.handle_text_message(write, text, subscriber, sender)
                     .await
             }
-            Ok(Message::Close(_)) => {
-                info!(parent: span, "Received close frame");
-                false
-            }
-            Ok(_) => {
-                debug!(parent: span, "Received non-text message");
-                true
-            }
-            Err(e) => {
-                error!(parent: span, error = %e, "WebSocket error");
-                false
-            }
+            Ok(Message::Close(_)) => false,
+            Ok(_) => Self::handle_non_text_message().await,
+            Err(e) => Self::handle_connection_errors(e).await,
         }
     }
 
+    #[instrument(skip_all, parent = &self.span)]
     async fn handle_text_message(
         &mut self,
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         text: String,
         subscriber: &mut Option<AccountId32>,
         sender: Sender<serde_json::Value>,
-        span: &tracing::Span,
     ) -> bool {
         let parsed: VersionedMessage = match serde_json::from_str(&text) {
             Ok(msg) => msg,
             Err(_) => {
-                error!(parent: span, "Failed to parse WebSocket message");
+                error!("Failed to parse WebSocket message");
                 return true;
             }
         };
 
         info!(
-            parent: span,
             message_version = %parsed.version,
             message_type = %parsed.message_type,
             "Received WebSocket message"
@@ -958,18 +983,18 @@ impl Listener {
                 let serialized = match serde_json::to_string(&response) {
                     Ok(s) => s,
                     Err(e) => {
-                        error!(parent: span, error = %e, "Failed to serialize response");
+                        error!(error = %e, "Failed to serialize response");
                         return true;
                     }
                 };
 
                 if let Err(e) = Self::send_message(write, serialized).await {
-                    error!(parent: span, error = %e, "Failed to send response");
+                    error!(error = %e, "Failed to send response");
                     return false;
                 }
 
                 if let Some(id) = subscriber.take() {
-                    info!(parent: span, subscriber_id = %id, "New subscriber registered");
+                    info!(subscriber_id = %id, "New subscriber registered");
                     let mut cloned_self = self.clone();
                     tokio::spawn(async move {
                         if let Err(e) = cloned_self.spawn_redis_listener(sender, id, response).await
@@ -980,24 +1005,24 @@ impl Listener {
                 }
                 true
             }
-            Err(e) => self.handle_error_response(write, e, span).await,
+            Err(e) => self.handle_error_response(write, e).await,
         }
     }
 
+    #[instrument(skip_all, parent = &self.span)]
     async fn handle_successful_response(
         &self,
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         response: serde_json::Value,
         subscriber: &mut Option<AccountId32>,
         sender: Sender<serde_json::Value>,
-        span: &tracing::Span,
     ) -> bool {
         debug!("Handling successful response: {:?}", response);
 
         let serialized = match serde_json::to_string(&response) {
             Ok(s) => s,
             Err(e) => {
-                error!(parent: span, error = %e, "Failed to serialize response");
+                error!(error = %e, "Failed to serialize response");
                 return true;
             }
         };
@@ -1006,15 +1031,15 @@ impl Listener {
             .get("type")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        debug!(parent: span, response_type = %resp_type, "Sending response");
+        debug!(response_type = %resp_type, "Sending response");
 
         if let Err(e) = Self::send_message(write, serialized).await {
-            error!(parent: span, error = %e, "Failed to send response");
+            error!(error = %e, "Failed to send response");
             return false;
         }
 
         if let Some(id) = subscriber.take() {
-            info!(parent: span, subscriber_id = %id, "New subscriber registered");
+            info!(subscriber_id = %id, "New subscriber registered");
             let mut cloned_self = self.clone();
             tokio::spawn(async move {
                 if let Err(e) = cloned_self.spawn_redis_listener(sender, id, response).await {
@@ -1026,13 +1051,13 @@ impl Listener {
         true
     }
 
+    #[instrument(skip_all)]
     async fn handle_error_response(
         &self,
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         error: anyhow::Error,
-        span: &tracing::Span,
     ) -> bool {
-        error!(parent: span, error = %error, "Error handling message");
+        error!(error = %error, "Error handling message");
 
         let error_response = serde_json::json!({
             "version": "1.0",
@@ -1043,44 +1068,50 @@ impl Listener {
             Ok(serialized) => match Self::send_message(write, serialized).await {
                 Ok(_) => true,
                 Err(e) => {
-                    error!(parent: span, error = %e, "Failed to send error response");
+                    error!(error = %e, "Failed to send error response");
                     false
                 }
             },
             Err(e) => {
-                error!(parent: span, error = %e, "Failed to serialize error response");
+                error!(error = %e, "Failed to serialize error response");
                 true
             }
         }
     }
 
     /// Handles incoming websocket connection
+    #[instrument(skip_all, parent = &self.span)]
     pub async fn handle_connection(&mut self, stream: std::net::TcpStream) {
         let peer_addr = stream
             .peer_addr()
             .map_or("unknown".to_string(), |addr| addr.to_string());
-        let conn_span = span!(Level::INFO, "ws_connection", peer_addr = %peer_addr);
 
-        info!(parent: &conn_span, "New WebSocket connection attempt");
+        info!(
+            { peer_addr = peer_addr },
+            "New WebSocket connection attempt"
+        );
 
         let tokio_stream = match tokio::net::TcpStream::from_std(stream) {
             Ok(stream) => {
-                debug!(parent: &conn_span, "Successfully converted to tokio TcpStream");
+                debug!(
+                    { peer_addr = peer_addr },
+                    "Successfully converted to tokio TcpStream"
+                );
                 stream
             }
             Err(e) => {
-                error!(parent: &conn_span, error = %e, "Failed to convert to tokio TcpStream");
+                error!(error = %e, "Failed to convert to tokio TcpStream");
                 return;
             }
         };
 
         let ws_stream = match tokio_tungstenite::accept_async(tokio_stream).await {
             Ok(stream) => {
-                info!(parent: &conn_span, "WebSocket handshake successful");
+                info!("WebSocket handshake successful");
                 stream
             }
             Err(e) => {
-                error!(parent: &conn_span, error = %e, "WebSocket handshake failed");
+                error!(error = %e, "WebSocket handshake failed");
                 return;
             }
         };
@@ -1088,12 +1119,13 @@ impl Listener {
         let (write, read) = ws_stream.split();
         let write = Arc::new(Mutex::new(write));
 
-        info!(parent: &conn_span, "Starting WebSocket message processing");
-        self.process_websocket(write, read, conn_span).await;
+        info!("Starting WebSocket message processing");
+        self.process_websocket(write, read).await;
     }
 
     /// websocket listener
-    pub async fn listen(&mut self) -> ! {
+    #[instrument(skip_all, fields(peer_addr), parent = &self.span)]
+    pub async fn listen(&mut self) -> anyhow::Result<()> {
         let listener = match tokio::net::TcpListener::bind(self.socket_addr).await {
             Ok(l) => l,
             Err(e) => {
@@ -1106,7 +1138,7 @@ impl Listener {
         loop {
             match listener.accept().await {
                 Ok((stream, addr)) => {
-                    info!("Incoming connection from {:?}...", addr);
+                    info!(peer_addr = %addr, "Incoming websocket connection");
                     let mut clone = self.clone();
                     tokio::spawn(async move {
                         clone.handle_connection(stream.into_std().unwrap()).await;
@@ -1118,8 +1150,10 @@ impl Listener {
                 }
             }
         }
+        Ok(())
     }
 
+    #[instrument(skip_all, parent = &self.span)]
     async fn spawn_redis_listener(
         &mut self,
         mut sender: Sender<serde_json::Value>,
@@ -1127,7 +1161,7 @@ impl Listener {
         response: serde_json::Value,
     ) -> anyhow::Result<()> {
         let redis_cfg = self.redis_cfg.clone();
-        info!("Starting Redis listener task!");
+        info!(account_id = %account.to_string(), "Starting Redis listener task!");
 
         tokio::spawn(async move {
             let mut redis_conn = match RedisConnection::get_connection(&redis_cfg).await {
@@ -1145,7 +1179,6 @@ impl Listener {
                 network.as_str().unwrap_or_default(),
             );
 
-            info!("Subscribing to channel: {}", channel);
             if let Err(e) = redis_conn.subscribe(&channel).await {
                 error!("Unable to subscribe to {} because {:?}", channel, e);
                 return;
@@ -1162,7 +1195,7 @@ impl Listener {
                 let result = match RedisConnection::process_state_change(&redis_cfg, &msg).await {
                     Ok(result) => result,
                     Err(e) => {
-                        info!("Failed to process Redis message {:?}: {:#?}", msg, e);
+                        error!(error = %e, "Failed to process Redis message {:?}", msg);
                         continue;
                     }
                 };
@@ -1189,32 +1222,8 @@ impl Listener {
 
 /// Spawns a websocket server to listen for incoming registration requests
 pub async fn spawn_ws_serv() -> anyhow::Result<()> {
-    let listener = Listener::new().await;
-    let addr = listener.socket_addr;
-
-    let tcp_listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .unwrap_or_else(|e| {
-            error!("Failed to bind to address: {}", e);
-            std::process::exit(1);
-        });
-
-    info!("WebSocket server listening on {}", addr);
-
-    loop {
-        match tcp_listener.accept().await {
-            Ok((stream, addr)) => {
-                info!("Incoming connection from {:?}...", addr);
-                let mut clone = listener.clone();
-                tokio::spawn(async move {
-                    clone.handle_connection(stream.into_std().unwrap()).await;
-                });
-            }
-            Err(e) => {
-                error!("Failed to accept connection: {}", e);
-            }
-        }
-    }
+    let mut listener = SocketListener::new().await;
+    listener.listen().await
 }
 
 /// Used to listen/interact with BC events on the substrate node
@@ -1222,6 +1231,7 @@ pub async fn spawn_ws_serv() -> anyhow::Result<()> {
 struct NodeListener {
     clients: HashMap<String, NodeClient>,
     redis_cfg: RedisConfig,
+    span: Span,
 }
 
 impl NodeListener {
@@ -1242,13 +1252,16 @@ impl NodeListener {
                 .map_err(|e| anyhow!("Failed to connect to {} network: {}", network, e))?;
             clients.insert(network.clone(), client);
         }
+        let span = info_span!("node_listener");
 
         Ok(Self {
+            span,
             clients,
             redis_cfg: cfg.redis.clone(),
         })
     }
 
+    #[instrument(skip_all, parent = &self.span)]
     async fn handle_registration(
         &mut self,
         who: &AccountId32,
@@ -1272,7 +1285,7 @@ impl NodeListener {
         let accounts = Account::into_accounts(&registration.info);
 
         // validation
-        Listener::check_node(who.clone(), accounts.clone(), network).await?;
+        SocketListener::check_node(who.clone(), accounts.clone(), network).await?;
 
         let mut conn = RedisConnection::get_connection(&self.redis_cfg).await?;
         conn.clear_all_related_to(network, who).await?;
@@ -1317,33 +1330,32 @@ impl NodeListener {
         Ok(())
     }
 
+    #[instrument(skip_all, parent = &self.span)]
     pub async fn handle_node_events(
         &mut self,
         event: EventDetails<SubstrateConfig>,
         network: &str,
     ) {
-        let span = span!(Level::INFO, "node_event", %network);
-
         if let Ok(Some(req)) = event.as_event::<JudgementRequested>() {
-            info!(parent: &span, requester = %req.who, "Judgement requested");
+            info!(requester = %req.who, "Judgement requested");
 
             match self.handle_registration(&req.who, network).await {
                 Ok(_) => {
-                    info!(parent: &span, requester = %req.who, "Successfully processed registration request")
+                    info!(requester = %req.who, "Successfully processed registration request")
                 }
                 Err(e) => {
-                    error!(parent: &span, error = %e, requester = %req.who, "Failed to process registration request")
+                    error!(error = %e, requester = %req.who, "Failed to process registration request")
                 }
             }
         } else if let Ok(Some(req)) = event.as_event::<JudgementUnrequested>() {
-            info!(parent: &span, requester = %req.who, "Judgement unrequested");
+            info!(requester = %req.who, "Judgement unrequested");
 
             match self.cancel_registration(&req.who, network).await {
                 Ok(_) => {
-                    info!(parent: &span, requester = %req.who, "Successfully cancelled registration")
+                    info!(requester = %req.who, "Successfully cancelled registration")
                 }
                 Err(e) => {
-                    error!(parent: &span, error = %e, requester = %req.who, "Failed to cancel registration")
+                    error!(error = %e, requester = %req.who, "Failed to cancel registration")
                 }
             }
         }
@@ -1351,9 +1363,9 @@ impl NodeListener {
 
     /// Listens for incoming events on the substrate node, in particular
     /// the `requestJudgement` event
+    #[instrument(skip_all, parent = &self.span)]
     pub async fn listen(self) -> anyhow::Result<()> {
-        let span = span!(Level::INFO, "node_listener");
-        info!(parent: &span, "Starting node listener");
+        info!("Starting node listener");
 
         let cfg = GLOBAL_CONFIG
             .get()
@@ -1371,20 +1383,17 @@ impl NodeListener {
             let mut block_stream = client.blocks().subscribe_finalized().await?;
             let network_name = network.clone();
             let mut self_clone = self.clone();
-            let span_clone = span.clone();
 
             let handle = tokio::spawn(async move {
                 while let Some(item) = block_stream.next().await {
                     match item {
                         Ok(block) => {
                             if let Ok(events) = block.events().await {
-                                self_clone
-                                    .process_block_events(&span_clone, events, &network_name)
-                                    .await;
+                                self_clone.process_block_events(events, &network_name).await;
                             }
                         }
                         Err(e) => {
-                            error!(parent: &span_clone, error = %e, "Failed to process block")
+                            error!(error = %e, "Failed to process block")
                         }
                     }
                 }
@@ -1398,34 +1407,34 @@ impl NodeListener {
     }
 
     /// process block events we listen
+    #[instrument(skip_all, parent = &self.span)]
     async fn process_block_events(
         &mut self,
-        span: &tracing::Span,
         events: subxt::events::Events<SubstrateConfig>,
         network: &str,
     ) {
         for event_result in events.iter() {
             if let Ok(event) = event_result {
                 if let Ok(Some(req)) = event.as_event::<JudgementRequested>() {
-                    info!(parent: span, requester = %req.who, "Judgement requested");
+                    info!(requester = %req.who, "Judgement requested");
 
                     match self.handle_registration(&req.who, network).await {
                         Ok(_) => {
-                            info!(parent: span, requester = %req.who, "Successfully processed registration request")
+                            info!(requester = %req.who, "Successfully processed registration request")
                         }
                         Err(e) => {
-                            error!(parent: span, error = %e, requester = %req.who, "Failed to process registration request")
+                            error!(error = %e, requester = %req.who, "Failed to process registration request")
                         }
                     }
                 } else if let Ok(Some(req)) = event.as_event::<JudgementUnrequested>() {
-                    info!(parent: span, requester = %req.who, "Judgement unrequested");
+                    info!(requester = %req.who, "Judgement unrequested");
 
                     match self.cancel_registration(&req.who, network).await {
                         Ok(_) => {
-                            info!(parent: span, requester = %req.who, "Successfully cancelled registration")
+                            info!(requester = %req.who, "Successfully cancelled registration")
                         }
                         Err(e) => {
-                            error!(parent: span, error = %e, requester = %req.who, "Failed to cancel registration")
+                            error!(error = %e, requester = %req.who, "Failed to cancel registration")
                         }
                     }
                 }
@@ -1483,6 +1492,7 @@ impl NodeListener {
     ///
     /// # Note
     /// this method should be used in conjunction with the `JudgementUnrequested` event
+    #[instrument(skip_all, parent = &self.span)]
     async fn cancel_registration(&self, who: &AccountId32, network: &str) -> anyhow::Result<()> {
         let mut conn = RedisConnection::get_connection(&self.redis_cfg).await?;
         conn.clear_all_related_to(network, who).await?;
@@ -1503,46 +1513,102 @@ pub struct VerificationFields {
     pub pgp_fingerprint: bool,
 }
 
+struct RedisSubscriber {
+    redis_cfg: RedisConfig,
+    span: Span,
+}
+
+impl RedisSubscriber {
+    fn new(redis_cfg: RedisConfig) -> Self {
+        let span = info_span!("redis_subscriber");
+        Self { redis_cfg, span }
+    }
+
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn listen(&mut self) -> anyhow::Result<()> {
+        let mut redis_conn = RedisConnection::get_connection(&self.redis_cfg).await?;
+        redis_conn.subscribe("__keyspace@0__:*").await?;
+        let mut stream = redis_conn.pubsub_stream().await;
+        while let Some(msg) = stream.next().await {
+            info!("Redis event occured");
+            if let Err(e) = self.handle_redis_message(msg).await {
+                error!(error = %e, "Failed to handle Redis message");
+                continue;
+            }
+        }
+        info!("Redis subscription ended");
+        Ok(())
+    }
+
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn process_state_change(
+        &self,
+        msg: &redis::Msg,
+    ) -> anyhow::Result<Option<(AccountId32, serde_json::Value)>> {
+        let mut conn = RedisConnection::get_connection(&self.redis_cfg).await?;
+        let payload: String = msg.get_payload()?;
+        let channel = msg.get_channel_name();
+
+        info!(payload = ?payload, channel = ?channel, "Processing Redis message");
+
+        // early returns for unsupported operations
+        if !matches!(payload.as_str(), "set" | "del") {
+            info!("Ignoring Redis operation: {}", payload);
+            return Ok(None);
+        }
+
+        // extract key from channel name
+        let key = match channel.strip_prefix("__keyspace@0__:") {
+            Some(k) => k,
+            None => return Ok(None),
+        };
+
+        // parse network and account ID
+        let (account_id, network) = match key.split_once('|') {
+            Some(parts) => parts,
+            None => return Ok(None),
+        };
+
+        let id = match AccountId32::from_str(account_id) {
+            Ok(id) => id,
+            Err(_) => return Ok(None),
+        };
+
+        let account_state = conn.build_account_state_message(network, &id, None).await?;
+
+        Ok(Some((id, account_state)))
+    }
+
+    #[instrument(skip_all, parent = &self.span)]
+    async fn handle_redis_message(&self, msg: Msg) -> anyhow::Result<()> {
+        if let Ok(Some((id, value))) = self.process_state_change(&msg).await {
+            info!(
+                account_id = %id.to_string(), new_state = %value.to_string(),
+                "Processed new state"
+            );
+        }
+        Ok(())
+    }
+}
+
 pub async fn spawn_redis_subscriber() -> anyhow::Result<()> {
     let redis_cfg = GLOBAL_CONFIG.get().unwrap().redis.clone();
-    let span = span!(Level::INFO, "redis_subscriber");
-    info!(parent: &span, "Starting Redis subscriber service");
-
-    let mut redis_conn = RedisConnection::get_connection(&redis_cfg).await?;
-    let mut stream = redis_conn.pubsub_stream().await;
-    while let Some(msg) = stream.next().await {
-        if let Err(e) = handle_redis_message(&redis_cfg, &msg).await {
-            error!(parent: &span, error = %e, "Failed to handle Redis message");
-            continue;
-        }
-    }
-
-    info!(parent: &span, "Redis subscription ended");
-    Ok(())
+    RedisSubscriber::new(redis_cfg).listen().await
 }
-
-async fn handle_redis_message(redis_cfg: &RedisConfig, msg: &redis::Msg) -> anyhow::Result<()> {
-    if let Ok(Some((id, value))) = RedisConnection::process_state_change(redis_cfg, msg).await {
-        info!("Processed state change for {}: {:?}", id, value);
-    }
-    Ok(())
-}
-
-// TODO: move this to another file?
-static REDIS_CLIENT: OnceCell<Arc<RedisClient>> = OnceCell::new();
 
 pub struct RedisConnection {
+    span: Span,
     conn: ConnectionManager,
     pubsub: PubSub,
 }
 
 impl RedisConnection {
+    #[instrument(skip_all, parent = None)]
     pub fn initialize_pool(addr: &RedisConfig) -> anyhow::Result<()> {
-        let span = span!(Level::INFO, "redis_connection", url = %addr.url()?);
-        info!(parent: &span, "Initializing Redis client");
+        info!("Initializing Redis client");
 
         let client = redis::Client::open(addr.url()?).map_err(|e| {
-            error!(parent: &span, error = %e, "Failed to open Redis client");
+            error!(error = %e, "Failed to open Redis client");
             anyhow!("Cannot open Redis client: {}", e)
         })?;
 
@@ -1550,39 +1616,46 @@ impl RedisConnection {
             .set(Arc::new(client))
             .map_err(|_| anyhow!("Redis client already initialized"))?;
 
-        info!(parent: &span, "Redis client initialized successfully");
+        info!("Redis client initialized successfully");
         Ok(())
     }
 
+    #[instrument(skip_all, name = "redis_connection", parent = None)]
     pub async fn get_connection(_config: &RedisConfig) -> anyhow::Result<Self> {
-        let span = span!(Level::INFO, "redis_connection");
-
+        let span = tracing::Span::current();
+        info!("Getting redis connection");
         let client = REDIS_CLIENT
             .get()
             .ok_or_else(|| anyhow!("Redis client not initialized"))?;
 
         let mut conn = client.get_connection_manager().await.map_err(|e| {
-            error!(parent: &span, error = %e, "Failed to establish Redis connection");
+            error!(error = %e, "Failed to establish Redis connection");
             anyhow!("Cannot establish Redis connection: {}", e)
         })?;
 
-        info!(parent: &span, "Enabling keyspace notifications");
         Self::enable_keyspace_notifications(&mut conn).await?;
         let pubsub = client.get_async_pubsub().await?;
 
-        info!(parent: &span, "Redis connection successfully established");
-        Ok(Self { conn, pubsub })
+        info!("Redis connection successfully established");
+        Ok(Self { conn, pubsub, span })
     }
 
+    #[instrument(skip_all, parent = &self.span)]
     pub async fn subscribe(&mut self, channel: &str) -> RedisResult<()> {
+        info!(channel = %channel, "Subscribing to pubsub channel");
         self.pubsub.psubscribe(channel).await
     }
 
+    #[instrument(skip_all, parent = &self.span)]
     pub async fn pubsub_stream(&mut self) -> impl Stream<Item = Msg> + '_ {
+        info!("Getting PubSub stream");
         self.pubsub.on_message()
     }
 
+    #[instrument(skip_all, name = "keyspace_notification", parent = None)]
     async fn enable_keyspace_notifications(conn: &mut ConnectionManager) -> anyhow::Result<()> {
+        info!("Enabeling keyspace notification");
+
         match conn
             .send_packed_command(
                 redis::cmd("CONFIG")
@@ -1598,8 +1671,9 @@ impl RedisConnection {
     }
 
     /// Search through the redis for keys that are similar to the `pattern`
+    #[instrument(skip_all, parent = &self.span)]
     pub async fn search(&mut self, pattern: &str) -> anyhow::Result<Vec<String>> {
-        // self.conn.s
+        info!(pattern, "Searching");
         Ok(self
             .conn
             .scan_match::<&str, String>(pattern)
@@ -1610,16 +1684,19 @@ impl RedisConnection {
 
     /// Get all pending challenges of `wallet_id` as a [Vec<Vec<String>>]
     /// Returns pairs of [account_type, challenge_token]
-    pub async fn get_challenges(
+    #[instrument(skip_all, parent = &self.span)]
+    async fn get_challenges(
         &mut self,
         network: &str,
         account_id: &AccountId32,
     ) -> anyhow::Result<Vec<Vec<String>>> {
+        info!(account_id = ?account_id.to_string(), network = ?network, "Getting challenges");
         let state = match self.get_verification_state(network, account_id).await? {
             Some(s) => s,
             None => return Ok(Vec::new()),
         };
 
+        info!(account_id = ?account_id.to_string(), network = ?network, "Filtering pending challenges");
         let pending = state
             .challenges
             .iter()
@@ -1637,11 +1714,16 @@ impl RedisConnection {
 
     /// constructing [VerificationFields] object from the registration done of all the accounts
     /// under `wallet_id`
+    #[instrument(skip_all, parent = &self.span)]
     pub async fn extract_info(
         &mut self,
         network: &str,
         account_id: &AccountId32,
     ) -> anyhow::Result<VerificationFields> {
+        info!(
+            account_id = ?account_id.to_string(), network = ?network,
+            "Extracting verification fields",
+        );
         let state = match self.get_verification_state(network, account_id).await? {
             Some(s) => s,
             None => return Ok(VerificationFields::default()),
@@ -1669,42 +1751,7 @@ impl RedisConnection {
         Ok(fields)
     }
 
-    pub async fn get_challenge_token_from_account_type(
-        &mut self,
-        network: &str,
-        account_id: &AccountId32,
-        acc_type: &AccountType,
-    ) -> anyhow::Result<Option<Token>> {
-        let state = match self.get_verification_state(network, account_id).await? {
-            Some(s) => s,
-            None => return Ok(None),
-        };
-
-        let type_key = acc_type.to_string();
-
-        match state.challenges.get(&type_key) {
-            Some(challenge) => Ok(challenge.token.clone().map(Token::new)),
-            None => Ok(None),
-        }
-    }
-
-    pub async fn get_challenge_token_from_account_info(
-        &mut self,
-        network: &str,
-        account_id: &AccountId32,
-        account_type: &str,
-    ) -> anyhow::Result<Option<Token>> {
-        let state = match self.get_verification_state(network, account_id).await? {
-            Some(s) => s,
-            None => return Ok(None),
-        };
-
-        match state.challenges.get(account_type) {
-            Some(challenge) => Ok(challenge.token.clone().map(Token::new)),
-            None => Ok(None),
-        }
-    }
-
+    #[instrument(skip_all, parent = &self.span)]
     async fn clear_all_related_to(
         &mut self,
         network: &str,
@@ -1729,6 +1776,7 @@ impl RedisConnection {
         state: &AccountVerification,
         accounts: &HashMap<Account, bool>,
     ) -> anyhow::Result<()> {
+        info!(state = ?state, "Saving account state");
         let mut pipe = redis::pipe();
         for account in accounts.keys() {
             let key = format!("{}|{}|{}", account, network, account_id);
@@ -1742,6 +1790,7 @@ impl RedisConnection {
         Ok(())
     }
 
+    #[instrument(skip_all, parent = &self.span)]
     pub async fn save_state(
         &mut self,
         network: &str,
@@ -1749,6 +1798,7 @@ impl RedisConnection {
         state: &AccountVerification,
     ) -> anyhow::Result<()> {
         let key = format!("{}|{}", account_id, network);
+        info!(state = ?state, "Saving account state");
         let value = serde_json::to_string(&state)?;
 
         redis::pipe()
@@ -1761,6 +1811,7 @@ impl RedisConnection {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     pub async fn update_verification_state(
         &mut self,
         network: &str,
@@ -1783,6 +1834,9 @@ impl RedisConnection {
         Ok(())
     }
 
+    // #[instrument(skip_all, parent = &self.span)]
+    // NOTE: don't instrument this
+    #[instrument(skip_all, parent = &self.span)]
     pub async fn init_verification_state(
         &mut self,
         network: &str,
@@ -1797,13 +1851,14 @@ impl RedisConnection {
         Ok(())
     }
 
+    #[instrument(skip_all, parent = &self.span, name = "verification_state")]
     pub async fn get_verification_state(
         &mut self,
         network: &str,
         account_id: &AccountId32,
     ) -> anyhow::Result<Option<AccountVerification>> {
         let key = format!("{}|{}", account_id, network);
-        info!("key: {}", key);
+        info!(account_id = ?account_id.to_string(), network = ?network, "Getting verification state");
         let value: Option<String> = self.conn.get(&key).await?;
 
         match value {
@@ -1812,12 +1867,19 @@ impl RedisConnection {
         }
     }
 
+    #[instrument(skip_all, parent = &self.span)]
     pub async fn update_challenge_status(
         &mut self,
         network: &str,
         account_id: &AccountId32,
         account_type: &str,
     ) -> anyhow::Result<bool> {
+        info!(
+            network = ?network,
+            account_id = ?account_id.to_string(),
+            account_type = ?account_type,
+            "Updating challenge state"
+        );
         if let Some(mut state) = self.get_verification_state(network, account_id).await? {
             if state.mark_challenge_done(account_type) {
                 self.update_verification_state(network, account_id, &state)
@@ -1831,6 +1893,7 @@ impl RedisConnection {
         }
     }
 
+    #[instrument(skip_all, parent = &self.span)]
     async fn build_account_state_message(
         &mut self,
         network: &str,
@@ -1859,6 +1922,7 @@ impl RedisConnection {
         }))
     }
 
+    #[instrument(skip_all)]
     pub async fn process_state_change(
         redis_cfg: &RedisConfig,
         msg: &redis::Msg,
@@ -1867,14 +1931,11 @@ impl RedisConnection {
         let payload: String = msg.get_payload()?;
         let channel = msg.get_channel_name();
 
-        info!(
-            "Processing Redis message - Channel: {}, Payload: {}",
-            channel, payload
-        );
+        info!(payload = ?payload, channel = ?channel, "Processing Redis message");
 
         // early returns for unsupported operations
         if !matches!(payload.as_str(), "set" | "del") {
-            info!("Ignoring Redis operation: {}", payload);
+            info!(payload = ?payload, "Ignoring Redis operation");
             return Ok(None);
         }
 

@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 use anyhow::anyhow;
 use std::net::TcpStream;
 use std::str::FromStr;
@@ -14,7 +12,7 @@ use imap::Session;
 use native_tls::{TlsConnector, TlsStream};
 use subxt::utils::AccountId32;
 
-use tracing::{error, info, Level};
+use tracing::{error, info, instrument, Level};
 
 use crate::config::GLOBAL_CONFIG;
 
@@ -243,11 +241,10 @@ impl MailListener {
     }
 }
 
+#[instrument(name = "mail_watcher")]
 pub async fn watch_mailserver() -> anyhow::Result<()> {
     // NOTE: this duplicate exist since the guard is dropped after the end of watch_mailserver and
     // since we spawn a task that will out live this function which should inherit this context (span)
-    let span = tracing::span!(Level::INFO, "mail_watcher");
-    let _guard = span.enter();
     info!("watcher started");
 
     let mut server = match MailListener::new() {

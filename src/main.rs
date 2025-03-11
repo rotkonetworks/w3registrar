@@ -7,7 +7,7 @@ mod token;
 
 use anyhow::{Context as _, Result};
 use std::panic;
-use tracing::{error, info};
+use tracing::{error, info, instrument};
 use tracing_subscriber::EnvFilter;
 
 use crate::{
@@ -16,6 +16,7 @@ use crate::{
     config::{Config, GLOBAL_CONFIG},
 };
 
+#[instrument(skip_all)]
 fn setup_logging() -> Result<()> {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(
@@ -30,14 +31,14 @@ fn setup_logging() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_line_number(true)
-        .with_thread_ids(true)
-        .with_thread_names(true)
-        //.with_span_events(FmtSpan::CLOSE)
+        // .with_thread_ids(true)
+        // .with_thread_names(true)
         .with_target(true)
         .try_init()
         .map_err(|e| anyhow::anyhow!("Failed to initialize logging: {}", e))
 }
 
+#[instrument(skip_all)]
 fn setup_panic_handler() {
     panic::set_hook(Box::new(|panic_info| {
         if let Some(location) = panic_info.location() {
@@ -53,6 +54,7 @@ fn setup_panic_handler() {
     }));
 }
 
+#[instrument(skip_all)]
 async fn check_required_services(config: &Config) -> (bool, bool, bool) {
     let needs_email = config
         .registrar
