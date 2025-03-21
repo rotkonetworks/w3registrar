@@ -28,6 +28,7 @@ use tokio_tungstenite::WebSocketStream;
 use tracing::{debug, error, info, span, Level};
 
 use crate::{
+    adapter::pgp::PGPHelper,
     config::{RedisConfig, RegistrarConfig, GLOBAL_CONFIG},
     node::{
         self, filter_accounts,
@@ -133,7 +134,7 @@ impl Display for Account {
             Account::Web(name) => write!(f, "web|{}", name),
             Account::Email(name) => write!(f, "email|{}", name),
             Account::Github(name) => write!(f, "github|{}", name),
-            Account::PGPFingerprint(name) => write!(f, "pgp_fingerprint|{:?}", name),
+            Account::PGPFingerprint(name) => write!(f, "pgp_fingerprint|{}", hex::encode(name)),
         }
     }
 }
@@ -206,7 +207,9 @@ impl Account {
     }
 
     pub fn should_skip_token(&self, is_done: bool) -> bool {
-        is_done || self.determine() != ValidationMode::Outbound
+        is_done
+            || self.determine() != ValidationMode::Outbound
+                && !matches!(self, Account::PGPFingerprint(_))
     }
 
     pub fn account_type(&self) -> AccountType {
@@ -361,6 +364,15 @@ pub struct SubscribeAccountStateRequest {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IncomingSubscribeRequest {
     pub network: String,
+    #[serde(deserialize_with = "ss58_to_account_id32")]
+    pub account: AccountId32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IncomingVerifyPGPRequest {
+    pub network: String,
+    pub signed_challenge: String,
+    pub pubkey: String,
     #[serde(deserialize_with = "ss58_to_account_id32")]
     pub account: AccountId32,
 }
@@ -632,6 +644,14 @@ impl Listener {
                 self.handle_subscription_request(internal_request, &incoming.network, subscriber)
                     .await
             }
+            "VerifyPGPKey" => {
+                let incoming: IncomingVerifyPGPRequest = serde_json::from_value(message.payload)
+                    .map_err(|e| anyhow!("Invalid SubscribeAccountState payload: {}", e))?;
+
+                let network_str = incoming.network.clone();
+                self.handle_pgp_verification_request(incoming, &network_str, subscriber)
+                    .await
+            }
             // TODO: Add endpoint for inputting verifications
             _ => Err(anyhow!(
                 "Unsupported message type: {}",
@@ -779,6 +799,15 @@ impl Listener {
                     (identity_data_tostring(&registration.info.twitter), twit_acc)
                 }
                 Account::Web(web_acc) => (identity_data_tostring(&registration.info.web), web_acc),
+                Account::PGPFingerprint(fingerprint) => (
+                    Some(hex::encode(
+                        registration
+                            .info
+                            .pgp_fingerprint
+                            .ok_or_else(|| anyhow!("Internal error"))?,
+                    )),
+                    &hex::encode(fingerprint),
+                ),
                 _ => todo!(),
             };
 
@@ -1198,6 +1227,51 @@ impl Listener {
         debug!("Redis listener task spawned");
         Ok(())
     }
+
+    /// Handles PGP registration by checking signed challenge signature and challenge content
+    async fn handle_pgp_verification_request(
+        &self,
+        request: IncomingVerifyPGPRequest,
+        network: &str,
+        subscriber: &mut Option<AccountId32>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let cfg = GLOBAL_CONFIG
+            .get()
+            .expect("GLOBAL_CONFIG is not initialized");
+
+        // filter only supported networks
+        if !cfg.registrar.is_network_supported(network) {
+            return Err(anyhow!("Network {} not supported", network));
+        }
+
+        // get network configuration
+        let network_cfg = cfg
+            .registrar
+            .get_network(network)
+            .ok_or_else(|| anyhow!("Network {} not configured", network))?;
+
+        *subscriber = Some(request.account.clone());
+        // get registration info on fron the blockchain node
+        let client = NodeClient::from_url(&network_cfg.endpoint).await?;
+        let registration = node::get_registration(&client, &request.account).await?;
+
+        let Some(registred_fingerprint) = registration.info.pgp_fingerprint else {
+            return Err(anyhow!(
+                "No fingerprint is registered on chain for {:?}",
+                request.account
+            ));
+        };
+        let account_id = request.account;
+
+        // verify challenge
+        PGPHelper::verify(
+            request.signed_challenge.as_bytes(),
+            registred_fingerprint,
+            network,
+            account_id,
+        )
+        .await
+    }
 }
 
 /// Spawns a websocket server to listen for incoming registration requests
@@ -1563,6 +1637,12 @@ static REDIS_CLIENT: OnceCell<Arc<RedisClient>> = OnceCell::new();
 
 pub struct RedisConnection {
     conn: redis::Connection,
+}
+
+impl Default for RedisConnection {
+    fn default() -> Self {
+        Self::get_connection(&GLOBAL_CONFIG.get().unwrap().redis).unwrap()
+    }
 }
 
 impl RedisConnection {
