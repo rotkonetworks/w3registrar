@@ -8,6 +8,7 @@ use std::fs;
 use std::net::{SocketAddr, ToSocketAddrs};
 use tokio::sync::OnceCell;
 use url::Url;
+use crate::api::Network;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Adapter {
@@ -32,24 +33,25 @@ pub struct EmailConfig {
     pub email: String,
     pub mailbox: String,
     pub server: String,
+    pub checking_frequency: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegistrarConfigs {
     #[serde(flatten)]
-    pub networks: HashMap<String, RegistrarConfig>,
+    pub networks: HashMap<Network, RegistrarConfig>,
 }
 
 impl RegistrarConfigs {
-    pub fn get_network(&self, network: &str) -> Option<&RegistrarConfig> {
+    pub fn get_network(&self, network: &Network) -> Option<&RegistrarConfig> {
         self.networks.get(network)
     }
 
-    pub fn supported_networks(&self) -> Vec<String> {
+    pub fn supported_networks(&self) -> Vec<Network> {
         self.networks.keys().cloned().collect()
     }
 
-    pub fn is_network_supported(&self, network: &str) -> bool {
+    pub fn is_network_supported(&self, network: &Network) -> bool {
         self.networks.contains_key(network)
     }
 }

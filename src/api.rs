@@ -89,15 +89,16 @@ impl AccountVerification {
         self.completed = !self.challenges.is_empty() && self.challenges.values().all(|c| c.done);
     }
 
-    pub fn mark_challenge_done(&mut self, account_type: &str) -> bool {
-        if let Some(challenge) = self.challenges.get_mut(account_type) {
-            challenge.done = true;
-            challenge.token = None;
-            self.updated_at = Utc::now();
-            self.complete_all_challenges();
-            true
-        } else {
-            false
+    pub fn mark_challenge_done(&mut self, account_type: &str) -> anyhow::Result<()> {
+        match self.challenges.get_mut(account_type) {
+            Some(challenge) => {
+                challenge.done = true;
+                challenge.token = None;
+                self.updated_at = Utc::now();
+                self.complete_all_challenges();
+                Ok(())
+            }
+            None => Err(anyhow!("Unable to mare challenge as done")),
         }
     }
 }
@@ -311,7 +312,7 @@ impl FromStr for Account {
                 info!("This {s} is a matrix account");
                 let acc_name: &str = &account["name"];
                 let domain: &str = &account["domain"];
-                return Ok(Self::Matrix(format!("@{}:{}", acc_name, domain)));
+                Ok(Self::Matrix(format!("@{}:{}", acc_name, domain)))
             }
             None => {
                 let (account_type, value) = s
@@ -324,10 +325,10 @@ impl FromStr for Account {
                 info!("Parsing the account type...");
                 let account_type: AccountType = account_type.parse()?;
                 info!("Account type {:?}", account_type);
-                return Ok(Self::from_type_and_value(
+                Ok(Self::from_type_and_value(
                     account_type,
                     value.trim().to_owned(),
-                ));
+                ))
             }
         }
     }
@@ -353,24 +354,72 @@ impl<'de> Deserialize<'de> for Account {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, Hash)]
+#[serde(rename_all(serialize = "lowercase"))]
+pub enum Network {
+    #[serde(alias = "paseo", alias = "PASEO")]
+    Paseo,
+    #[serde(alias = "polkadot", alias = "POLKADOT")]
+    Polkadot,
+    #[serde(alias = "kasuma", alias = "KASUMA")]
+    Kasuma,
+    #[serde(alias = "rococo", alias = "ROCOCO")]
+    Rococo,
+}
+
+impl Display for Network {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // NOTE: this is done for compatibility reasons
+        match self {
+            Network::Paseo => write!(f, "paseo"),
+            Network::Polkadot => write!(f, "polkadot"),
+            Network::Kasuma => write!(f, "kasuma"),
+            Network::Rococo => write!(f, "rococo"),
+        }
+    }
+}
+
+impl Network {
+    pub fn from_str(network: &str) -> anyhow::Result<Self> {
+        match network {
+            "Paseo" | "paseo" => Ok(Self::Paseo),
+            "Kasuma" | "kasuma" => Ok(Self::Kasuma),
+            "Polkadot" | "polkadot" => Ok(Self::Polkadot),
+            "Rococo" | "rococo" => Ok(Self::Rococo),
+            _ => Err(anyhow!("Unkown network {network}")),
+        }
+    }
+}
+
 // --------------------------------------
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SubscribeAccountStateRequest {
     #[serde(rename = "type")]
-    pub _type: SubscribeAccountState,
+    pub _type: RequestType,
     pub payload: AccountId32,
+    pub network: Network,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct VerifyPGPKeyRequest {
+    #[serde(rename = "type")]
+    pub _type: RequestType,
+    pub pubkey: String,
+    #[serde(deserialize_with = "ss58_to_account_id32")]
+    pub account: AccountId32,
+    pub netowrk: Network,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IncomingSubscribeRequest {
-    pub network: String,
+    pub network: Network,
     #[serde(deserialize_with = "ss58_to_account_id32")]
     pub account: AccountId32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IncomingVerifyPGPRequest {
-    pub network: String,
+    pub network: Network,
     pub signed_challenge: String,
     pub pubkey: String,
     #[serde(deserialize_with = "ss58_to_account_id32")]
@@ -438,6 +487,12 @@ pub enum SubscribeAccountState {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum RequestType {
+    SubscribeAccountState,
+    VerifyPGPKey,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum RequestVerificationChallenge {
     RequestVerificationChallenge,
 }
@@ -456,8 +511,7 @@ pub struct JsonResultPayload {
 
 // --------------------------------------
 pub async fn spawn_node_listener() -> anyhow::Result<()> {
-    let node_listener = NodeListener::new().await?;
-    node_listener.listen().await
+    NodeListener::new().await?.listen().await
 }
 
 /// Converts the inner of [IdentityData] to a [String]
@@ -536,47 +590,46 @@ impl Listener {
 
     pub async fn handle_subscription_request(
         &mut self,
-        request: SubscribeAccountStateRequest,
-        network: &str,
+        request: IncomingSubscribeRequest,
         subscriber: &mut Option<AccountId32>,
     ) -> anyhow::Result<serde_json::Value> {
         let cfg = GLOBAL_CONFIG
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
 
-        if !cfg.registrar.is_network_supported(network) {
+        if !cfg.registrar.is_network_supported(&request.network) {
             return Ok(serde_json::json!({
                 "type": "error",
-                "message": format!("Network {} not supported", network)
+                "message": format!("Network {} not supported", request.network)
             }));
         }
 
         let network_cfg = cfg
             .registrar
-            .get_network(network)
-            .ok_or_else(|| anyhow!("Network {} not configured", network))?;
+            .get_network(&request.network)
+            .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
 
-        *subscriber = Some(request.payload.clone());
+        *subscriber = Some(request.account.clone());
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
-        let registration = node::get_registration(&client, &request.payload).await?;
+        let registration = node::get_registration(&client, &request.account).await?;
 
         let mut conn = RedisConnection::get_connection(&self.redis_cfg)?;
 
         // 1) attempt to load existing verification state, if any
         let existing_verification = conn
-            .get_verification_state(network, &request.payload)
+            .get_verification_state(&request.network, &request.account)
             .await?;
 
         // 2) if none found, create a fresh AccountVerification
-        let mut verification =
-            existing_verification.unwrap_or_else(|| AccountVerification::new(network.to_string()));
+        let mut verification = existing_verification
+            .unwrap_or_else(|| AccountVerification::new(request.network.to_string()));
 
         // get the accounts from the chain's identity info
         let accounts = filter_accounts(
             &registration.info,
-            &request.payload,
+            &request.account,
             network_cfg.registrar_index,
-            network,
+            &request.network,
         )
         .await?;
 
@@ -608,14 +661,14 @@ impl Listener {
         }
 
         // save new state
-        conn.init_verification_state(network, &request.payload, &verification, &accounts)
+        conn.init_verification_state(&request.network, &request.account, &verification, &accounts)
             .await?;
 
         // get hash and build state message
         let hash = self.hash_identity_info(&registration.info);
 
         // return state in json
-        conn.build_account_state_message(network, &request.payload, Some(hash))
+        conn.build_account_state_message(&request.network, &request.account, Some(hash))
             .await
     }
 
@@ -636,20 +689,12 @@ impl Listener {
                 let incoming: IncomingSubscribeRequest = serde_json::from_value(message.payload)
                     .map_err(|e| anyhow!("Invalid SubscribeAccountState payload: {}", e))?;
 
-                let internal_request = SubscribeAccountStateRequest {
-                    _type: SubscribeAccountState::SubscribeAccountState,
-                    payload: incoming.account,
-                };
-
-                self.handle_subscription_request(internal_request, &incoming.network, subscriber)
-                    .await
+                self.handle_subscription_request(incoming, subscriber).await
             }
             "VerifyPGPKey" => {
                 let incoming: IncomingVerifyPGPRequest = serde_json::from_value(message.payload)
                     .map_err(|e| anyhow!("Invalid SubscribeAccountState payload: {}", e))?;
-
-                let network_str = incoming.network.clone();
-                self.handle_pgp_verification_request(incoming, &network_str, subscriber)
+                self.handle_pgp_verification_request(incoming, subscriber)
                     .await
             }
             // TODO: Add endpoint for inputting verifications
@@ -710,7 +755,7 @@ impl Listener {
     pub async fn check_node(
         id: AccountId32,
         accounts: Vec<Account>,
-        network: &str,
+        network: &Network,
     ) -> anyhow::Result<()> {
         let cfg = GLOBAL_CONFIG
             .get()
@@ -1232,7 +1277,6 @@ impl Listener {
     async fn handle_pgp_verification_request(
         &self,
         request: IncomingVerifyPGPRequest,
-        network: &str,
         subscriber: &mut Option<AccountId32>,
     ) -> anyhow::Result<serde_json::Value> {
         let cfg = GLOBAL_CONFIG
@@ -1240,15 +1284,15 @@ impl Listener {
             .expect("GLOBAL_CONFIG is not initialized");
 
         // filter only supported networks
-        if !cfg.registrar.is_network_supported(network) {
-            return Err(anyhow!("Network {} not supported", network));
+        if !cfg.registrar.is_network_supported(&request.network) {
+            return Err(anyhow!("Network {} not supported", request.network));
         }
 
         // get network configuration
         let network_cfg = cfg
             .registrar
-            .get_network(network)
-            .ok_or_else(|| anyhow!("Network {} not configured", network))?;
+            .get_network(&request.network)
+            .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
 
         *subscriber = Some(request.account.clone());
         // get registration info on fron the blockchain node
@@ -1267,7 +1311,7 @@ impl Listener {
         PGPHelper::verify(
             request.signed_challenge.as_bytes(),
             registred_fingerprint,
-            network,
+            &request.network,
             account_id,
         )
         .await
@@ -1307,7 +1351,7 @@ pub async fn spawn_ws_serv() -> anyhow::Result<()> {
 /// Used to listen/interact with BC events on the substrate node
 #[derive(Debug, Clone)]
 struct NodeListener {
-    clients: HashMap<String, NodeClient>,
+    clients: HashMap<Network, NodeClient>,
     redis_cfg: RedisConfig,
 }
 
@@ -1339,7 +1383,8 @@ impl NodeListener {
     async fn handle_registration(
         &mut self,
         who: &AccountId32,
-        network: &str,
+        index: u32,
+        network: &Network,
     ) -> anyhow::Result<()> {
         let cfg = GLOBAL_CONFIG
             .get()
@@ -1350,12 +1395,19 @@ impl NodeListener {
             .get_network(network)
             .ok_or_else(|| anyhow!("Network {} not configured", network))?;
 
+        if network_cfg.registrar_index != index {
+            return Err(anyhow!(
+                "Unvalid registrar index on network {network}, expected {} but got {index}",
+                network_cfg.registrar_index
+            ));
+        }
+
         let client = self
             .clients
             .get(network)
             .ok_or_else(|| anyhow!("No client for network {}", network))?;
 
-        let registration = node::get_registration(&client, who).await?;
+        let registration = node::get_registration(client, who).await?;
         let accounts = Account::into_accounts(&registration.info);
 
         // validation
@@ -1407,14 +1459,17 @@ impl NodeListener {
     pub async fn handle_node_events(
         &mut self,
         event: EventDetails<SubstrateConfig>,
-        network: &str,
+        network: &Network,
     ) {
         let span = span!(Level::INFO, "node_event", %network);
 
         if let Ok(Some(req)) = event.as_event::<JudgementRequested>() {
             info!(parent: &span, requester = %req.who, "Judgement requested");
 
-            match self.handle_registration(&req.who, network).await {
+            match self
+                .handle_registration(&req.who, req.registrar_index, network)
+                .await
+            {
                 Ok(_) => {
                     info!(parent: &span, requester = %req.who, "Successfully processed registration request")
                 }
@@ -1489,31 +1544,33 @@ impl NodeListener {
         &mut self,
         span: &tracing::Span,
         events: subxt::events::Events<SubstrateConfig>,
-        network: &str,
+        network: &Network,
     ) {
-        for event_result in events.iter() {
-            if let Ok(event) = event_result {
-                if let Ok(Some(req)) = event.as_event::<JudgementRequested>() {
-                    info!(parent: span, requester = %req.who, "Judgement requested");
+        for event in events.iter().flatten() {
+            if let Ok(Some(req)) = event.as_event::<JudgementRequested>() {
+                info!(parent: span, requester = %req.who, "Judgement requested");
 
-                    match self.handle_registration(&req.who, network).await {
-                        Ok(_) => {
-                            info!(parent: span, requester = %req.who, "Successfully processed registration request")
-                        }
-                        Err(e) => {
-                            error!(parent: span, error = %e, requester = %req.who, "Failed to process registration request")
-                        }
+                // NOTE: maybe pass the whole request here?
+                match self
+                    .handle_registration(&req.who, req.registrar_index, network)
+                    .await
+                {
+                    Ok(_) => {
+                        info!(parent: span, requester = %req.who, "Successfully processed registration request")
                     }
-                } else if let Ok(Some(req)) = event.as_event::<JudgementUnrequested>() {
-                    info!(parent: span, requester = %req.who, "Judgement unrequested");
+                    Err(e) => {
+                        error!(parent: span, error = %e, requester = %req.who, "Failed to process registration request")
+                    }
+                }
+            } else if let Ok(Some(req)) = event.as_event::<JudgementUnrequested>() {
+                info!(parent: span, requester = %req.who, "Judgement unrequested");
 
-                    match self.cancel_registration(&req.who, network).await {
-                        Ok(_) => {
-                            info!(parent: span, requester = %req.who, "Successfully cancelled registration")
-                        }
-                        Err(e) => {
-                            error!(parent: span, error = %e, requester = %req.who, "Failed to cancel registration")
-                        }
+                match self.cancel_registration(&req.who, network).await {
+                    Ok(_) => {
+                        info!(parent: span, requester = %req.who, "Successfully cancelled registration")
+                    }
+                    Err(e) => {
+                        error!(parent: span, error = %e, requester = %req.who, "Failed to cancel registration")
                     }
                 }
             }
@@ -1528,7 +1585,7 @@ impl NodeListener {
     /// # TODO: remove this
     pub async fn handle_registration_request(
         conn: &mut RedisConnection,
-        network: &str,
+        network: &Network,
         who: &AccountId32,
         accounts: &[(Account, bool)],
     ) -> anyhow::Result<()> {
@@ -1570,14 +1627,18 @@ impl NodeListener {
     ///
     /// # Note
     /// this method should be used in conjunction with the `JudgementUnrequested` event
-    async fn cancel_registration(&self, who: &AccountId32, network: &str) -> anyhow::Result<()> {
+    async fn cancel_registration(
+        &self,
+        who: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<()> {
         let mut conn = RedisConnection::get_connection(&self.redis_cfg)?;
         conn.clear_all_related_to(network, who).await?;
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct VerificationFields {
     pub discord: bool,
     pub twitter: bool,
@@ -1588,22 +1649,6 @@ pub struct VerificationFields {
     pub legal: bool,
     pub web: bool,
     pub pgp_fingerprint: bool,
-}
-
-impl Default for VerificationFields {
-    fn default() -> Self {
-        Self {
-            matrix: false,
-            display_name: false,
-            discord: false,
-            email: false,
-            twitter: false,
-            github: false,
-            web: false,
-            pgp_fingerprint: false,
-            legal: false,
-        }
-    }
 }
 
 pub async fn spawn_redis_subscriber() -> anyhow::Result<()> {
@@ -1700,7 +1745,7 @@ impl RedisConnection {
         &mut self,
         account_id: &AccountId32,
     ) -> anyhow::Result<redis::PubSub> {
-        let related_keys = self.search(&format!("*|{}", account_id.to_string()))?;
+        let related_keys = self.search(&format!("*|{}", account_id))?;
         let mut pubsub = self.conn.as_pubsub();
 
         for key in related_keys {
@@ -1724,7 +1769,7 @@ impl RedisConnection {
     /// Returns pairs of [account_type, challenge_token]
     pub async fn get_challenges(
         &mut self,
-        network: &str,
+        network: &Network,
         account_id: &AccountId32,
     ) -> anyhow::Result<Vec<Vec<String>>> {
         let state = match self.get_verification_state(network, account_id).await? {
@@ -1751,7 +1796,7 @@ impl RedisConnection {
     /// under `wallet_id`
     pub async fn extract_info(
         &mut self,
-        network: &str,
+        network: &Network,
         account_id: &AccountId32,
     ) -> anyhow::Result<VerificationFields> {
         let state = match self.get_verification_state(network, account_id).await? {
@@ -1783,7 +1828,7 @@ impl RedisConnection {
 
     pub async fn get_challenge_token_from_account_type(
         &mut self,
-        network: &str,
+        network: &Network,
         account_id: &AccountId32,
         acc_type: &AccountType,
     ) -> anyhow::Result<Option<Token>> {
@@ -1802,7 +1847,7 @@ impl RedisConnection {
 
     pub async fn get_challenge_token_from_account_info(
         &mut self,
-        network: &str,
+        network: &Network,
         account_id: &AccountId32,
         account_type: &str,
     ) -> anyhow::Result<Option<Token>> {
@@ -1819,12 +1864,11 @@ impl RedisConnection {
 
     async fn clear_all_related_to(
         &mut self,
-        network: &str,
+        network: &Network,
         who: &AccountId32,
     ) -> anyhow::Result<()> {
         let mut pipe = redis::pipe();
-        pipe.cmd("DEL")
-            .arg(&format!("{}|{}", who.to_string(), network));
+        pipe.cmd("DEL").arg(format!("{}|{}", who, network));
 
         let accounts = self.search(&format!("*|{}|{}", network, who))?;
         for account in accounts {
@@ -1837,13 +1881,13 @@ impl RedisConnection {
 
     pub async fn save_account(
         &mut self,
-        network: &str,
+        network: &Network,
         account_id: &AccountId32,
         state: &AccountVerification,
         accounts: &HashMap<Account, bool>,
     ) -> anyhow::Result<()> {
         let mut pipe = redis::pipe();
-        for (account, _) in accounts {
+        for account in accounts.keys() {
             let key = format!("{}|{}|{}", account, network, account_id);
             let pipe = pipe.cmd("SET").arg(&key);
             if let Some(challenge_info) = state.challenges.get(&account.account_type().to_string())
@@ -1857,7 +1901,7 @@ impl RedisConnection {
 
     pub async fn save_state(
         &mut self,
-        network: &str,
+        network: &Network,
         account_id: &AccountId32,
         state: &AccountVerification,
     ) -> anyhow::Result<()> {
@@ -1875,7 +1919,7 @@ impl RedisConnection {
 
     pub async fn update_verification_state(
         &mut self,
-        network: &str,
+        network: &Network,
         account_id: &AccountId32,
         state: &AccountVerification,
     ) -> anyhow::Result<()> {
@@ -1897,7 +1941,7 @@ impl RedisConnection {
 
     pub async fn init_verification_state(
         &mut self,
-        network: &str,
+        network: &Network,
         account_id: &AccountId32,
         state: &AccountVerification,
         accounts: &HashMap<Account, bool>,
@@ -1911,7 +1955,7 @@ impl RedisConnection {
 
     pub async fn get_verification_state(
         &mut self,
-        network: &str,
+        network: &Network,
         account_id: &AccountId32,
     ) -> anyhow::Result<Option<AccountVerification>> {
         let key = format!("{}|{}", account_id, network);
@@ -1926,26 +1970,27 @@ impl RedisConnection {
 
     pub async fn update_challenge_status(
         &mut self,
-        network: &str,
+        network: &Network,
         account_id: &AccountId32,
         account_type: &str,
-    ) -> anyhow::Result<bool> {
-        if let Some(mut state) = self.get_verification_state(network, account_id).await? {
-            if state.mark_challenge_done(account_type) {
-                self.update_verification_state(network, account_id, &state)
-                    .await?;
-                Ok(true)
-            } else {
-                Ok(false)
+    ) -> anyhow::Result<()> {
+        match self.get_verification_state(network, account_id).await? {
+            Some(mut state) => {
+                state.mark_challenge_done(account_type)?;
+                let mut redis_connection = RedisConnection::default();
+                redis_connection
+                    .update_verification_state(network, account_id, &state)
+                    .await
             }
-        } else {
-            Ok(false)
+            None => Err(anyhow!(
+                "Unable to retrive challenge from {network}/{account_id} for {account_type}"
+            )),
         }
     }
 
     pub async fn clear_verification_state(
         &mut self,
-        network: &str,
+        network: &Network,
         account_id: &AccountId32,
     ) -> anyhow::Result<()> {
         let key = format!("{}|{}", account_id, network);
@@ -1955,7 +2000,7 @@ impl RedisConnection {
 
     async fn build_account_state_message(
         &mut self,
-        network: &str,
+        network: &Network,
         account_id: &AccountId32,
         hash: Option<String>, // optional for state updates
     ) -> anyhow::Result<serde_json::Value> {
@@ -2012,12 +2057,12 @@ impl RedisConnection {
             None => return Ok(None),
         };
 
-        let id = match AccountId32::from_str(account_id) {
-            Ok(id) => id,
-            Err(_) => return Ok(None),
-        };
+        let id = AccountId32::from_str(account_id)?;
+        let network = Network::from_str(network)?;
 
-        let account_state = conn.build_account_state_message(network, &id, None).await?;
+        let account_state = conn
+            .build_account_state_message(&network, &id, None)
+            .await?;
 
         Ok(Some((id, account_state)))
     }

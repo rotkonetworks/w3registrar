@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::adapter::Adapter;
+use crate::{adapter::Adapter, api::Network};
 use matrix_sdk::{
     config::{RequestConfig, StoreConfig, SyncSettings},
     deserialized_responses::RawSyncOrStrippedState,
@@ -22,16 +22,14 @@ use matrix_sdk::{
     Client,
 };
 use serde_json::Value;
+use std::path::Path;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 
-use std::path::Path;
-
-use crate::api::Account;
+use crate::api::{Account, RedisConnection};
 use crate::GLOBAL_CONFIG;
-use crate::{api::RedisConnection, node::register_identity};
 
 // TODO: move those "independent" functions inside the Matrix struct (handle_content, etc.)
 
@@ -298,13 +296,13 @@ impl Matrix {
             }
             info!("Parts: {:#?}", parts);
             let account = Account::from_str(&format!("{}|{}", parts[0], parts[1]))?;
-            let network = parts[2];
+            let network = Network::from_str(parts[2])?;
 
             if let Ok(account_id) = AccountId32::from_str(parts[3]) {
-                if let Ok(true) = <Matrix as Adapter>::handle_content(
+                if let Ok(()) = <Matrix as Adapter>::handle_content(
                     &text_content.body,
                     &mut redis_connection,
-                    network,
+                    &network,
                     &account_id,
                     &account,
                 )
@@ -356,76 +354,4 @@ fn extract_sender_account(
     info!("Sender: {}", sender);
 
     Account::from_str(sender).ok()
-}
-
-/// Processes message content for verification
-/// Validates message against expected challenge token
-/// Updates verification state and triggers registration if all challenges complete
-///
-/// # Arguments
-/// * `text_content` - Content to validate
-/// * `redis_connection` - Redis connection for state management
-/// * `network` - Network identifier
-/// * `account_id` - Account being verified
-/// * `account` - Account information
-async fn handle_content(
-    text_content: &TextMessageEventContent,
-    redis_connection: &mut RedisConnection,
-    network: &str,
-    account_id: &AccountId32,
-    account: &Account,
-) -> anyhow::Result<bool> {
-    let account_type = &account.account_type().to_string();
-
-    // get the current state
-    let state = match redis_connection
-        .get_verification_state(network, account_id)
-        .await?
-    {
-        Some(state) => state,
-        None => return Ok(false),
-    };
-
-    // get the challenge for the account type
-    let challenge = match state.challenges.get(account_type) {
-        Some(challenge) => challenge,
-        None => return Ok(false),
-    };
-
-    info!("Checking if all challenges are already done...");
-    // challenge is already completed
-    if challenge.done {
-        return Ok(false);
-    }
-
-    // verify the token
-    let token = match &challenge.token {
-        Some(token) => token,
-        None => return Ok(false),
-    };
-
-    // check if the message matches the token (fixed comparison)
-    if text_content.body != *token {
-        return Ok(false);
-    }
-
-    // update challenge status
-    let result = redis_connection
-        .update_challenge_status(network, account_id, account_type)
-        .await?;
-
-    let state = match redis_connection
-        .get_verification_state(network, account_id)
-        .await?
-    {
-        Some(state) => state,
-        None => return Ok(false),
-    };
-
-    // register identity if all challenges are completed
-    if state.completed {
-        register_identity(account_id, network).await?;
-    }
-
-    Ok(result)
 }

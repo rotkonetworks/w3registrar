@@ -1,6 +1,6 @@
 use crate::{
     adapter::Adapter,
-    api::{Account, RedisConnection},
+    api::{Account, Network, RedisConnection},
     config::GLOBAL_CONFIG,
 };
 use anyhow::Result;
@@ -75,7 +75,7 @@ impl Adapter for DnsAdapter {}
 
 struct DnsChallenge {
     domain: String,
-    network: String,
+    network: Network,
     account_id: AccountId32,
     token: String,
 }
@@ -94,7 +94,7 @@ impl DnsChallenge {
             .trim_end_matches('/')
             .to_string();
 
-        let network = parts[2].to_string();
+        let network = Network::from_str(parts[2])?;
         let account_id = AccountId32::from_str(parts[3])?;
 
         let state = match redis_conn
@@ -161,8 +161,6 @@ pub async fn watch_dns() -> anyhow::Result<()> {
 async fn process_challenges(redis_conn: &mut RedisConnection) -> Result<()> {
     let challenge_keys = redis_conn.search("web|*")?;
 
-    const BATCH_SIZE: usize = 10;
-
     for challenge_key in &challenge_keys {
         if let Err(e) = process_single_challenge(challenge_key, redis_conn).await {
             error!("Challenge processing failed {}: {}", challenge_key, e);
@@ -187,9 +185,9 @@ async fn process_single_challenge(
 /// Function to be used for manual verification of DNS challenge instead of active watching
 pub async fn _verify_dns_challenge(
     domain: &str,
-    network: &str,
+    network: &Network,
     account_id: &AccountId32,
-) -> Result<bool> {
+) -> Result<()> {
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
@@ -207,15 +205,27 @@ pub async fn _verify_dns_challenge(
         .await?
     {
         Some(s) => s,
-        None => return Ok(false),
+        None => {
+            return Err(anyhow::anyhow!(
+                "No verification state found for {account_id:?}/{domain}"
+            ))
+        }
     };
 
     let token = match state.challenges.get("web") {
         Some(challenge) if !challenge.done => match &challenge.token {
             Some(t) => t.clone(),
-            None => return Ok(false),
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Unable to extract challenge for {account_id:?}/{domain}"
+                ))
+            }
         },
-        _ => return Ok(false),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "No challenge is found for {account_id}/{domain}"
+            ))
+        }
     };
 
     if verify_txt(&clean_domain, &token).await {
@@ -230,6 +240,9 @@ pub async fn _verify_dns_challenge(
         )
         .await
     } else {
-        Ok(false)
+        Err(anyhow::anyhow!(
+            "Unable to verify domain {} TXT record",
+            domain
+        ))
     }
 }
