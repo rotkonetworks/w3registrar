@@ -394,31 +394,97 @@ impl Network {
 // --------------------------------------
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SubscribeAccountStateRequest {
-    #[serde(rename = "type")]
-    pub _type: RequestType,
-    pub payload: AccountId32,
+    pub account: AccountId32,
     pub network: Network,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct VerifyPGPKeyRequest {
-    #[serde(rename = "type")]
-    pub _type: RequestType,
-    pub pubkey: String,
-    #[serde(deserialize_with = "ss58_to_account_id32")]
-    pub account: AccountId32,
-    pub netowrk: Network,
+impl SubscribeAccountStateRequest {
+    async fn resolve(
+        &self,
+        subscriber: &mut Option<AccountId32>,
+    ) -> std::result::Result<serde_json::Value, anyhow::Error> {
+        let cfg = GLOBAL_CONFIG
+            .get()
+            .expect("GLOBAL_CONFIG is not initialized");
+
+        if !cfg.registrar.is_network_supported(&self.network) {
+            return Ok(serde_json::json!({
+                "type": "error",
+                "message": format!("Network {} not supported", self.network)
+            }));
+        }
+
+        let network_cfg = cfg
+            .registrar
+            .get_network(&self.network)
+            .ok_or_else(|| anyhow!("Network {} not configured", self.network))?;
+
+        *subscriber = Some(self.account.clone());
+        let client = NodeClient::from_url(&network_cfg.endpoint).await?;
+        let registration = node::get_registration(&client, &self.account).await?;
+
+        let mut conn = RedisConnection::default();
+
+        // 1) attempt to load existing verification state, if any
+        let existing_verification = conn
+            .get_verification_state(&self.network, &self.account)
+            .await?;
+
+        // 2) if none found, create a fresh AccountVerification
+        let mut verification = existing_verification
+            .unwrap_or_else(|| AccountVerification::new(self.network.to_string()));
+
+        // get the accounts from the chain's identity info
+        let accounts = filter_accounts(
+            &registration.info,
+            &self.account,
+            network_cfg.registrar_index,
+            &self.network,
+        )
+        .await?;
+
+        // 3) for each discovered account, only create a token if we do not
+        //    already have one stored. Otherwise, reuse the old token/challenge.
+        for (account, is_done) in &accounts {
+            let (acc_type, name) = match account {
+                Account::Discord(name) => ("discord", name),
+                Account::Twitter(name) => ("twitter", name),
+                Account::Matrix(name) => ("matrix", name),
+                Account::Display(name) => ("display_name", name),
+                Account::Email(name) => ("email", name),
+                Account::Github(name) => ("github", name),
+                Account::Legal(name) => ("legal", name),
+                Account::Web(name) => ("web", name),
+                Account::PGPFingerprint(bytes) => ("pgp_fingerprint", &hex::encode(bytes)),
+            };
+
+            // only add a new challenge if not already present.
+            // if *is_done or it's a display_name, we set `token=None` so it's considered done.
+            if !verification.challenges.contains_key(acc_type) {
+                let token = if account.should_skip_token(*is_done) {
+                    None
+                } else {
+                    Some(Token::generate().await.show())
+                };
+                verification.add_challenge(acc_type, name.clone(), token);
+            }
+        }
+
+        // save new state
+        conn.init_verification_state(&self.network, &self.account, &verification, &accounts)
+            .await?;
+
+        // get hash and build state message
+        let hash = Listener::hash_identity_info(&registration.info);
+
+        // return state in json
+        conn.build_account_state_message(&self.network, &self.account, Some(hash))
+            .await
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct IncomingSubscribeRequest {
-    pub network: Network,
-    #[serde(deserialize_with = "ss58_to_account_id32")]
-    pub account: AccountId32,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct IncomingVerifyPGPRequest {
+pub struct VerifyPGPRequest {
     pub network: Network,
     pub signed_challenge: String,
     pub pubkey: String,
@@ -426,19 +492,55 @@ pub struct IncomingVerifyPGPRequest {
     pub account: AccountId32,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ChallengedAccount {
-    pub network: String,
-    pub account: String,
-    pub field: AccountType,
-    pub challenge: String,
+impl VerifyPGPRequest {
+    async fn resolve(
+        &self,
+        subscriber: &mut Option<AccountId32>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let cfg = GLOBAL_CONFIG
+            .get()
+            .expect("GLOBAL_CONFIG is not initialized");
+
+        // filter only supported networks
+        if !cfg.registrar.is_network_supported(&self.network) {
+            return Err(anyhow!("Network {} not supported", self.network));
+        }
+
+        // get network configuration
+        let network_cfg = cfg
+            .registrar
+            .get_network(&self.network)
+            .ok_or_else(|| anyhow!("Network {} not configured", self.network))?;
+        *subscriber = Some(self.account.clone());
+
+        // get registration info on fron the blockchain node
+        let client = NodeClient::from_url(&network_cfg.endpoint).await?;
+        let registration = node::get_registration(&client, &self.account).await?;
+
+        let Some(registred_fingerprint) = registration.info.pgp_fingerprint else {
+            return Err(anyhow!(
+                "No fingerprint is registered on chain for {:?}",
+                self.account
+            ));
+        };
+
+        // verify challenge
+        PGPHelper::verify(
+            self.signed_challenge.as_bytes(),
+            registred_fingerprint,
+            &self.network,
+            &self.account,
+        )
+        .await
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct VerificationRequest {
-    #[serde(rename = "type")]
-    pub _type: RequestVerificationChallenge,
-    pub payload: RequestedAccount,
+pub struct VerifyPGPKeyRequest {
+    pub pubkey: String,
+    #[serde(deserialize_with = "ss58_to_account_id32")]
+    pub account: AccountId32,
+    pub netowrk: Network,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -457,27 +559,26 @@ pub struct VerificationResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct VerifyIdentityRequest {
-    #[serde(rename = "type")]
-    pub _type: String,
-    pub payload: ChallengedAccount,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", content = "payload")]
 pub enum WebSocketMessage {
     SubscribeAccountState(SubscribeAccountStateRequest),
-    RequestVerificationChallenge(VerificationRequest),
-    VerifyIdentity(VerifyIdentityRequest),
-    JsonResult(JsonResultPayload),
+    VerifyPGPKey(VerifyPGPRequest),
+}
+
+impl WebSocketMessage {
+    fn message_type(self) -> &'static str {
+        match self {
+            WebSocketMessage::SubscribeAccountState(_) => "SubscribeAccountState",
+            WebSocketMessage::VerifyPGPKey(_) => "VerifyPGPKey",
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VersionedMessage {
     pub version: String,
-    #[serde(rename = "type")]
-    pub message_type: String,
-    pub payload: serde_json::Value,
+    #[serde(flatten)]
+    pub payload: WebSocketMessage,
 }
 
 // ------------------
@@ -588,92 +689,8 @@ impl Listener {
         }
     }
 
-    pub async fn handle_subscription_request(
-        &mut self,
-        request: IncomingSubscribeRequest,
-        subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<serde_json::Value> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
-
-        if !cfg.registrar.is_network_supported(&request.network) {
-            return Ok(serde_json::json!({
-                "type": "error",
-                "message": format!("Network {} not supported", request.network)
-            }));
-        }
-
-        let network_cfg = cfg
-            .registrar
-            .get_network(&request.network)
-            .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
-
-        *subscriber = Some(request.account.clone());
-        let client = NodeClient::from_url(&network_cfg.endpoint).await?;
-        let registration = node::get_registration(&client, &request.account).await?;
-
-        let mut conn = RedisConnection::get_connection(&self.redis_cfg)?;
-
-        // 1) attempt to load existing verification state, if any
-        let existing_verification = conn
-            .get_verification_state(&request.network, &request.account)
-            .await?;
-
-        // 2) if none found, create a fresh AccountVerification
-        let mut verification = existing_verification
-            .unwrap_or_else(|| AccountVerification::new(request.network.to_string()));
-
-        // get the accounts from the chain's identity info
-        let accounts = filter_accounts(
-            &registration.info,
-            &request.account,
-            network_cfg.registrar_index,
-            &request.network,
-        )
-        .await?;
-
-        // 3) for each discovered account, only create a token if we do not
-        //    already have one stored. Otherwise, reuse the old token/challenge.
-        for (account, is_done) in &accounts {
-            let (acc_type, name) = match account {
-                Account::Discord(name) => ("discord", name),
-                Account::Twitter(name) => ("twitter", name),
-                Account::Matrix(name) => ("matrix", name),
-                Account::Display(name) => ("display_name", name),
-                Account::Email(name) => ("email", name),
-                Account::Github(name) => ("github", name),
-                Account::Legal(name) => ("legal", name),
-                Account::Web(name) => ("web", name),
-                Account::PGPFingerprint(bytes) => ("pgp_fingerprint", &hex::encode(bytes)),
-            };
-
-            // only add a new challenge if not already present.
-            // if *is_done or it's a display_name, we set `token=None` so it's considered done.
-            if !verification.challenges.contains_key(acc_type) {
-                let token = if account.should_skip_token(*is_done) {
-                    None
-                } else {
-                    Some(Token::generate().await.show())
-                };
-                verification.add_challenge(acc_type, name.clone(), token);
-            }
-        }
-
-        // save new state
-        conn.init_verification_state(&request.network, &request.account, &verification, &accounts)
-            .await?;
-
-        // get hash and build state message
-        let hash = self.hash_identity_info(&registration.info);
-
-        // return state in json
-        conn.build_account_state_message(&request.network, &request.account, Some(hash))
-            .await
-    }
-
     /// Generates a hex-encoded blake2 hash of the identity info with 0x prefix
-    fn hash_identity_info(&self, info: &IdentityInfo) -> String {
+    fn hash_identity_info(info: &IdentityInfo) -> String {
         let encoded_info = info.encode();
         let hash = blake2_256(&encoded_info);
         format!("0x{}", hex::encode(hash))
@@ -684,24 +701,13 @@ impl Listener {
         message: VersionedMessage,
         subscriber: &mut Option<AccountId32>,
     ) -> anyhow::Result<serde_json::Value> {
-        match message.message_type.as_str() {
-            "SubscribeAccountState" => {
-                let incoming: IncomingSubscribeRequest = serde_json::from_value(message.payload)
-                    .map_err(|e| anyhow!("Invalid SubscribeAccountState payload: {}", e))?;
-
-                self.handle_subscription_request(incoming, subscriber).await
+        match message.payload {
+            WebSocketMessage::SubscribeAccountState(subscribe_account_state_request) => {
+                subscribe_account_state_request.resolve(subscriber).await
             }
-            "VerifyPGPKey" => {
-                let incoming: IncomingVerifyPGPRequest = serde_json::from_value(message.payload)
-                    .map_err(|e| anyhow!("Invalid SubscribeAccountState payload: {}", e))?;
-                self.handle_pgp_verification_request(incoming, subscriber)
-                    .await
+            WebSocketMessage::VerifyPGPKey(verify_pgprequest) => {
+                verify_pgprequest.resolve(subscriber).await
             }
-            // TODO: Add endpoint for inputting verifications
-            _ => Err(anyhow!(
-                "Unsupported message type: {}",
-                message.message_type
-            )),
         }
     }
 
@@ -871,15 +877,6 @@ impl Listener {
         Ok(())
     }
 
-    pub async fn filter_message(message: &Message) -> Option<AccountId32> {
-        if let Message::Text(text) = message {
-            let parsed: VersionedMessage = serde_json::from_str(text).ok()?;
-            let account_str = parsed.payload.as_str()?;
-            return AccountId32::from_str(account_str).ok();
-        }
-        None
-    }
-
     async fn send_message(
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         msg: String,
@@ -1014,7 +1011,7 @@ impl Listener {
         info!(
             parent: span,
             message_version = %parsed.version,
-            message_type = %parsed.message_type,
+            message_type = %parsed.payload.message_type(),
             "Received WebSocket message"
         );
 
@@ -1271,50 +1268,6 @@ impl Listener {
 
         debug!("Redis listener task spawned");
         Ok(())
-    }
-
-    /// Handles PGP registration by checking signed challenge signature and challenge content
-    async fn handle_pgp_verification_request(
-        &self,
-        request: IncomingVerifyPGPRequest,
-        subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<serde_json::Value> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
-
-        // filter only supported networks
-        if !cfg.registrar.is_network_supported(&request.network) {
-            return Err(anyhow!("Network {} not supported", request.network));
-        }
-
-        // get network configuration
-        let network_cfg = cfg
-            .registrar
-            .get_network(&request.network)
-            .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
-
-        *subscriber = Some(request.account.clone());
-        // get registration info on fron the blockchain node
-        let client = NodeClient::from_url(&network_cfg.endpoint).await?;
-        let registration = node::get_registration(&client, &request.account).await?;
-
-        let Some(registred_fingerprint) = registration.info.pgp_fingerprint else {
-            return Err(anyhow!(
-                "No fingerprint is registered on chain for {:?}",
-                request.account
-            ));
-        };
-        let account_id = request.account;
-
-        // verify challenge
-        PGPHelper::verify(
-            request.signed_challenge.as_bytes(),
-            registred_fingerprint,
-            &request.network,
-            account_id,
-        )
-        .await
     }
 }
 
