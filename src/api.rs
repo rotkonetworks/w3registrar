@@ -2,6 +2,8 @@
 
 use anyhow::anyhow;
 use anyhow::Result;
+use axum::extract::Query;
+use axum::{routing::get, Router};
 use chrono::{DateTime, Utc};
 use futures::channel::mpsc::{self, Sender};
 use futures::stream::SplitSink;
@@ -28,6 +30,10 @@ use tokio_tungstenite::WebSocketStream;
 use tracing::{debug, error, info, span, Level};
 
 use crate::{
+    adapter::{
+        github::{Github, GithubRedirectSetp2Params},
+        Adapter,
+    },
     config::{RedisConfig, RegistrarConfig, GLOBAL_CONFIG},
     node::{
         self, filter_accounts,
@@ -207,6 +213,26 @@ impl Account {
 
     pub fn should_skip_token(&self, is_done: bool) -> bool {
         is_done || self.determine() != ValidationMode::Outbound
+    }
+
+    pub async fn generate_token(&self, is_done: bool) -> Option<String> {
+        match self {
+            Account::Github(_) => {
+                // NOTE: this should generate a url for the user to open on the browser and outh
+                // our app
+                Github::request_url().await
+                // NOTE: request url here? so we will save it in this format
+                // acc_type|url|network|wallet_id
+                // or should we generate the url whenever someone request a state?
+            }
+            _ => {
+                if self.should_skip_token(is_done) {
+                    None
+                } else {
+                    Some(Token::generate().await.show())
+                }
+            }
+        }
     }
 
     pub fn account_type(&self) -> AccountType {
@@ -586,11 +612,7 @@ impl Listener {
             // only add a new challenge if not already present.
             // if *is_done or it's a display_name, we set `token=None` so it's considered done.
             if !verification.challenges.contains_key(acc_type) {
-                let token = if account.should_skip_token(*is_done) {
-                    None
-                } else {
-                    Some(Token::generate().await.show())
-                };
+                let token = account.generate_token(*is_done).await;
                 verification.add_challenge(acc_type, name.clone(), token);
             }
         }
@@ -779,6 +801,10 @@ impl Listener {
                     (identity_data_tostring(&registration.info.twitter), twit_acc)
                 }
                 Account::Web(web_acc) => (identity_data_tostring(&registration.info.web), web_acc),
+                Account::Github(github_acc) => (
+                    identity_data_tostring(&registration.info.github),
+                    github_acc,
+                ),
                 _ => todo!(),
             };
 
@@ -1315,11 +1341,7 @@ impl NodeListener {
                 Account::PGPFingerprint(bytes) => ("pgp_fingerprint", hex::encode(bytes)),
             };
 
-            let token = if account.should_skip_token(*is_done) {
-                None
-            } else {
-                Some(Token::generate().await.show())
-            };
+            let token = account.generate_token(*is_done).await;
             verification.add_challenge(acc_type, name.clone(), token);
         }
 
@@ -1941,4 +1963,101 @@ impl RedisConnection {
 
         Ok(Some((id, account_state)))
     }
+}
+
+fn error_and_return(log: String) -> String {
+    error!(log);
+    return log;
+}
+
+async fn github(Query(params): Query<GithubRedirectSetp2Params>) -> String {
+    info!(params=?params, "PARAMS");
+
+    // github instance to request acc info
+    let gh = match Github::new(&params).await {
+        Ok(gh) => gh,
+        Err(e) => return error_and_return(format!("Error: {}", e)),
+    };
+    info!(credentials = ?gh, "Github Credentials");
+
+    let gh_username = match gh.request_username().await {
+        Ok(username) => username,
+        Err(e) => return error_and_return(format!("Error: {}", e)),
+    };
+    info!(username = ?gh_username, "Github Username");
+
+    // checking if url is requested
+
+    let cfg = GLOBAL_CONFIG
+        .get()
+        .expect("GLOBAL_CONFIG is not initialized");
+    let redis_config = cfg.redis.clone();
+    let mut redis_connection = match RedisConnection::get_connection(&redis_config) {
+        Ok(conn) => conn,
+        Err(e) => {
+            return error_and_return(format!("Error: {}", e));
+        }
+    };
+
+    let search_query = format!("github|{}|*", gh_username);
+    let accounts = match redis_connection.search(&search_query) {
+        Ok(res) => res,
+        Err(e) => return error_and_return(format!("Error: {}", e)),
+    };
+
+    // the reconstructed_url helps identifying the exact relavant registration request
+    // like we can have two wallets from different networks registering the same gh acc
+    let reconstructed_url = Github::reconstruct_request_url(&params.state);
+    for acc_str in accounts {
+        info!("Account: {}", acc_str);
+        let parts: Vec<&str> = acc_str.splitn(4, '|').collect();
+        if parts.len() != 4 {
+            continue;
+        }
+        info!("Parts: {:#?}", parts);
+        let account = match Account::from_str(&format!("{}|{}", parts[0], parts[1])) {
+            Ok(account) => account,
+            Err(e) => return error_and_return(format!("Error: {}", e)),
+        };
+        let network = parts[2];
+
+        if let Ok(account_id) = AccountId32::from_str(parts[3]) {
+            if let Ok(true) = <Github as Adapter>::handle_content(
+                reconstructed_url.as_str(),
+                &mut redis_connection,
+                network,
+                &account_id,
+                &account,
+            )
+            .await
+            {
+                return String::from("OK");
+            }
+        }
+    }
+    return error_and_return(format!(
+        "Error: Github account not found in the registration queue"
+    ));
+}
+
+async fn pong() -> &'static str {
+    "PONG"
+}
+
+pub async fn spawn_http_serv() -> anyhow::Result<()> {
+    let cfg = GLOBAL_CONFIG
+        .get()
+        .expect("GLOBAL_CONFIG is not initialized");
+    let gh_config = cfg.adapter.github.clone();
+    let http_config = cfg.http.clone();
+    let redirect_url = gh_config.redirect_url.unwrap();
+
+    let app = Router::new()
+        .route(redirect_url.path(), get(github))
+        .route("/ping", get(pong));
+    let listener = tokio::net::TcpListener::bind(&(http_config.host, http_config.port))
+        .await
+        .unwrap();
+    axum::serve(listener, app).await.unwrap();
+    Ok(())
 }

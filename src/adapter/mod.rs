@@ -9,6 +9,7 @@ use crate::{
 pub mod dns;
 pub mod mail;
 pub mod matrix;
+pub mod github;
 
 pub trait Adapter {
     async fn handle_content(

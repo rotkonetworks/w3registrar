@@ -6,6 +6,7 @@ mod runner;
 mod token;
 
 use anyhow::{Context as _, Result};
+use api::spawn_http_serv;
 use std::panic;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -99,6 +100,7 @@ async fn main() -> Result<()> {
     runner.spawn(spawn_redis_subscriber, None).await;
     runner.spawn(spawn_node_listener, None).await;
     runner.spawn(spawn_ws_serv, None).await;
+    runner.spawn(spawn_http_serv, None).await;
 
     // check and start singleton services
     let (needs_email, needs_matrix_bot, needs_web) = check_required_services(&config).await;

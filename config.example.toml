@@ -14,6 +14,10 @@ keystore_path = "./.keyfile.example"
 registrar_account = "12BtBrcorHAvSeTLYo6YTq8kdiRG948vkvmxHEmSzZjwZ97u"
 fields = ["email","matrix", "twitter", "discord", "display_name"]
 
+[http]
+host = "0.0.0.0"
+port = 3000
+
 [websocket]
 host = "0.0.0.0"
 port = 8080
@@ -42,3 +46,9 @@ name = "w3registrar"
 mailbox = "INBOX"
 server = "mail.rotko.net"
 port = 143                # IMAPS port
+
+[adapter.github]
+client_id = "..."
+client_secret = "..."
+gh_url = "https://github.com/login/oauth/authorize"
+redirect_url = "http://example.com/oauth/callback/github"
