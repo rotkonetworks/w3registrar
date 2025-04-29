@@ -48,6 +48,8 @@ use tracing::Span;
 use tracing::{debug, error, info};
 use tungstenite::Error;
 
+use crate::postgres::PostgresConnection;
+use crate::postgres::Record;
 use crate::{
     adapter::{
         github::{Github, GithubRedirectStepTwoParams},
@@ -57,7 +59,7 @@ use crate::{
     config::{RedisConfig, RegistrarConfig, GLOBAL_CONFIG},
     node::{
         self, filter_accounts,
-        identity::events::{JudgementRequested, JudgementUnrequested},
+        identity::events::{JudgementGiven, JudgementRequested, JudgementUnrequested},
         substrate::runtime_types::{
             pallet_identity::types::Registration,
             pallet_identity::types::{Data as IdentityData, Judgement},
@@ -1590,6 +1592,14 @@ impl NodeListener {
                             error!(error = %e, requester = %req.who, "Failed to cancel registration")
                         }
                     }
+                } else if let Ok(Some(jud)) = event.as_event::<JudgementGiven>() {
+                    let cfg = GLOBAL_CONFIG.get().unwrap();
+                    let pog_config = cfg.postgres.clone();
+                    let mut pog_connection = PostgresConnection::new(&pog_config).await.unwrap();
+                    if let Some(record) = Record::from_judgement(&jud).await.unwrap() {
+                        pog_connection.write(&record).await.unwrap();
+                    }
+                    info!(who = ?jud.target, "Jugdement saved to DB");
                 }
             }
         }
