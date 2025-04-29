@@ -3,7 +3,7 @@
 #[subxt::subxt(runtime_metadata_path = "./metadata/people_paseo.scale")]
 pub mod substrate {}
 
-use crate::api::AccountType;
+use crate::api::{AccountType, Network};
 use crate::config::GLOBAL_CONFIG;
 
 use anyhow::{anyhow, Result};
@@ -55,7 +55,9 @@ pub async fn get_registration(
 ///
 /// # Arguments
 /// * `network` - Network name (network_name)
-async fn setup_network(network: &str) -> anyhow::Result<(Client, crate::config::RegistrarConfig)> {
+async fn setup_network(
+    network: &Network,
+) -> anyhow::Result<(Client, crate::config::RegistrarConfig)> {
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
@@ -81,7 +83,7 @@ async fn setup_network(network: &str) -> anyhow::Result<(Client, crate::config::
 pub async fn provide_judgement<'a>(
     who: &AccountId32,
     judgement: Judgement<u128>,
-    network: &str,
+    network: &Network,
 ) -> Result<&'a str> {
     let (client, network_cfg) = setup_network(network).await?;
     info!("Using registrar index: {}", network_cfg.registrar_index);
@@ -221,7 +223,7 @@ fn load_signer(network_cfg: &crate::config::RegistrarConfig) -> Result<PairSigne
     let seed = std::fs::read_to_string(&network_cfg.keystore_path)
         .map_err(|e| anyhow!("Failed to read keystore: {}", e))?;
 
-    let acc = Sr25519Pair::from_string(&seed.trim(), None)?;
+    let acc = Sr25519Pair::from_string(seed.trim(), None)?;
     let signer = PairSigner::new(acc);
 
     info!("Signer account: {}", signer.account_id());
@@ -243,7 +245,10 @@ async fn fetch_latest_nonce(client: &Client, account: &AccountId32) -> Result<u6
 }
 
 /// Provides succesful judgement
-pub async fn register_identity<'a>(who: &AccountId32, network: &str) -> anyhow::Result<&'a str> {
+pub async fn register_identity<'a>(
+    who: &AccountId32,
+    network: &Network,
+) -> anyhow::Result<&'a str> {
     info!("Providing jdugement for {} on {}", who, network);
     provide_judgement(who, Judgement::Reasonable, network).await
 }
@@ -253,7 +258,7 @@ pub async fn filter_accounts(
     info: &IdentityInfo,
     who: &AccountId32,
     _reg_index: u32,
-    network: &str,
+    network: &Network,
 ) -> anyhow::Result<HashMap<Account, bool>> {
     info!("Starting account filtering for {}", who);
 
@@ -328,7 +333,7 @@ mod tests {
             AccountId32::from_str("1Qrotkokp6taAeLThuwgzR7Mu3YQonZohwrzixwGnrD1QDT")?;
         info!("Target account: {:?}", target_account);
 
-        let (client, network_cfg) = setup_network("paseo").await?;
+        let (client, network_cfg) = setup_network(&Network::Paseo).await?;
         info!(
             "Network config loaded: endpoint={}, registrar_index={}",
             network_cfg.endpoint, network_cfg.registrar_index
@@ -339,7 +344,8 @@ mod tests {
             Err(e) => warn!("Registration check failed: {}", e),
         }
 
-        let result = provide_judgement(&target_account, Judgement::Reasonable, "paseo").await?;
+        let result =
+            provide_judgement(&target_account, Judgement::Reasonable, &Network::Paseo).await?;
 
         info!("Judgment result: {}", result);
         assert_eq!(result, "Judgment submitted through proxy");

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::{
     adapter::Adapter,
-    api::{Account, AccountType, RedisConnection},
+    api::{Account, AccountType, Network, RedisConnection},
     config::RedisConfig,
     node::register_identity,
 };
@@ -62,7 +62,7 @@ impl Mail {
                 continue;
             }
 
-            let network = info[2];
+            let network = Network::from_str(info[2])?;
             let id = info[3];
             if let Ok(wallet_id) = AccountId32::from_str(id) {
                 // Extract first line of email body as verification token
@@ -76,7 +76,7 @@ impl Mail {
                     if let Err(e) = <Mail as Adapter>::handle_content(
                         &text,
                         &mut redis_connection,
-                        network,
+                        &network,
                         &wallet_id,
                         &account,
                     )
@@ -96,6 +96,7 @@ pub struct MailServer {
     session: Session<TlsStream<TcpStream>>,
     redis_cfg: RedisConfig,
     mailbox: String,
+    checking_frequency: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -165,6 +166,7 @@ impl MailServer {
             redis_cfg: cfg.redis.clone(),
             mailbox: email_cfg.mailbox.clone(),
             session,
+            checking_frequency: email_cfg.checking_frequency.unwrap_or(60),
         })
     }
 
@@ -210,7 +212,7 @@ impl MailServer {
         }
 
         let mail = fetched_mails
-            .get(0)
+            .first()
             .ok_or_else(|| anyhow!("Fetch succeeded but returned empty result for {}", id))?;
 
         let parsed = mail_parser::MessageParser::default()
@@ -239,7 +241,7 @@ impl MailServer {
         info!("Waiting for incoming mails...");
 
         // TODO: make this duration cofigurable
-        idle_handle.set_keepalive(Duration::from_secs(60));
+        idle_handle.set_keepalive(Duration::from_secs(self.checking_frequency));
 
         idle_handle
             .wait_keepalive()
@@ -252,7 +254,7 @@ impl MailServer {
 
         let recent_ids = self
             .session
-            .search(&format!("SENTSINCE {}", search_date))
+            .search(format!("SENTSINCE {}", search_date))
             .map_err(|e| anyhow!("IMAP search failed: {}", e))?;
 
         if recent_ids.is_empty() {
