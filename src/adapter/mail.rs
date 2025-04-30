@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 use anyhow::anyhow;
 use std::net::TcpStream;
 use std::str::FromStr;
@@ -7,19 +5,17 @@ use std::time::Duration;
 
 use crate::{
     adapter::Adapter,
-    api::{Account, AccountType, Network, RedisConnection},
+    api::{Account, Network, RedisConnection},
     config::RedisConfig,
-    node::register_identity,
 };
 use imap::Session;
 use native_tls::{TlsConnector, TlsStream};
 use subxt::utils::AccountId32;
-use tracing::{error, info};
+
+use tracing::{error, info, instrument, Level};
 
 use crate::config::GLOBAL_CONFIG;
 
-/// Represents an email message with optional body content and sender information
-/// Used for processing incoming verification emails
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Mail {
     pub body: Option<String>,
@@ -29,34 +25,24 @@ pub struct Mail {
 impl Adapter for Mail {}
 
 impl Mail {
-    /// Creates a new Mail instance with the given sender and optional body
     fn new(sender: String, body: Option<String>) -> Self {
         Self { body, sender }
     }
 
-    /// Process an incoming email for verification
-    /// Handles finding associated accounts and validating the verification token
-    ///
-    /// # Arguments
-    /// * `redis_cfg` - Redis configuration for connecting to the database
-    ///
-    /// This is the main entry point for processing incoming verification emails.
-    /// It extracts the first line of the email body as the verification token
-    /// and uses the Adapter trait's handle_content implementation for validation.
     async fn process_email(&self, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
         let account = Account::Email(self.sender.clone());
-        let mut redis_connection = RedisConnection::get_connection(redis_cfg)?;
+        let mut redis_connection = RedisConnection::get_connection(redis_cfg).await?;
 
         let search_query = format!("{}|*", account);
-        let accounts = redis_connection.search(&search_query)?;
+        let accounts = redis_connection.search(&search_query).await?;
 
         if accounts.is_empty() {
-            info!("No account found for {}", search_query);
+            info!("verification: no account found for {}", search_query);
             return Ok(());
         }
 
         for acc_str in accounts {
-            info!("Account: {}", acc_str);
+            info!("verification: processing account {}", acc_str);
             let info: Vec<&str> = acc_str.split("|").collect();
             if info.len() != 4 {
                 continue;
@@ -65,15 +51,13 @@ impl Mail {
             let network = Network::from_str(info[2])?;
             let id = info[3];
             if let Ok(wallet_id) = AccountId32::from_str(id) {
-                // Extract first line of email body as verification token
                 if let Some(text) = self
                     .body
                     .as_ref()
                     .and_then(|b| b.lines().next())
                     .map(|l| l.trim().to_owned())
                 {
-                    // Use the trait's handle_content implementation for verification
-                    if let Err(e) = <Mail as Adapter>::handle_content(
+                    match <Mail as Adapter>::handle_content(
                         &text,
                         &mut redis_connection,
                         &network,
@@ -82,7 +66,8 @@ impl Mail {
                     )
                     .await
                     {
-                        error!("Failed to handle content: {}", e);
+                        Ok(_) => info!("verification: success for {}/{}", account, network),
+                        Err(e) => error!("verification: failed for {}/{}: {}", account, network, e),
                     }
                 }
             }
@@ -91,106 +76,92 @@ impl Mail {
     }
 }
 
-/// IMAP mail server connection manager that handles email verification messages
-pub struct MailServer {
+struct MailListener {
     session: Session<TlsStream<TcpStream>>,
     redis_cfg: RedisConfig,
     mailbox: String,
     checking_frequency: u64,
 }
 
-#[derive(Clone, Debug)]
-struct MailOath {
-    username: String,
-    access_token: String,
-}
-
-impl MailOath {
-    fn new(username: String, access_token: String) -> Self {
-        Self {
-            username,
-            access_token,
-        }
-    }
-}
-
-impl imap::Authenticator for MailOath {
-    type Response = String;
-    fn process(&self, _: &[u8]) -> Self::Response {
-        format!(
-            "user={}\x01auth=Bearer {}\x01\x01",
-            self.username, self.access_token
-        )
-    }
-}
-
-impl MailServer {
-    /// Creates a new MailServer instance by establishing IMAP connection
-    /// Uses TLS for secure communication and authenticates using provided credentials
-    async fn new() -> anyhow::Result<Self> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+impl MailListener {
+    fn connect() -> Option<(Session<TlsStream<TcpStream>>, RedisConfig, String)> {
+        let cfg = match GLOBAL_CONFIG.get() {
+            Some(cfg) => cfg,
+            None => {
+                error!("Global config not initialized");
+                return None;
+            }
+        };
 
         let email_cfg = cfg.adapter.email.clone();
-        info!("trying to connect..");
+        info!("connecting to {}", email_cfg.server);
 
-        let tls_connector = TlsConnector::builder()
-            .build()
-            .map_err(|e| anyhow!("Failed to build TLS connector: {}", e))?;
-
-        let client = tokio::time::timeout(Duration::from_secs(10), async {
-            imap::connect_starttls(
-                (email_cfg.server.clone(), email_cfg.port),
-                email_cfg.server.clone(),
-                &tls_connector,
-            )
-        })
-        .await
-        .map_err(|_| anyhow!("Timeout while connecting to email server"))??;
-
-        info!("Email connected!");
-        //client.debug = false;
-        info!("trying to login as {:?}", email_cfg.username.clone(),);
-
-        let mut session = tokio::time::timeout(Duration::from_secs(10), async {
-            client.login(email_cfg.username.clone(), email_cfg.password.clone())
-        })
-        .await
-        .map_err(|_| anyhow!("Timeout during login"))?
-        .expect("Unable to login!");
-
-        info!("Sucessfull login to mail account {}", email_cfg.email);
-
-        Ok(Self {
-            redis_cfg: cfg.redis.clone(),
-            mailbox: email_cfg.mailbox.clone(),
-            session,
-            checking_frequency: email_cfg.checking_frequency.unwrap_or(60),
-        })
-    }
-
-    /// Starts listening for incoming emails on the configured mailbox
-    /// Spawns a background task that continuously checks for new messages
-    async fn listen(mut self) -> anyhow::Result<()> {
-        self.session
-            .select(self.mailbox.clone())
-            .expect("Unable to select mailbox");
-        info!("Selected mailbox `{}`", self.mailbox);
-
-        info!("Checking existing emails on startup...");
-        self.check_mailbox().await?;
-
-        loop {
-            if let Err(e) = self.check_mailbox().await {
-                error!("Error reading mailbox: {}", e);
-                return Err(anyhow!(e));
+        let tls_connector = match TlsConnector::builder().build() {
+            Ok(tls) => tls,
+            Err(e) => {
+                error!("mail: tls connector failed: {}", e);
+                return None;
             }
-        }
+        };
+
+        let client = match imap::connect_starttls(
+            (email_cfg.server.clone(), email_cfg.port),
+            email_cfg.server.clone(),
+            &tls_connector,
+        ) {
+            Ok(client) => client,
+            Err(e) => {
+                error!("mail: connection failed: {}", e);
+                return None;
+            }
+        };
+
+        info!("mail: login as {}", email_cfg.username);
+
+        let session = match client.login(email_cfg.username.clone(), email_cfg.password.clone()) {
+            Ok(session) => session,
+            Err((e, _)) => {
+                error!("mail: login failed: {:?}", e);
+                return None;
+            }
+        };
+
+        info!("mail: connected to {}", email_cfg.email);
+
+        Some((session, cfg.redis.clone(), email_cfg.mailbox.clone()))
     }
 
-    /// Marks an email as seen and removes it from the unread queue
-    async fn flag_seen(&mut self, id: u32) -> anyhow::Result<()> {
+    fn new() -> Option<Self> {
+        let (session, redis_cfg, mailbox) = Self::connect()?;
+        let cfg = match GLOBAL_CONFIG.get() {
+            Some(cfg) => cfg,
+            None => return None,
+        };
+        let checking_frequency = cfg.adapter.email.checking_frequency.unwrap_or(500);
+
+        Some(Self {
+            checking_frequency,
+            session,
+            redis_cfg,
+            mailbox,
+        })
+    }
+
+    // TODO: care about only first line
+    // async fn get_mail(&mut self, id: u32) -> anyhow::Result<Mail> {
+    //     let mail = self.session.uid_fetch(format!("{}", id), "RFC822")?;
+    //     for msg in mail.iter() {
+    //         let parsed = mail_parser::MessageParser::default()
+    //             .parse(msg.body().unwrap_or_default())
+    //             .unwrap_or_default();
+    //         let address = parsed.return_address().unwrap().to_string();
+    //         let x = parsed.body_text(0).map(|body| body.to_string());
+    //         return Ok(Mail::new(address, x));
+    //     }
+    //     return Err(anyhow!("No message found"));
+    // }
+
+    async fn flag_mail_as_seen(&mut self, id: u32) -> anyhow::Result<()> {
         self.session
             .uid_store(format!("{}", id), "+FLAGS (\\SEEN)")?;
         self.session.expunge()?;
@@ -237,76 +208,106 @@ impl MailServer {
     /// Polls mailbox for new unread messages and processes them
     /// Uses IMAP IDLE for efficient notification of new messages
     async fn check_mailbox(&mut self) -> anyhow::Result<()> {
-        let mut idle_handle = self.session.idle()?;
-        info!("Waiting for incoming mails...");
+        info!("Selecting mailbox {}", self.mailbox);
+        self.session.select(&self.mailbox).map_err(|e| {
+            anyhow!(
+                "{}:{} Unable to select mail box {} {}",
+                file!(),
+                line!(),
+                &self.mailbox,
+                e
+            )
+        })?;
 
         // TODO: make this duration cofigurable
-        idle_handle.set_keepalive(Duration::from_secs(self.checking_frequency));
+        loop {
+            info!("Starting idle session");
+            // it's here cuz .idle() takes &mut self
+            let mut idle_handle = self.session.idle().map_err(|e| {
+                anyhow!(
+                    "{}:{} Unable to start idle IMAP session {}",
+                    file!(),
+                    line!(),
+                    e
+                )
+            })?;
 
-        idle_handle
-            .wait_keepalive()
-            .map_err(|e| anyhow!("IMAP IDLE error: {}", e))?;
-        info!("Received new mail notification");
+            idle_handle.set_keepalive(Duration::from_secs(self.checking_frequency));
 
-        let search_date = (chrono::Utc::now() - chrono::Duration::hours(1))
-            .format("%d-%b-%Y")
-            .to_string();
+            info!("Waiting for a mail");
+            idle_handle
+                .wait_keepalive()
+                .map_err(|e| anyhow!("{}:{} Unable to wait for mail, {}", file!(), line!(), e))?;
+            info!("Received a new mail");
 
-        let recent_ids = self
-            .session
-            .search(format!("SENTSINCE {}", search_date))
-            .map_err(|e| anyhow!("IMAP search failed: {}", e))?;
+            info!("Searching for unseen mails...");
+            let mail_id = self.session.search("UNSEEN").map_err(|e| {
+                anyhow!(
+                    "{}:{} Unable search for `NEW` mails {}",
+                    file!(),
+                    line!(),
+                    e
+                )
+            })?;
 
-        if recent_ids.is_empty() {
-            info!("No emails in the last hour");
-            return Ok(());
-        }
+            for id in mail_id {
+                info!("Flagging mail with ID {id} as `SEEN`");
+                self.flag_mail_as_seen(id).await.map_err(|e| {
+                    anyhow!(
+                        "{}:{} Unable to flag mail with ID {id} as seen, Reason: {}",
+                        file!(),
+                        line!(),
+                        e
+                    )
+                })?;
 
-        info!("Found {} recent emails", recent_ids.len());
-
-        // process one email at a time
-        for id in recent_ids {
-            info!("Fetching email ID: {}", id);
-            match self.get_mail(id).await {
-                Ok(mail) => {
-                    info!(
-                        "Got mail from: {}, Content: {:?}",
-                        mail.sender,
-                        mail.body.as_deref().unwrap_or("(no content)")
-                    );
-
-                    match mail.process_email(&self.redis_cfg).await {
-                        Ok(_) => info!("Successfully processed mail from {}", mail.sender),
-                        Err(e) => error!("Failed to process mail content: {}", e),
+                let mail = match self.get_mail(id).await {
+                    Ok(mail) => mail,
+                    Err(e) => {
+                        error!(
+                            "{}:{} Unable get mail from ID {id}, Reason: {}",
+                            file!(),
+                            line!(),
+                            e
+                        );
+                        continue;
                     }
-                }
-                Err(e) => {
-                    error!("Failed to get mail {}: {}", id, e);
-                }
+                };
+                info!("Mail: {:#?}", mail);
+
+                mail.process_email(&self.redis_cfg).await.map_err(|e| {
+                    anyhow!(
+                        "{}:{} Unable to process mail with ID {id}, Reason: {}",
+                        file!(),
+                        line!(),
+                        e
+                    )
+                })?;
             }
         }
-
-        info!("Finished processing email batch");
-        Ok(())
-    }
-
-    /// a mail parser
-    async fn parse_mail(&mut self, mail: &imap::types::Fetch) -> anyhow::Result<Mail> {
-        let parsed = mail_parser::MessageParser::default()
-            .parse(mail.body().unwrap_or_default())
-            .ok_or_else(|| anyhow!("Failed to parse mail content"))?;
-
-        let address = parsed
-            .return_address()
-            .ok_or_else(|| anyhow!("No return address found"))?
-            .to_string();
-
-        let body = parsed.body_text(0).map(|body| body.to_string());
-
-        Ok(Mail::new(address, body))
     }
 }
 
+#[instrument(name = "mail_watcher")]
 pub async fn watch_mailserver() -> anyhow::Result<()> {
-    MailServer::new().await?.listen().await
+    // NOTE: this duplicate exist since the guard is dropped after the end of watch_mailserver and
+    // since we spawn a task that will out live this function which should inherit this context (span)
+    info!("watcher started");
+
+    let mut server = match MailListener::new() {
+        Some(server) => server,
+        None => {
+            return Err(anyhow!("Failed to create a MailListener instance"));
+        }
+    };
+
+    tokio::task::spawn(async move {
+        let span = tracing::span!(Level::INFO, "mail_watcher");
+        let _guard = span.enter();
+        if let Err(e) = server.check_mailbox().await {
+            error!(error = %e, "Error occurred while checking mailbox");
+        }
+    });
+
+    Ok(())
 }

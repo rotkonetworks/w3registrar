@@ -8,9 +8,9 @@ use crate::{
 };
 
 pub mod dns;
+pub mod github;
 pub mod mail;
 pub mod matrix;
-pub mod github;
 pub mod pgp;
 
 #[derive(Debug, Clone)]
@@ -58,7 +58,7 @@ pub trait Adapter {
         account_id: &AccountId32,
         account: &Account,
     ) -> anyhow::Result<()> {
-        let account_type = &account.account_type().to_string();
+        let account_type = &account.account_type();
 
         // get the current state
         let state = match redis_connection
@@ -75,7 +75,7 @@ pub trait Adapter {
         };
 
         // get the challenge for the account type
-        let challenge = match state.challenges.get(account_type) {
+        let challenge = match state.challenges.get(&account_type.to_string()) {
             Some(challenge) => challenge,
             None => {
                 return Err(anyhow::anyhow!(

@@ -9,7 +9,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use subxt::utils::AccountId32;
 use tokio::time::{sleep, Duration};
-use tracing::{error, info};
+use tracing::{error, info, instrument};
 use trust_dns_resolver::{
     config::{ResolverConfig, ResolverOpts},
     name_server::TokioConnectionProvider,
@@ -32,7 +32,9 @@ fn get_resolver() -> Arc<AsyncResolver<TokioConnectionProvider>> {
         .clone()
 }
 
+#[instrument(skip_all)]
 async fn lookup_txt_records(domain: &str) -> Result<Vec<String>, String> {
+    info!(domain = %domain, "Looking for TXT records");
     get_resolver()
         .lookup(domain, RecordType::TXT)
         .await
@@ -50,21 +52,22 @@ async fn lookup_txt_records(domain: &str) -> Result<Vec<String>, String> {
         .map_err(|e| e.to_string())
 }
 
+#[instrument(skip_all)]
 pub async fn verify_txt(domain: &str, challenge: &str) -> bool {
     match lookup_txt_records(domain).await {
         Ok(records) => {
             for record in &records {
-                info!("Found {}:{}:{}", domain, challenge, record);
+                info!(domain = %domain, "Found Record: {record}");
             }
             if records.contains(&challenge.to_string()) {
-                info!("TXT record verification successful for {}", domain);
+                info!(domain = %domain, "TXT record verification successful");
                 return true;
             }
-            info!("No matching({}) TXT record found", &challenge.to_string());
+            info!(domain = %domain, "No matching({}) TXT record found", &challenge.to_string());
             false
         }
         Err(err) => {
-            info!("Lookup failed for {}: {}", domain, err);
+            info!(domain = %domain, error = %err, "Record lookup failed");
             false
         }
     }
@@ -141,14 +144,14 @@ impl DnsChallenge {
     }
 }
 
+#[instrument()]
 pub async fn watch_dns() -> anyhow::Result<()> {
-    get_resolver();
-
+    // NOTE: is this ok?
     loop {
         let cfg = GLOBAL_CONFIG
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
-        let mut redis_conn = RedisConnection::get_connection(&cfg.redis)?;
+        let mut redis_conn = RedisConnection::get_connection(&cfg.redis).await?;
 
         if let Err(e) = process_challenges(&mut redis_conn).await {
             error!("DNS challenge processing error: {}", e);
@@ -158,12 +161,13 @@ pub async fn watch_dns() -> anyhow::Result<()> {
     }
 }
 
+#[instrument(skip_all)]
 async fn process_challenges(redis_conn: &mut RedisConnection) -> Result<()> {
-    let challenge_keys = redis_conn.search("web|*")?;
+    let challenge_keys = redis_conn.search("web|*").await?;
 
     for challenge_key in &challenge_keys {
         if let Err(e) = process_single_challenge(challenge_key, redis_conn).await {
-            error!("Challenge processing failed {}: {}", challenge_key, e);
+            error!(chllenge = %challenge_key, error = %e, "Challenge processing failed");
         }
 
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -191,7 +195,7 @@ pub async fn _verify_dns_challenge(
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
-    let mut redis_conn = RedisConnection::get_connection(&cfg.redis)?;
+    let mut redis_conn = RedisConnection::get_connection(&cfg.redis).await?;
 
     let clean_domain = domain
         .trim()

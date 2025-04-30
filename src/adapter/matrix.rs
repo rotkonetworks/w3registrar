@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use crate::{adapter::Adapter, api::Network};
 use matrix_sdk::{
     config::{RequestConfig, StoreConfig, SyncSettings},
     deserialized_responses::RawSyncOrStrippedState,
@@ -26,9 +25,10 @@ use std::path::Path;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
 use tokio::time::{sleep, Duration};
-use tracing::{error, info, warn};
+use tracing::{error, info, instrument, warn};
 
 use crate::api::{Account, RedisConnection};
+use crate::{adapter::Adapter, api::Network, node::register_identity};
 use crate::GLOBAL_CONFIG;
 
 // TODO: move those "independent" functions inside the Matrix struct (handle_content, etc.)
@@ -41,6 +41,7 @@ struct Matrix {
 impl Adapter for Matrix {}
 
 impl Matrix {
+    #[instrument(skip_all)]
     async fn login() -> anyhow::Result<Client> {
         let cfg = GLOBAL_CONFIG.get().unwrap().adapter.matrix.clone();
         let state_dir = Path::new(&cfg.state_dir);
@@ -124,6 +125,7 @@ impl Matrix {
         Ok(client)
     }
 
+    #[instrument(skip_all)]
     async fn new() -> anyhow::Result<Self> {
         let client = Self::login().await?;
         let mut room = RoomEventFilter::default();
@@ -171,6 +173,7 @@ impl Matrix {
         panic!("FATAL: Matrix sync stopped unexpectedly. Forcing restart.");
     }
 
+    #[instrument(skip_all)]
     async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
         let MessageType::Text(text_content) = ev.content.msgtype else {
             return;
@@ -207,6 +210,7 @@ impl Matrix {
         }
     }
 
+    #[instrument(skip_all)]
     async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client, room: Room) {
         if event.state_key != client.user_id().unwrap() {
             return;
@@ -268,6 +272,7 @@ impl Matrix {
     /// # Arguments
     /// * `acc` - Parsed account information from message
     /// * `text_content` - Content of the message
+    #[instrument(skip_all)]
     async fn handle_incoming(
         acc: Account,
         text_content: &TextMessageEventContent,
@@ -278,11 +283,11 @@ impl Matrix {
         );
         let cfg = GLOBAL_CONFIG.get().unwrap();
         let redis_cfg = cfg.redis.clone();
-        let mut redis_connection = RedisConnection::get_connection(&redis_cfg)?;
+        let mut redis_connection = RedisConnection::get_connection(&redis_cfg).await?;
         let query = format!("{}|*", acc);
         info!("Search query: {}", query);
 
-        let accounts_key = redis_connection.search(&query)?;
+        let accounts_key = redis_connection.search(&query).await?;
 
         if accounts_key.is_empty() {
             return Ok(());
@@ -318,6 +323,7 @@ impl Matrix {
 
 /// Verifies a Matrix device for secure communication
 /// This is required for end-to-end encryption functionality
+#[instrument(skip_all)]
 async fn verify_device(device: &Device) -> anyhow::Result<()> {
     match device.verify().await {
         Ok(_) => Ok(()),
@@ -327,6 +333,7 @@ async fn verify_device(device: &Device) -> anyhow::Result<()> {
 
 /// Initializes and runs the Matrix bot
 /// Sets up event handlers for room invites and messages
+#[instrument(name = "matrix_listener")]
 pub async fn start_bot() -> anyhow::Result<()> {
     Matrix::new().await?.listen().await;
     unreachable!("Matrix listener should never return");
@@ -354,4 +361,77 @@ fn extract_sender_account(
     info!("Sender: {}", sender);
 
     Account::from_str(sender).ok()
+}
+
+/// Processes message content for verification
+/// Validates message against expected challenge token
+/// Updates verification state and triggers registration if all challenges complete
+///
+/// # Arguments
+/// * `text_content` - Content to validate
+/// * `redis_connection` - Redis connection for state management
+/// * `network` - Network identifier
+/// * `account_id` - Account being verified
+/// * `account` - Account information
+#[instrument(skip_all)]
+async fn handle_content(
+    text_content: &TextMessageEventContent,
+    redis_connection: &mut RedisConnection,
+    network: &Network,
+    account_id: &AccountId32,
+    account: &Account,
+) -> anyhow::Result<bool> {
+    let account_type = &account.account_type();
+
+    // get the current state
+    let state = match redis_connection
+        .get_verification_state(network, account_id)
+        .await?
+    {
+        Some(state) => state,
+        None => return Ok(false),
+    };
+
+    // get the challenge for the account type
+    let challenge = match state.challenges.get(&account_type.to_string()) {
+        Some(challenge) => challenge,
+        None => return Ok(false),
+    };
+
+    info!("Checking if all challenges are already done...");
+    // challenge is already completed
+    if challenge.done {
+        return Ok(false);
+    }
+
+    // verify the token
+    let token = match &challenge.token {
+        Some(token) => token,
+        None => return Ok(false),
+    };
+
+    // check if the message matches the token (fixed comparison)
+    if text_content.body != *token {
+        return Ok(false);
+    }
+
+    // update challenge status
+    let result = redis_connection
+        .update_challenge_status(network, account_id, account_type)
+        .await?;
+
+    let state = match redis_connection
+        .get_verification_state(network, account_id)
+        .await?
+    {
+        Some(state) => state,
+        None => return Ok(false),
+    };
+
+    // register identity if all challenges are completed
+    if state.completed {
+        register_identity(account_id, network).await?;
+    }
+
+    Ok(result)
 }

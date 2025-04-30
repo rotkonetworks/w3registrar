@@ -46,6 +46,7 @@ name = "w3registrar"
 mailbox = "INBOX"
 server = "mail.rotko.net"
 port = 143                # IMAPS port
+checking_frequency = 500 # In seconds, Optional
 
 [adapter.github]
 client_id = "..."

@@ -1,4 +1,3 @@
-// runner.rs
 use std::collections::HashMap;
 use std::future::Future;
 use tokio::{sync::broadcast, task::JoinHandle, time::Duration};
@@ -30,12 +29,15 @@ pub struct Runner {
     tasks: Vec<JoinHandle<()>>,
     shutdown: broadcast::Sender<()>,
     services: ServiceTracker,
+    span: tracing::Span,
 }
 
 impl Runner {
-    pub fn new() -> Self {
+    pub fn new() -> Runner {
         let (shutdown_tx, _) = broadcast::channel(1);
+        let span = tracing::span!(tracing::Level::INFO, "Runner");
         Self {
+            span,
             tasks: Vec::new(),
             shutdown: shutdown_tx,
             services: ServiceTracker::new(),
@@ -48,6 +50,7 @@ impl Runner {
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = anyhow::Result<()>> + Send,
     {
+        let _ = self.span.enter();
         // check if this is a unique service that's already running
         if let Some(name) = service_name {
             if self.services.is_running(name) {
@@ -73,6 +76,7 @@ impl Runner {
     }
 
     pub async fn run(self) {
+        let _  =self.span.enter();
         info!("running {} tasks", self.tasks.len());
 
         match tokio::signal::ctrl_c().await {

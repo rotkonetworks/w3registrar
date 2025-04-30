@@ -44,7 +44,6 @@ pub async fn get_registration(
 ) -> Result<Registration<u128, IdentityInfo>> {
     let storage = client.storage().at_latest().await?;
     let identity = super::node::storage().identity().identity_of(who);
-    info!("identity: {:?}", identity);
     match storage.fetch(&identity).await? {
         None => Err(anyhow!("No registration found for {}", who)),
         Some((reg, _)) => Ok(reg),
@@ -85,12 +84,23 @@ pub async fn provide_judgement<'a>(
     judgement: Judgement<u128>,
     network: &Network,
 ) -> Result<&'a str> {
+    info!(
+        account_id = %who.to_string(),
+        network = %network,
+        judgement = %format!("{:?}", judgement),
+        "Providing judgment"
+    );
     let (client, network_cfg) = setup_network(network).await?;
-    info!("Using registrar index: {}", network_cfg.registrar_index);
 
     let registration = get_registration(&client, who).await?;
     let hash = hex::encode(blake2_256(&registration.info.encode()));
-    info!("Generated identity hash: {}", hash);
+
+    info!(
+        hash = %hash,
+        reg_index = %network_cfg.registrar_index,
+        endpoint = %network_cfg.endpoint,
+        "Generated identity hash"
+    );
 
     let inner_call = substrate::runtime_types::pallet_identity::pallet::Call::provide_judgement {
         reg_index: network_cfg.registrar_index,
@@ -226,7 +236,10 @@ fn load_signer(network_cfg: &crate::config::RegistrarConfig) -> Result<PairSigne
     let acc = Sr25519Pair::from_string(seed.trim(), None)?;
     let signer = PairSigner::new(acc);
 
-    info!("Signer account: {}", signer.account_id());
+    info!(
+        account_id = &signer.account_id().to_string(),
+        "Signer account"
+    );
     Ok(signer)
 }
 
@@ -249,7 +262,6 @@ pub async fn register_identity<'a>(
     who: &AccountId32,
     network: &Network,
 ) -> anyhow::Result<&'a str> {
-    info!("Providing jdugement for {} on {}", who, network);
     provide_judgement(who, Judgement::Reasonable, network).await
 }
 
@@ -260,7 +272,7 @@ pub async fn filter_accounts(
     _reg_index: u32,
     network: &Network,
 ) -> anyhow::Result<HashMap<Account, bool>> {
-    info!("Starting account filtering for {}", who);
+    info!(account_id = %who.to_string(), "Filtering unsupported accounts");
 
     let accounts = Account::into_accounts(info);
     info!("Found accounts: {:?}", accounts);
@@ -285,7 +297,7 @@ pub async fn filter_accounts(
 
     for account in &accounts {
         let account_type = account.account_type();
-        info!("Checking account type: {:?}", account_type);
+        info!(account_type = %account_type, "Checking account type");
         if !supported
             .iter()
             .any(|s| AccountType::from_str(s).ok() == Some(account_type))
@@ -331,7 +343,7 @@ mod tests {
 
         let target_account =
             AccountId32::from_str("1Qrotkokp6taAeLThuwgzR7Mu3YQonZohwrzixwGnrD1QDT")?;
-        info!("Target account: {:?}", target_account);
+        info!(target_account = %target_account.to_string(), "Target account");
 
         let (client, network_cfg) = setup_network(&Network::Paseo).await?;
         info!(
