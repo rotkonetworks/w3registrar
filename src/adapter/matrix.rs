@@ -28,8 +28,8 @@ use tokio::time::{sleep, Duration};
 use tracing::{error, info, instrument, warn};
 
 use crate::api::{Account, RedisConnection};
-use crate::{adapter::Adapter, api::Network, node::register_identity};
 use crate::GLOBAL_CONFIG;
+use crate::{adapter::Adapter, api::Network, node::register_identity};
 
 // TODO: move those "independent" functions inside the Matrix struct (handle_content, etc.)
 
@@ -277,15 +277,12 @@ impl Matrix {
         acc: Account,
         text_content: &TextMessageEventContent,
     ) -> anyhow::Result<()> {
-        info!(
-            "\nMatrix Message\nSender: {:#?}\nMessage: {}\nRaw Content: {:#?}",
-            acc, text_content.body, text_content
-        );
+        info!(sender=?acc,body=?text_content.body,"Recived matrix message");
         let cfg = GLOBAL_CONFIG.get().unwrap();
         let redis_cfg = cfg.redis.clone();
         let mut redis_connection = RedisConnection::get_connection(&redis_cfg).await?;
         let query = format!("{}|*", acc);
-        info!("Search query: {}", query);
+        info!(query=?query, "Search query");
 
         let accounts_key = redis_connection.search(&query).await?;
 
@@ -299,7 +296,6 @@ impl Matrix {
             if parts.len() != 4 {
                 continue;
             }
-            info!("Parts: {:#?}", parts);
             let account = Account::from_str(&format!("{}|{}", parts[0], parts[1]))?;
             let network = Network::from_str(parts[2])?;
 

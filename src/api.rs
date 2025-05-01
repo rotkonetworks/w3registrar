@@ -1,11 +1,14 @@
 #![allow(dead_code)]
 // NOTE: Logging Hygiene
-// 1) Log only base operations (things that are not done by ur own code)
+// 1) Log only base operations (things that are not done by ur own code) for example
+// if foo calls bar, and both are written by you, log what happen in bar but not the returned
+// value/state than log that returned value in foo so we don't log the same thing twice
 // 2) Log returned values after they are returned, if possible, by other complex operations (code u've written)
 // 3) Start the log by an Uppercase letter
 // 4) Use the instrument macro whenever is possible
 // 4.5) Use skip()/skip_all for sensitive info (passwords)
 // 5) Log error as they happen and pass then upward if feasible
+// 6) Refrain from using .unwrap and use anyhow::Result whenver is possible/feasible
 use anyhow::anyhow;
 use anyhow::Result;
 use axum::extract::Query;
@@ -2202,7 +2205,7 @@ async fn github(Query(params): Query<GithubRedirectSetp2Params>) -> String {
             )
             .await
             {
-                Ok(v) => return String::from("OK"),
+                Ok(_) => return String::from("OK"),
                 Err(e) => return log_error_and_return(format!("Error: {}", e)),
             }
         }

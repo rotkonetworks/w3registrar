@@ -16,7 +16,7 @@ use subxt::ext::sp_core::sr25519::Pair as Sr25519Pair;
 use subxt::ext::sp_core::Pair;
 use subxt::utils::AccountId32;
 use subxt::SubstrateConfig;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use super::api::Account;
 use substrate::identity::calls::types::provide_judgement::Identity;
@@ -147,10 +147,8 @@ pub async fn provide_judgement<'a>(
 
             match status? {
                 subxt::tx::TxStatus::InFinalizedBlock(in_block) => {
-                    info!(
-                        "Transaction {:?} is finalized in block {:?}",
-                        in_block.extrinsic_hash(),
-                        in_block.block_hash()
+                    info!(transaction=?in_block.extrinsic_hash(), block=?in_block.block_hash(),
+                        "Transaction is finalized",
                     );
 
                     match in_block.wait_for_success().await {
@@ -275,7 +273,7 @@ pub async fn filter_accounts(
     info!(account_id = %who.to_string(), "Filtering unsupported accounts");
 
     let accounts = Account::into_accounts(info);
-    info!("Found accounts: {:?}", accounts);
+    info!(accounts=?accounts,"Found accounts");
 
     let cfg = GLOBAL_CONFIG
         .get()
@@ -287,7 +285,7 @@ pub async fn filter_accounts(
         .ok_or_else(|| anyhow!("Network {} not configured", network))?;
 
     let supported = &network_cfg.fields;
-    info!("Supported fields for network {}: {:?}", network, supported);
+    info!(fields=?supported, network=?network,"Supported fields for requested network");
 
     if accounts.is_empty() {
         info!("No accounts found, providing Unknown judgment");
@@ -302,7 +300,7 @@ pub async fn filter_accounts(
             .iter()
             .any(|s| AccountType::from_str(s).ok() == Some(account_type))
         {
-            info!("Unsupported account type: {:?}", account_type);
+            error!(account_type=?account_type, "Unsupported account type");
             provide_judgement(who, Judgement::Erroneous, network).await?;
             return Ok(HashMap::new());
         }
