@@ -9,7 +9,6 @@ use tracing::info;
 
 use crate::api::Network;
 use crate::api::{Account, RedisConnection};
-
 use super::Adapter;
 
 pub struct PGPHelper {

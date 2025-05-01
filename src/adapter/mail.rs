@@ -218,7 +218,7 @@ impl MailListener {
                 e
             )
         })?;
-
+      
         // TODO: make this duration cofigurable
         loop {
             info!("Starting idle session");

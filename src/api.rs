@@ -1828,7 +1828,7 @@ impl RedisConnection {
     #[instrument(skip_all, name = "keyspace_notification", parent = None)]
     async fn enable_keyspace_notifications(conn: &mut ConnectionManager) -> anyhow::Result<()> {
         info!("Enabeling keyspace notification");
-
+      
         match conn
             .send_packed_command(
                 redis::cmd("CONFIG")
