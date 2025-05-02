@@ -19,27 +19,28 @@ impl Adapter for Github {}
 
 impl Github {
     /// Reconstruct the redirected url with the appended state (challenge)
-    pub fn reconstruct_request_url(state: &str) -> url::Url {
+    pub fn reconstruct_request_url(state: &str) -> anyhow::Result<url::Url> {
         let cfg = GLOBAL_CONFIG
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
         let gh_config = cfg.adapter.github.clone();
         let base_url = gh_config.gh_url;
         let client_id = gh_config.client_id;
-        let redirect_uri = gh_config
-            .redirect_url
-            .unwrap_or(url::Url::parse("https://rotko.net/").unwrap());
+        
+        // get the redirect URI or return an error if not configured
+        let redirect_uri = gh_config.redirect_url
+            .ok_or_else(|| anyhow::anyhow!("GitHub redirect URL not configured"))?;
 
+        // build the URL with the required parameters
         url::Url::parse_with_params(
             base_url.as_str(),
             &[
                 ("client_id", client_id.as_str()),
                 ("redirect_uri", redirect_uri.as_str()),
-                ("state", state), // this number corresponds to a registration request (challenge)
+                ("state", state), // this corresponds to a registration request (challenge)
                                   // https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps
             ],
-        )
-        .unwrap()
+        ).map_err(|e| anyhow::anyhow!("Failed to construct URL: {}", e))
     }
 
     /// Generate a url that uses should open to authenticate their github account
