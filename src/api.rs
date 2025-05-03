@@ -132,7 +132,7 @@ impl AccountVerification {
                 self.complete_all_challenges();
                 Ok(())
             }
-            None => Err(anyhow!("Unable to mare challenge as done")),
+            None => Err(anyhow!("Unable to mark challenge as done")),
         }
     }
 }
@@ -462,7 +462,7 @@ pub struct VerifyPGPKeyRequest {
     pub pubkey: String,
     #[serde(deserialize_with = "ss58_to_account_id32")]
     pub account: AccountId32,
-    pub netowrk: Network,
+    pub network: Network,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1427,7 +1427,7 @@ impl NodeListener {
 
         if network_cfg.registrar_index != index {
             return Err(anyhow!(
-                "Unvalid registrar index on network {network}, expected {} but got {index}",
+                "Invalid registrar index on network {network}, expected {} but got {index}",
                 network_cfg.registrar_index
             ));
         }
@@ -1653,7 +1653,7 @@ impl NodeListener {
 
         if network_cfg.registrar_index != index {
             return Err(anyhow!(
-                "Unvalid registrar index on network {network}, expected {} but got {index}",
+                "Invalid registrar index on network {network}, expected {} but got {index}",
                 network_cfg.registrar_index
             ));
         }
