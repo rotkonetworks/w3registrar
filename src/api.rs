@@ -410,8 +410,8 @@ pub enum Network {
     Paseo,
     #[serde(alias = "polkadot", alias = "POLKADOT")]
     Polkadot,
-    #[serde(alias = "kasuma", alias = "KASUMA")]
-    Kasuma,
+    #[serde(alias = "kusama", alias = "KUSAMA")]
+    Kusama,
     #[serde(alias = "rococo", alias = "ROCOCO")]
     Rococo,
 }
@@ -422,9 +422,15 @@ impl Display for Network {
         match self {
             Network::Paseo => write!(f, "paseo"),
             Network::Polkadot => write!(f, "polkadot"),
-            Network::Kasuma => write!(f, "kasuma"),
+            Network::Kusama => write!(f, "kusama"),
             Network::Rococo => write!(f, "rococo"),
         }
+    }
+}
+
+impl Default for Network {
+    fn default() -> Self {
+        Self::Rococo // hmmm?
     }
 }
 
@@ -432,7 +438,7 @@ impl Network {
     pub fn from_str(network: &str) -> anyhow::Result<Self> {
         match network {
             "Paseo" | "paseo" => Ok(Self::Paseo),
-            "Kasuma" | "kasuma" => Ok(Self::Kasuma),
+            "Kusama" | "kusama" => Ok(Self::Kusama),
             "Polkadot" | "polkadot" => Ok(Self::Polkadot),
             "Rococo" | "rococo" => Ok(Self::Rococo),
             _ => Err(anyhow!("Unkown or not supported network '{network}'")),
