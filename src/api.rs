@@ -2163,7 +2163,6 @@ async fn github(Query(params): Query<GithubRedirectSetp2Params>) -> String {
     info!(username = ?gh_username, "Github Username");
 
     // checking if url is requested
-
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
@@ -2183,7 +2182,11 @@ async fn github(Query(params): Query<GithubRedirectSetp2Params>) -> String {
 
     // the reconstructed_url helps identifying the exact relavant registration request
     // like we can have two wallets from different networks registering the same gh acc
-    let reconstructed_url = Github::reconstruct_request_url(&params.state);
+    let reconstructed_url = match Github::reconstruct_request_url(&params.state) {
+        Ok(url) => url,
+        Err(e) => return log_error_and_return(format!("Error constructing URL: {}", e)),
+    };
+
     for acc_str in accounts {
         info!("Account: {}", acc_str);
         let parts: Vec<&str> = acc_str.splitn(4, '|').collect();
