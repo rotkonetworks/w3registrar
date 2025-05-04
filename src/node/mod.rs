@@ -255,7 +255,7 @@ async fn fetch_latest_nonce(client: &Client, account: &AccountId32) -> Result<u6
         .map_err(|e| anyhow!("Failed to fetch nonce: {}", e))
 }
 
-/// Provides succesful judgement
+/// Provides successful judgement
 pub async fn register_identity<'a>(
     who: &AccountId32,
     network: &Network,

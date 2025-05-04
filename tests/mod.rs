@@ -21,7 +21,7 @@ mod test {
     use crate::WS_ADDRESS;
 
     #[tokio::test]
-    async fn main_rout() {
+    async fn main_routee() {
         let wallet_id: String = String::from("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty");
         let (ws_stream, _) = connect_async(WS_ADDRESS).await.expect("Failed to connect");
         let (mut rx, mut tx) = ws_stream.split();
@@ -31,19 +31,19 @@ mod test {
             "payload": wallet_id,
         }))
         .unwrap();
-        println!("seinding: {}\n", subscribe_account_state_msg);
+        println!("sending: {}\n", subscribe_account_state_msg);
         rx.send(Message::from(subscribe_account_state_msg))
             .await
             .unwrap();
         while let stream = tx.next().await {
             if let Some(data) = stream {
                 if let Ok(msg) = data {
-                    println!("recived: {}\n", msg);
+                    println!("received: {}\n", msg);
                     break;
                 }
             }
         }
-        let request_verification_challange_msg = to_string_pretty(&serde_json::json!({
+        let request_verification_challenge_msg = to_string_pretty(&serde_json::json!({
             "version": "1.0",
             "type": "RequestVerificationChallenge",
             "payload": {
@@ -52,14 +52,14 @@ mod test {
             },
         }))
         .unwrap();
-        println!("sending: {}\n", request_verification_challange_msg);
-        rx.send(Message::from(request_verification_challange_msg))
+        println!("sending: {}\n", request_verification_challenge_msg);
+        rx.send(Message::from(request_verification_challenge_msg))
             .await
             .unwrap();
         while let stream = tx.next().await {
             if let Some(data) = stream {
                 if let Ok(msg) = data {
-                    println!("recived: {}\n", msg);
+                    println!("received: {}\n", msg);
                     break;
                 }
             }
@@ -77,14 +77,14 @@ mod test {
             "payload": wallet_id,
         }))
         .unwrap();
-        println!("seinding: {}\n", subscribe_account_state_msg);
+        println!("sending: {}\n", subscribe_account_state_msg);
         rx.send(Message::from(subscribe_account_state_msg))
             .await
             .unwrap();
         while let stream = tx.next().await {
             if let Some(data) = stream {
                 if let Ok(msg) = data {
-                    println!("recived: {}\n", msg);
+                    println!("received: {}\n", msg);
                     break;
                 }
             }
@@ -92,7 +92,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn failing_rout() {
+    async fn failing_routee() {
         let wallet_id: String = String::from("5DAAnrj7VHTznn2AWBemMuyBwZWs6FNFjdyVXUeYum3PTXFy");
         let (ws_stream, _) = connect_async(WS_ADDRESS).await.expect("Failed to connect");
         let (mut rx, mut tx) = ws_stream.split();
@@ -102,14 +102,14 @@ mod test {
             "payload": wallet_id,
         }))
         .unwrap();
-        println!("seinding: {}\n", subscribe_account_state_msg);
+        println!("sending: {}\n", subscribe_account_state_msg);
         rx.send(Message::from(subscribe_account_state_msg))
             .await
             .unwrap();
         while let stream = tx.next().await {
             if let Some(data) = stream {
                 if let Ok(msg) = data {
-                    println!("recived: {}\n", msg);
+                    println!("received: {}\n", msg);
                     break;
                 }
             }
@@ -124,12 +124,12 @@ mod test {
             },
         }))
         .unwrap();
-        println!("seinding: {}\n", verify_identity_msg);
+        println!("sending: {}\n", verify_identity_msg);
         rx.send(Message::from(verify_identity_msg)).await.unwrap();
         while let stream = tx.next().await {
             if let Some(data) = stream {
                 if let Ok(msg) = data {
-                    println!("recived: {}\n", msg);
+                    println!("received: {}\n", msg);
                     break;
                 }
             }

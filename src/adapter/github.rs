@@ -9,7 +9,7 @@ use reqwest::{header::ACCEPT, Client};
 use serde::Deserialize;
 use anyhow::anyhow;
 
-/// Used to interract with the github api
+/// Used to interact with the github api
 #[derive(Clone, Debug)]
 pub struct Github {
     pub cred: GithubCred,
@@ -82,8 +82,8 @@ impl Github {
         Some(url.to_string())
     }
 
-    /// Get's github credentials to creates a [Github] instance
-    pub async fn new(params: &GithubRedirectSetp2Params) -> anyhow::Result<Self> {
+    /// Gets github credentials to creates a [Github] instance
+    pub async fn new(params: &GithubRedirectStepTwoParams) -> anyhow::Result<Self> {
         let cfg = GLOBAL_CONFIG
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
@@ -136,11 +136,11 @@ impl Github {
     }
 }
 
-/// Those params are added to the redirected url by github in setp 2, check this for more
+/// Those params are added to the redirected url by github in step 2, check this for more
 ///
 /// https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#2-users-are-redirected-back-to-your-site-by-github
 #[derive(Debug, Deserialize, Clone)]
-pub struct GithubRedirectSetp2Params {
+pub struct GithubRedirectStepTwoParams {
     pub code: String,
     pub state: String,
 }

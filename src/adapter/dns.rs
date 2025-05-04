@@ -167,7 +167,7 @@ async fn process_challenges(redis_conn: &mut RedisConnection) -> Result<()> {
 
     for challenge_key in &challenge_keys {
         if let Err(e) = process_single_challenge(challenge_key, redis_conn).await {
-            error!(chllenge = %challenge_key, error = %e, "Challenge processing failed");
+            error!(challenge = %challenge_key, error = %e, "Challenge processing failed");
         }
 
         tokio::time::sleep(Duration::from_millis(10)).await;

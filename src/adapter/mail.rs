@@ -219,7 +219,7 @@ impl MailListener {
             )
         })?;
       
-        // TODO: make this duration cofigurable
+        // TODO: make this duration configurable
         loop {
             info!("Starting idle session");
             // it's here cuz .idle() takes &mut self

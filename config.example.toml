@@ -3,7 +3,7 @@
 [registrar.rococo]
 endpoint = "wss://dev.rotko.net/people-rococo/"
 registrar_index = 0
-keystore_path = "./.keyfile.rococo" # IdentityJudgement proxy's pneumonic/private keypath
+keystore_path = "./.keyfile.rococo" # IdentityJudgement proxy's mnemonic/private keypath
 registrar_account = "5CiPPseXPECbkjWCa6MnjNokrgYjMqmKndv2rSnekmSK2DjL" # ferdie as registrar
 fields = ["email","matrix", "twitter", "discord", "display_name"]
 

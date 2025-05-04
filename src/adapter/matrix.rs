@@ -178,7 +178,7 @@ impl Matrix {
         let MessageType::Text(text_content) = ev.content.msgtype else {
             return;
         };
-        info!("Recieved a text message!");
+        info!("Received a text message!");
 
         let state_events = match _room
             .get_state_events(ruma::events::StateEventType::RoomMember)
@@ -277,7 +277,7 @@ impl Matrix {
         acc: Account,
         text_content: &TextMessageEventContent,
     ) -> anyhow::Result<()> {
-        info!(sender=?acc,body=?text_content.body,"Recived matrix message");
+        info!(sender=?acc,body=?text_content.body,"Received matrix message");
         let cfg = GLOBAL_CONFIG.get().unwrap();
         let redis_cfg = cfg.redis.clone();
         let mut redis_connection = RedisConnection::get_connection(&redis_cfg).await?;

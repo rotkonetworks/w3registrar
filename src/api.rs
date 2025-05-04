@@ -8,7 +8,7 @@
 // 4) Use the instrument macro whenever is possible
 // 4.5) Use skip()/skip_all for sensitive info (passwords)
 // 5) Log error as they happen and pass then upward if feasible
-// 6) Refrain from using .unwrap and use anyhow::Result whenver is possible/feasible
+// 6) Refrain from using .unwrap and use anyhow::Result whenever is possible/feasible
 use anyhow::anyhow;
 use anyhow::Result;
 use axum::extract::Query;
@@ -50,7 +50,7 @@ use tungstenite::Error;
 
 use crate::{
     adapter::{
-        github::{Github, GithubRedirectSetp2Params},
+        github::{Github, GithubRedirectStepTwoParams},
         pgp::PGPHelper,
         Adapter,
     },
@@ -441,7 +441,7 @@ impl Network {
             "Kusama" | "kusama" => Ok(Self::Kusama),
             "Polkadot" | "polkadot" => Ok(Self::Polkadot),
             "Rococo" | "rococo" => Ok(Self::Rococo),
-            _ => Err(anyhow!("Unkown or not supported network '{network}'")),
+            _ => Err(anyhow!("Unknown or not supported network '{network}'")),
         }
     }
 }
@@ -1833,7 +1833,7 @@ impl RedisConnection {
 
     #[instrument(skip_all, name = "keyspace_notification", parent = None)]
     async fn enable_keyspace_notifications(conn: &mut ConnectionManager) -> anyhow::Result<()> {
-        info!("Enabeling keyspace notification");
+        info!("Enabling keyspace notification");
       
         match conn
             .send_packed_command(
@@ -2146,7 +2146,7 @@ fn log_error_and_return(log: String) -> String {
     return log;
 }
 
-async fn github_oauth_callback(Query(params): Query<GithubRedirectSetp2Params>) -> String {
+async fn github_oauth_callback(Query(params): Query<GithubRedirectStepTwoParams>) -> String {
     info!(params=?params, "PARAMS");
 
     // Validate state parameter first

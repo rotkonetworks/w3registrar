@@ -25,15 +25,15 @@ impl PGPHelper {
     }
 
     /// Verifies PGP signed challenge by first checking if the fingerprint matches the one
-    /// registed, and if the signed challenge is equal to the requested one
+    /// registered, and if the signed challenge is equal to the requested one
     pub async fn verify(
         signed_challenge: &[u8],
-        registred_fingerprint: [u8; 20],
+        registered_fingerprint: [u8; 20],
         network: &Network,
         account_id: AccountId32,
     ) -> anyhow::Result<serde_json::Value> {
         let policy = &StandardPolicy::new();
-        let helper = PGPHelper::new(&registred_fingerprint);
+        let helper = PGPHelper::new(&registered_fingerprint);
 
         // NOTE: mainly checks signature, can be used for other things
         let mut verifier =
@@ -45,7 +45,7 @@ impl PGPHelper {
         let output = &String::from_utf8(output_buffer)?;
 
         let mut redis_connection = RedisConnection::default().await;
-        let account = Account::PGPFingerprint(registred_fingerprint);
+        let account = Account::PGPFingerprint(registered_fingerprint);
         match PGPHelper::handle_content(
             output,
             &mut redis_connection,
@@ -77,15 +77,15 @@ impl VerificationHelper for PGPHelper {
     fn get_certs(&mut self, _ids: &[KeyHandle]) -> Result<Vec<Cert>> {
         for id in _ids {
             info!("ID: {:#?}", id.to_hex());
-            let registred = self.signature.clone();
+            let registered = self.signature.clone();
             let encoded = id.as_bytes();
-            if encoded.ne(&registred) {
+            if encoded.ne(&registered) {
                 error!(
-                    encoded =?encoded, registred =?registred,
-                    "Encoded signature does not match the registred signature"
+                    encoded =?encoded, registered =?registered,
+                    "Encoded signature does not match the registered signature"
                 );
                 return Err(anyhow!(
-                    "Encoded signature does not match the registred signature"
+                    "Encoded signature does not match the registered signature"
                 ));
             }
         }
