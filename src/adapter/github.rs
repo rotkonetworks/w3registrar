@@ -43,6 +43,15 @@ impl Github {
         ).map_err(|e| anyhow::anyhow!("Failed to construct URL: {}", e))
     }
 
+    /// Validates that the state parameter is a valid token
+    pub async fn validate_state(state: &str) -> anyhow::Result<()> {
+        // TODO: check against stored state tokens
+        if state.is_empty() {
+            return Err(anyhow!("Invalid state parameter"));
+        }
+        Ok(())
+    }
+
     /// Generate a url that uses should open to authenticate their github account
     ///
     /// This constructs a unique url per call, where each differs by the `state` parameter

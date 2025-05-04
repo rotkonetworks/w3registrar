@@ -2146,8 +2146,13 @@ fn log_error_and_return(log: String) -> String {
     return log;
 }
 
-async fn github(Query(params): Query<GithubRedirectSetp2Params>) -> String {
+async fn github_oauth_callback(Query(params): Query<GithubRedirectSetp2Params>) -> String {
     info!(params=?params, "PARAMS");
+
+    // Validate state parameter first
+    if let Err(e) = Github::validate_state(&params.state).await {
+        return log_error_and_return(format!("State validation failed: {}", e));
+    }
 
     // github instance to request acc info
     let gh = match Github::new(&params).await {
@@ -2238,7 +2243,7 @@ pub async fn spawn_http_serv() -> anyhow::Result<()> {
     let redirect_url = gh_config.redirect_url.unwrap();
 
     let app = Router::new()
-        .route(redirect_url.path(), get(github))
+        .route(redirect_url.path(), get(github_oauth_callback))
         .route("/ping", get(pong));
     let listener = tokio::net::TcpListener::bind(&(http_config.host, http_config.port))
         .await
