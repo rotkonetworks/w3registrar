@@ -2189,7 +2189,7 @@ async fn github_oauth_callback(Query(params): Query<GithubRedirectSetp2Params>) 
     // like we can have two wallets from different networks registering the same gh acc
     let reconstructed_url = match Github::reconstruct_request_url(&params.state) {
         Ok(url) => url,
-        Err(e) => return log_error_and_return(format!("Error constructing URL: {}", e)),
+        Err(e) => return log_error_and_return(format!("Error: {}", e)),
     };
 
     for acc_str in accounts {
