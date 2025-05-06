@@ -40,6 +40,7 @@ regex = "1.11.1"
 # hickory tls unstable, locking to trust-dns
 trust-dns-resolver = { version = "=0.23.2", features = ["dns-over-rustls"] }
 sequoia-openpgp = "2.0.0"
+diesel = { version = "1.4.4", features = ["postgres", "chrono"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

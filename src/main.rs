@@ -16,6 +16,10 @@ use crate::{
     config::{Config, GLOBAL_CONFIG},
 };
 
+#[macro_use]
+extern crate diesel;
+mod db;
+
 fn setup_logging() -> Result<()> {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(
