@@ -1610,9 +1610,17 @@ pub struct RedisConnection {
     pubsub: PubSub,
 }
 
+impl RedisConnection {
+    // Add a new async function to create a default instance
+    pub async fn create_default() -> anyhow::Result<Self> {
+        Self::get_connection(&GLOBAL_CONFIG.get().unwrap().redis).await
+    }
+}
+
 impl Default for RedisConnection {
     fn default() -> Self {
-        Self::get_connection(&GLOBAL_CONFIG.get().unwrap().redis).unwrap()
+        // Provide a meaningful error message rather than trying to use await
+        panic!("RedisConnection cannot be created with Default::default(). Use RedisConnection::create_default().await instead")
     }
 }
 
