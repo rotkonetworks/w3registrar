@@ -1,4 +1,5 @@
 use diesel::{Connection, PgConnection};
+use tracing::info;
 
 use crate::config::GLOBAL_CONFIG;
 
@@ -8,5 +9,7 @@ pub fn get_connection() -> PgConnection {
     let config = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG must be set up!");
     let database_url = config.postgres.database_url.clone();
 
-    PgConnection::establish(&database_url).unwrap()
+    let pg_connection = PgConnection::establish(&database_url).unwrap();
+    info!("Connected to PostgreSQL database at {}", database_url);
+    pg_connection
 }
