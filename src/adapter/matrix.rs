@@ -281,7 +281,7 @@ impl Matrix {
         let cfg = GLOBAL_CONFIG.get().unwrap();
         let redis_cfg = cfg.redis.clone();
         let mut redis_connection = RedisConnection::get_connection(&redis_cfg).await?;
-        let query = format!("{}|*", acc);
+        let query = format!("{acc}|*");
         info!(query=?query, "Search query");
 
         let accounts_key = redis_connection.search(&query).await?;

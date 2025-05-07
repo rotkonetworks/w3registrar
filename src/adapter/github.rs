@@ -128,11 +128,11 @@ impl Github {
         let obj = serde_json::from_str::<serde_json::Value>(&user.text().await.unwrap_or_default())
             .unwrap_or_default();
 
-        return Ok(obj["login"]
+        Ok(obj["login"]
             .as_str()
             .unwrap_or_default()
             .trim_matches('"')
-            .to_string());
+            .to_string())
     }
 }
 

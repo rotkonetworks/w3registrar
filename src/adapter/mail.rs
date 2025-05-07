@@ -33,7 +33,7 @@ impl Mail {
         let account = Account::Email(self.sender.clone());
         let mut redis_connection = RedisConnection::get_connection(redis_cfg).await?;
 
-        let search_query = format!("{}|*", account);
+        let search_query = format!("{account}|*");
         let accounts = redis_connection.search(&search_query).await?;
 
         if accounts.is_empty() {
@@ -133,10 +133,7 @@ impl MailListener {
 
     fn new() -> Option<Self> {
         let (session, redis_cfg, mailbox) = Self::connect()?;
-        let cfg = match GLOBAL_CONFIG.get() {
-            Some(cfg) => cfg,
-            None => return None,
-        };
+        let cfg = GLOBAL_CONFIG.get()?;
         let checking_frequency = cfg.adapter.email.checking_frequency.unwrap_or(500);
 
         Some(Self {
@@ -163,7 +160,7 @@ impl MailListener {
 
     async fn flag_mail_as_seen(&mut self, id: u32) -> anyhow::Result<()> {
         self.session
-            .uid_store(format!("{}", id), "+FLAGS (\\SEEN)")?;
+            .uid_store(format!("{id}"), "+FLAGS (\\SEEN)")?;
         self.session.expunge()?;
         Ok(())
     }
@@ -173,10 +170,10 @@ impl MailListener {
     async fn get_mail(&mut self, id: u32) -> anyhow::Result<Mail> {
         info!("Attempting to fetch mail with UID {}", id);
 
-        let fetched_mails = self.session.fetch(format!("{}", id), "RFC822")?;
+        let fetched_mails = self.session.fetch(format!("{id}"), "RFC822")?;
         if fetched_mails.is_empty() {
             info!("No mail found with MSN {}, trying UID fetch", id);
-            let fetched_mails = self.session.uid_fetch(format!("{}", id), "RFC822")?;
+            let fetched_mails = self.session.uid_fetch(format!("{id}"), "RFC822")?;
             if fetched_mails.is_empty() {
                 return Err(anyhow!("No mail found with either MSN or UID {}", id));
             }

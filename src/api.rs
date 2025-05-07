@@ -161,14 +161,14 @@ pub enum Account {
 impl Display for Account {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Account::Twitter(name) => write!(f, "twitter|{}", name),
-            Account::Discord(name) => write!(f, "discord|{}", name),
-            Account::Matrix(name) => write!(f, "matrix|{}", name),
-            Account::Display(name) => write!(f, "display|{}", name),
-            Account::Legal(name) => write!(f, "legal|{}", name),
-            Account::Web(name) => write!(f, "web|{}", name),
-            Account::Email(name) => write!(f, "email|{}", name),
-            Account::Github(name) => write!(f, "github|{}", name),
+            Account::Twitter(name) => write!(f, "twitter|{name}"),
+            Account::Discord(name) => write!(f, "discord|{name}"),
+            Account::Matrix(name) => write!(f, "matrix|{name}"),
+            Account::Display(name) => write!(f, "display|{name}"),
+            Account::Legal(name) => write!(f, "legal|{name}"),
+            Account::Web(name) => write!(f, "web|{name}"),
+            Account::Email(name) => write!(f, "email|{name}"),
+            Account::Github(name) => write!(f, "github|{name}"),
             Account::PGPFingerprint(name) => write!(f, "pgp_fingerprint|{}", hex::encode(name)),
         }
     }
@@ -301,7 +301,7 @@ impl Account {
             AccountType::Display => Self::Display(value),
             AccountType::Email => Self::Email(value),
             AccountType::Matrix => Self::Matrix(value),
-            AccountType::Twitter => Self::Twitter(format!("@{}", value)),
+            AccountType::Twitter => Self::Twitter(format!("@{value}")),
             AccountType::Github => Self::Github(value),
             AccountType::Legal => Self::Legal(value),
             AccountType::Web => Self::Web(value),
@@ -366,7 +366,7 @@ impl FromStr for Account {
                 info!(acc_format = %"valid", acc_type = %"matrix", "Account info");
                 let acc_name: &str = &account["name"];
                 let domain: &str = &account["domain"];
-                Ok(Self::Matrix(format!("@{}:{}", acc_name, domain)))
+                Ok(Self::Matrix(format!("@{acc_name}:{domain}")))
             }
             None => {
                 let (account_type, value) = s
@@ -1937,9 +1937,9 @@ impl RedisConnection {
         who: &AccountId32,
     ) -> anyhow::Result<()> {
         let mut pipe = redis::pipe();
-        pipe.cmd("DEL").arg(format!("{}|{}", who, network));
+        pipe.cmd("DEL").arg(format!("{who}|{network}"));
 
-        let accounts = self.search(&format!("*|{}|{}", network, who)).await?;
+        let accounts = self.search(&format!("*|{network}|{who}")).await?;
         for account in accounts {
             pipe.cmd("DEL").arg(account);
         }
@@ -1958,7 +1958,7 @@ impl RedisConnection {
         info!(state = ?state, "Saving account state");
         let mut pipe = redis::pipe();
         for account in accounts.keys() {
-            let key = format!("{}|{}|{}", account, network, account_id);
+            let key = format!("{account}|{network}|{account_id}");
             let pipe = pipe.cmd("SET").arg(&key);
             if let Some(challenge_info) = state.challenges.get(&account.account_type().to_string())
             {
@@ -1976,7 +1976,7 @@ impl RedisConnection {
         account_id: &AccountId32,
         state: &AccountVerification,
     ) -> anyhow::Result<()> {
-        let key = format!("{}|{}", account_id, network);
+        let key = format!("{account_id}|{network}");
         info!(state = ?state, "Saving account state");
         let value = serde_json::to_string(&state)?;
 
@@ -2003,7 +2003,7 @@ impl RedisConnection {
         for (acc_type, info) in state.challenges.iter() {
             let account_type = AccountType::from_str(acc_type)?;
             let acc_key = Account::from_type_and_value(account_type, info.name.clone());
-            let key = format!("{}|{}|{}", acc_key, network, account_id);
+            let key = format!("{acc_key}|{network}|{account_id}");
             pipe.cmd("SET")
                 .arg(&key)
                 .arg(&serde_json::to_string(&info)?);
@@ -2036,7 +2036,7 @@ impl RedisConnection {
         network: &Network,
         account_id: &AccountId32,
     ) -> anyhow::Result<Option<AccountVerification>> {
-        let key = format!("{}|{}", account_id, network);
+        let key = format!("{account_id}|{network}");
         info!(account_id = ?account_id.to_string(), network = ?network, "Getting verification state");
         let value: Option<String> = self.conn.get(&key).await?;
 
@@ -2143,7 +2143,7 @@ impl RedisConnection {
 
 fn log_error_and_return(log: String) -> String {
     error!(log);
-    return log;
+    log
 }
 
 async fn github_oauth_callback(Query(params): Query<GithubRedirectStepTwoParams>) -> String {
@@ -2151,19 +2151,19 @@ async fn github_oauth_callback(Query(params): Query<GithubRedirectStepTwoParams>
 
     // Validate state parameter first
     if let Err(e) = Github::validate_state(&params.state).await {
-        return log_error_and_return(format!("State validation failed: {}", e));
+        return log_error_and_return(format!("State validation failed: {e}"));
     }
 
     // github instance to request acc info
     let gh = match Github::new(&params).await {
         Ok(gh) => gh,
-        Err(e) => return log_error_and_return(format!("Error: {}", e)),
+        Err(e) => return log_error_and_return(format!("Error: {e}")),
     };
     info!(credentials = ?gh, "Github Credentials");
 
     let gh_username = match gh.request_username().await {
         Ok(username) => username,
-        Err(e) => return log_error_and_return(format!("Error: {}", e)),
+        Err(e) => return log_error_and_return(format!("Error: {e}")),
     };
     info!(username = ?gh_username, "Github Username");
 
@@ -2175,21 +2175,21 @@ async fn github_oauth_callback(Query(params): Query<GithubRedirectStepTwoParams>
     let mut redis_connection = match RedisConnection::get_connection(&redis_config).await {
         Ok(conn) => conn,
         Err(e) => {
-            return log_error_and_return(format!("Error: {}", e));
+            return log_error_and_return(format!("Error: {e}"));
         }
     };
 
-    let search_query = format!("github|{}|*", gh_username);
+    let search_query = format!("github|{gh_username}|*");
     let accounts = match redis_connection.search(&search_query).await {
         Ok(res) => res,
-        Err(e) => return log_error_and_return(format!("Error: {}", e)),
+        Err(e) => return log_error_and_return(format!("Error: {e}")),
     };
 
     // the reconstructed_url helps identifying the exact relavant registration request
     // like we can have two wallets from different networks registering the same gh acc
     let reconstructed_url = match Github::reconstruct_request_url(&params.state) {
         Ok(url) => url,
-        Err(e) => return log_error_and_return(format!("Error: {}", e)),
+        Err(e) => return log_error_and_return(format!("Error: {e}")),
     };
 
     for acc_str in accounts {
@@ -2201,12 +2201,12 @@ async fn github_oauth_callback(Query(params): Query<GithubRedirectStepTwoParams>
         info!("Parts: {:#?}", parts);
         let account = match Account::from_str(&format!("{}|{}", parts[0], parts[1])) {
             Ok(account) => account,
-            Err(e) => return log_error_and_return(format!("Error: {}", e)),
+            Err(e) => return log_error_and_return(format!("Error: {e}")),
         };
 
         let network = match Network::from_str(parts[2]) {
             Ok(network) => network,
-            Err(e) => return log_error_and_return(format!("Error: {}", e)),
+            Err(e) => return log_error_and_return(format!("Error: {e}")),
         };
 
         if let Ok(account_id) = AccountId32::from_str(parts[3]) {
@@ -2220,14 +2220,12 @@ async fn github_oauth_callback(Query(params): Query<GithubRedirectStepTwoParams>
             .await
             {
                 Ok(_) => return String::from("OK"),
-                Err(e) => return log_error_and_return(format!("Error: {}", e)),
+                Err(e) => return log_error_and_return(format!("Error: {e}")),
             }
         }
     }
 
-    return log_error_and_return(format!(
-        "Error: Github account not found in the registration queue"
-    ));
+    log_error_and_return("Error: Github account not found in the registration queue".to_string())
 }
 
 async fn pong() -> &'static str {

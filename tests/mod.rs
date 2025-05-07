@@ -31,14 +31,14 @@ mod test {
             "payload": wallet_id,
         }))
         .unwrap();
-        println!("sending: {}\n", subscribe_account_state_msg);
+        println!("sending: {subscribe_account_state_msg}\n");
         rx.send(Message::from(subscribe_account_state_msg))
             .await
             .unwrap();
         while let stream = tx.next().await {
             if let Some(data) = stream {
                 if let Ok(msg) = data {
-                    println!("received: {}\n", msg);
+                    println!("received: {msg}\n");
                     break;
                 }
             }
@@ -52,14 +52,14 @@ mod test {
             },
         }))
         .unwrap();
-        println!("sending: {}\n", request_verification_challenge_msg);
+        println!("sending: {request_verification_challenge_msg}\n");
         rx.send(Message::from(request_verification_challenge_msg))
             .await
             .unwrap();
         while let stream = tx.next().await {
             if let Some(data) = stream {
                 if let Ok(msg) = data {
-                    println!("received: {}\n", msg);
+                    println!("received: {msg}\n");
                     break;
                 }
             }
@@ -77,14 +77,14 @@ mod test {
             "payload": wallet_id,
         }))
         .unwrap();
-        println!("sending: {}\n", subscribe_account_state_msg);
+        println!("sending: {subscribe_account_state_msg}\n");
         rx.send(Message::from(subscribe_account_state_msg))
             .await
             .unwrap();
         while let stream = tx.next().await {
             if let Some(data) = stream {
                 if let Ok(msg) = data {
-                    println!("received: {}\n", msg);
+                    println!("received: {msg}\n");
                     break;
                 }
             }
@@ -102,14 +102,14 @@ mod test {
             "payload": wallet_id,
         }))
         .unwrap();
-        println!("sending: {}\n", subscribe_account_state_msg);
+        println!("sending: {subscribe_account_state_msg}\n");
         rx.send(Message::from(subscribe_account_state_msg))
             .await
             .unwrap();
         while let stream = tx.next().await {
             if let Some(data) = stream {
                 if let Ok(msg) = data {
-                    println!("received: {}\n", msg);
+                    println!("received: {msg}\n");
                     break;
                 }
             }
@@ -124,12 +124,12 @@ mod test {
             },
         }))
         .unwrap();
-        println!("sending: {}\n", verify_identity_msg);
+        println!("sending: {verify_identity_msg}\n");
         rx.send(Message::from(verify_identity_msg)).await.unwrap();
         while let stream = tx.next().await {
             if let Some(data) = stream {
                 if let Ok(msg) = data {
-                    println!("received: {}\n", msg);
+                    println!("received: {msg}\n");
                     break;
                 }
             }

@@ -94,23 +94,20 @@ impl VerificationHelper for PGPHelper {
 
     fn check(&mut self, structure: MessageStructure) -> Result<()> {
         for structure in structure.iter() {
-            match structure {
-                MessageLayer::SignatureGroup { results } => {
-                    for result in results {
-                        // NOTE: what causes the `result` to be Error and should
-                        // we be concerned? and I don't like how nested this is
-                        match result {
-                            Ok(o) => {
-                                info!("Good checksum");
-                                info!("SIGNATURE: {:?}", o.sig);
-                            }
-                            Err(e) => {
-                                error!(error=?e, "Signature error");
-                            }
+            if let MessageLayer::SignatureGroup { results } = structure {
+                for result in results {
+                    // NOTE: what causes the `result` to be Error and should
+                    // we be concerned? and I don't like how nested this is
+                    match result {
+                        Ok(o) => {
+                            info!("Good checksum");
+                            info!("SIGNATURE: {:?}", o.sig);
+                        }
+                        Err(e) => {
+                            error!(error=?e, "Signature error");
                         }
                     }
                 }
-                _ => {}
             }
         }
         Ok(())
