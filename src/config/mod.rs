@@ -20,7 +20,13 @@ pub struct Config {
     pub websocket: WebsocketConfig,
     pub registrar: RegistrarConfigs,
     pub redis: RedisConfig,
+    pub postgres: PgConfig,
     pub adapter: Adapter,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct  PgConfig {
+    pub database_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
