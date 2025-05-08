@@ -48,8 +48,6 @@ use tracing::Span;
 use tracing::{debug, error, info};
 use tungstenite::Error;
 
-use crate::postgres::PostgresConnection;
-use crate::postgres::Record;
 use crate::{
     adapter::{
         github::{Github, GithubRedirectStepTwoParams},
@@ -66,6 +64,10 @@ use crate::{
             people_paseo_runtime::people::IdentityInfo,
         },
         Client as NodeClient,
+    },
+    postgres::{
+        Condition, Displayed, DisplayedInfo, PostgresConnection, Query as _, Record, SearchInfo,
+        SearchQuery,
     },
     token::{AuthToken, Token},
 };
@@ -484,6 +486,80 @@ pub struct IncomingVerifyPGPRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IncomingSearchRequest {
+    network: Option<Network>,
+    outputs: Vec<DisplayedInfo>,
+    filters: Vec<Filter>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Filter {
+    field: SearchInfo,
+    strict: bool,
+    // starts_with: bool,
+    // ends_with: bool,
+    // contains: bool,
+}
+
+impl Filter {
+    pub fn new(field: SearchInfo, strict: bool) -> Self {
+        Self { field, strict }
+    }
+}
+
+impl IncomingSearchRequest {
+    pub fn new(
+        network: Option<Network>,
+        outputs: Vec<DisplayedInfo>,
+        filters: Vec<Filter>,
+    ) -> Self {
+        Self {
+            network,
+            outputs,
+            filters,
+        }
+    }
+}
+
+impl Into<SearchQuery> for IncomingSearchRequest {
+    fn into(self) -> SearchQuery {
+        let displayed = self
+            .outputs
+            .iter()
+            .fold(Displayed::default(), |displayed, v| match v {
+                DisplayedInfo::WalletID => displayed.wallet_id(),
+                DisplayedInfo::Discord => displayed.account(AccountType::Discord),
+                DisplayedInfo::Display => displayed.account(AccountType::Display),
+                DisplayedInfo::Email => displayed.account(AccountType::Email),
+                DisplayedInfo::Matrix => displayed.account(AccountType::Matrix),
+                DisplayedInfo::Twitter => displayed.account(AccountType::Twitter),
+                DisplayedInfo::Github => displayed.account(AccountType::Github),
+                DisplayedInfo::Legal => displayed.account(AccountType::Legal),
+                DisplayedInfo::Web => displayed.account(AccountType::Web),
+                DisplayedInfo::PGPFingerprint => displayed.account(AccountType::PGPFingerprint),
+            });
+
+        let mut condition = self
+            .network
+            .iter()
+            .fold(Condition::default(), |cond, net| cond.network(&net).and());
+
+        condition = self.filters.iter().fold(condition, |cond, filter| {
+            if filter.strict {
+                cond.condition(&filter.field).and()
+            } else {
+                cond.like_condition(&filter.field).and()
+            }
+        });
+
+        SearchQuery::default()
+            .table_name("registration".to_string())
+            .selected(displayed)
+            .condition(condition)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChallengedAccount {
     pub network: String,
     pub account: String,
@@ -747,6 +823,12 @@ impl SocketListener {
                     .map_err(|e| anyhow!("Invalid SubscribeAccountState payload: {}", e))?;
                 self.handle_pgp_verification_request(incoming, subscriber)
                     .await
+            }
+            "SearchRegistration" => {
+                let incoming: IncomingSearchRequest = serde_json::from_value(message.payload)
+                    .map_err(|e| anyhow!("Invalid SubscribeAccountState payload: {}", e))?;
+
+                self.handle_search_request(incoming).await
             }
             // TODO: Add endpoint for inputting verifications
             _ => Err(anyhow!(
@@ -1367,6 +1449,17 @@ impl SocketListener {
             account_id,
         )
         .await
+    }
+
+    async fn handle_search_request(
+        &self,
+        request: IncomingSearchRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        let query: SearchQuery = request.into();
+        let mut pog_connection = PostgresConnection::default().await?;
+        info!(query=?query.to_sql(), "SEARCH QUERY");
+        let res = pog_connection.search(query.to_sql()).await?;
+        Ok(serde_json::to_value(res)?)
     }
 }
 
