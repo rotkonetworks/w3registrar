@@ -7,8 +7,8 @@ use subxt::utils::AccountId32;
 use tracing::error;
 use tracing::info;
 
+use crate::api::Network;
 use crate::api::{Account, RedisConnection};
-
 use super::Adapter;
 
 pub struct PGPHelper {
@@ -25,15 +25,15 @@ impl PGPHelper {
     }
 
     /// Verifies PGP signed challenge by first checking if the fingerprint matches the one
-    /// registed, and if the signed challenge is equal to the requested one
+    /// registered, and if the signed challenge is equal to the requested one
     pub async fn verify(
         signed_challenge: &[u8],
-        registred_fingerprint: [u8; 20],
-        network: &str,
+        registered_fingerprint: [u8; 20],
+        network: &Network,
         account_id: AccountId32,
     ) -> anyhow::Result<serde_json::Value> {
         let policy = &StandardPolicy::new();
-        let helper = PGPHelper::new(&registred_fingerprint);
+        let helper = PGPHelper::new(&registered_fingerprint);
 
         // NOTE: mainly checks signature, can be used for other things
         let mut verifier =
@@ -44,30 +44,31 @@ impl PGPHelper {
         std::io::copy(&mut verifier, &mut output_buffer)?;
         let output = &String::from_utf8(output_buffer)?;
 
-        let mut redis_connection = RedisConnection::default();
-        let account = Account::PGPFingerprint(registred_fingerprint);
-        if PGPHelper::handle_content(
-            &output,
+        let mut redis_connection = RedisConnection::default().await;
+        let account = Account::PGPFingerprint(registered_fingerprint);
+        match PGPHelper::handle_content(
+            output,
             &mut redis_connection,
             network,
             &account_id,
             &account,
         )
-        .await?
+        .await
         {
-            return Ok(serde_json::json!({
+            Ok(_) => Ok(serde_json::json!({
                 "type": "JsonResult",
                 "payload": {
                     "type": "ok",
                     "message": "PGP verification is done",
                 }
-            }));
-        } else {
-            info!(got=?output, "Wrong challenge");
-            return Ok(serde_json::json!({
-                "type": "error",
-                "message": format!("Wrong challenge")
-            }));
+            })),
+            Err(e) => {
+                info!(error=?e, "Verification error");
+                Ok(serde_json::json!({
+                    "type": "error",
+                    "message": format!("{e}"),
+                }))
+            }
         }
     }
 }
@@ -76,15 +77,15 @@ impl VerificationHelper for PGPHelper {
     fn get_certs(&mut self, _ids: &[KeyHandle]) -> Result<Vec<Cert>> {
         for id in _ids {
             info!("ID: {:#?}", id.to_hex());
-            let registred = self.signature.clone();
+            let registered = self.signature.clone();
             let encoded = id.as_bytes();
-            if encoded.ne(&registred) {
+            if encoded.ne(&registered) {
                 error!(
-                    encoded =?encoded, registred =?registred,
-                    "Encoded signature does not match the registred signature"
+                    encoded =?encoded, registered =?registered,
+                    "Encoded signature does not match the registered signature"
                 );
                 return Err(anyhow!(
-                    "Encoded signature does not match the registred signature"
+                    "Encoded signature does not match the registered signature"
                 ));
             }
         }
@@ -92,20 +93,21 @@ impl VerificationHelper for PGPHelper {
     }
 
     fn check(&mut self, structure: MessageStructure) -> Result<()> {
-        for thing in structure.iter() {
-            match thing {
-                MessageLayer::SignatureGroup { results } => {
-                    for result in results {
-                        match result {
-                            Ok(o) => {
-                                info!("Good checksum");
-                                info!("SIGNATURE: {:?}", o.sig);
-                            }
-                            Err(_) => {} // return Err(anyhow::anyhow!("{:?}", e))
+        for structure in structure.iter() {
+            if let MessageLayer::SignatureGroup { results } = structure {
+                for result in results {
+                    // NOTE: what causes the `result` to be Error and should
+                    // we be concerned? and I don't like how nested this is
+                    match result {
+                        Ok(o) => {
+                            info!("Good checksum");
+                            info!("SIGNATURE: {:?}", o.sig);
+                        }
+                        Err(e) => {
+                            error!(error=?e, "Signature error");
                         }
                     }
                 }
-                _ => {}
             }
         }
         Ok(())

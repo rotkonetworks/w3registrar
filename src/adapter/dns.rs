@@ -1,6 +1,6 @@
 use crate::{
     adapter::Adapter,
-    api::{Account, RedisConnection},
+    api::{Account, Network, RedisConnection},
     config::GLOBAL_CONFIG,
 };
 use anyhow::Result;
@@ -9,7 +9,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use subxt::utils::AccountId32;
 use tokio::time::{sleep, Duration};
-use tracing::{error, info};
+use tracing::{error, info, instrument};
 use trust_dns_resolver::{
     config::{ResolverConfig, ResolverOpts},
     name_server::TokioConnectionProvider,
@@ -32,7 +32,9 @@ fn get_resolver() -> Arc<AsyncResolver<TokioConnectionProvider>> {
         .clone()
 }
 
+#[instrument(skip_all)]
 async fn lookup_txt_records(domain: &str) -> Result<Vec<String>, String> {
+    info!(domain = %domain, "Looking for TXT records");
     get_resolver()
         .lookup(domain, RecordType::TXT)
         .await
@@ -50,21 +52,22 @@ async fn lookup_txt_records(domain: &str) -> Result<Vec<String>, String> {
         .map_err(|e| e.to_string())
 }
 
+#[instrument(skip_all)]
 pub async fn verify_txt(domain: &str, challenge: &str) -> bool {
     match lookup_txt_records(domain).await {
         Ok(records) => {
             for record in &records {
-                info!("Found {}:{}:{}", domain, challenge, record);
+                info!(domain = %domain, "Found Record: {record}");
             }
             if records.contains(&challenge.to_string()) {
-                info!("TXT record verification successful for {}", domain);
+                info!(domain = %domain, "TXT record verification successful");
                 return true;
             }
-            info!("No matching({}) TXT record found", &challenge.to_string());
+            info!(domain = %domain, "No matching({}) TXT record found", &challenge.to_string());
             false
         }
         Err(err) => {
-            info!("Lookup failed for {}: {}", domain, err);
+            info!(domain = %domain, error = %err, "Record lookup failed");
             false
         }
     }
@@ -75,7 +78,7 @@ impl Adapter for DnsAdapter {}
 
 struct DnsChallenge {
     domain: String,
-    network: String,
+    network: Network,
     account_id: AccountId32,
     token: String,
 }
@@ -94,7 +97,7 @@ impl DnsChallenge {
             .trim_end_matches('/')
             .to_string();
 
-        let network = parts[2].to_string();
+        let network = Network::from_str(parts[2])?;
         let account_id = AccountId32::from_str(parts[3])?;
 
         let state = match redis_conn
@@ -141,9 +144,9 @@ impl DnsChallenge {
     }
 }
 
+#[instrument()]
 pub async fn watch_dns() -> anyhow::Result<()> {
-    get_resolver();
-
+    // NOTE: is this ok?
     loop {
         let cfg = GLOBAL_CONFIG
             .get()
@@ -158,12 +161,13 @@ pub async fn watch_dns() -> anyhow::Result<()> {
     }
 }
 
+#[instrument(skip_all)]
 async fn process_challenges(redis_conn: &mut RedisConnection) -> Result<()> {
     let challenge_keys = redis_conn.search("web|*").await?;
 
     for challenge_key in &challenge_keys {
         if let Err(e) = process_single_challenge(challenge_key, redis_conn).await {
-            error!("Challenge processing failed {}: {}", challenge_key, e);
+            error!(challenge = %challenge_key, error = %e, "Challenge processing failed");
         }
 
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -185,9 +189,9 @@ async fn process_single_challenge(
 /// Function to be used for manual verification of DNS challenge instead of active watching
 pub async fn _verify_dns_challenge(
     domain: &str,
-    network: &str,
+    network: &Network,
     account_id: &AccountId32,
-) -> Result<bool> {
+) -> Result<()> {
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
@@ -205,15 +209,27 @@ pub async fn _verify_dns_challenge(
         .await?
     {
         Some(s) => s,
-        None => return Ok(false),
+        None => {
+            return Err(anyhow::anyhow!(
+                "No verification state found for {account_id:?}/{domain}"
+            ))
+        }
     };
 
     let token = match state.challenges.get("web") {
         Some(challenge) if !challenge.done => match &challenge.token {
             Some(t) => t.clone(),
-            None => return Ok(false),
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Unable to extract challenge for {account_id:?}/{domain}"
+                ))
+            }
         },
-        _ => return Ok(false),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "No challenge is found for {account_id}/{domain}"
+            ))
+        }
     };
 
     if verify_txt(&clean_domain, &token).await {
@@ -228,6 +244,9 @@ pub async fn _verify_dns_challenge(
         )
         .await
     } else {
-        Ok(false)
+        Err(anyhow::anyhow!(
+            "Unable to verify domain {} TXT record",
+            domain
+        ))
     }
 }

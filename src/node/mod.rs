@@ -3,7 +3,7 @@
 #[subxt::subxt(runtime_metadata_path = "./metadata/people_paseo.scale")]
 pub mod substrate {}
 
-use crate::api::AccountType;
+use crate::api::{AccountType, Network};
 use crate::config::GLOBAL_CONFIG;
 
 use anyhow::{anyhow, Result};
@@ -16,7 +16,7 @@ use subxt::ext::sp_core::sr25519::Pair as Sr25519Pair;
 use subxt::ext::sp_core::Pair;
 use subxt::utils::AccountId32;
 use subxt::SubstrateConfig;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use super::api::Account;
 use substrate::identity::calls::types::provide_judgement::Identity;
@@ -44,7 +44,6 @@ pub async fn get_registration(
 ) -> Result<Registration<u128, IdentityInfo>> {
     let storage = client.storage().at_latest().await?;
     let identity = super::node::storage().identity().identity_of(who);
-    info!("identity: {:?}", identity);
     match storage.fetch(&identity).await? {
         None => Err(anyhow!("No registration found for {}", who)),
         Some((reg, _)) => Ok(reg),
@@ -55,7 +54,9 @@ pub async fn get_registration(
 ///
 /// # Arguments
 /// * `network` - Network name (network_name)
-async fn setup_network(network: &str) -> anyhow::Result<(Client, crate::config::RegistrarConfig)> {
+async fn setup_network(
+    network: &Network,
+) -> anyhow::Result<(Client, crate::config::RegistrarConfig)> {
     let cfg = GLOBAL_CONFIG
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
@@ -81,14 +82,25 @@ async fn setup_network(network: &str) -> anyhow::Result<(Client, crate::config::
 pub async fn provide_judgement<'a>(
     who: &AccountId32,
     judgement: Judgement<u128>,
-    network: &str,
+    network: &Network,
 ) -> Result<&'a str> {
+    info!(
+        account_id = %who.to_string(),
+        network = %network,
+        judgement = %format!("{:?}", judgement),
+        "Providing judgment"
+    );
     let (client, network_cfg) = setup_network(network).await?;
-    info!("Using registrar index: {}", network_cfg.registrar_index);
 
     let registration = get_registration(&client, who).await?;
     let hash = hex::encode(blake2_256(&registration.info.encode()));
-    info!("Generated identity hash: {}", hash);
+
+    info!(
+        hash = %hash,
+        reg_index = %network_cfg.registrar_index,
+        endpoint = %network_cfg.endpoint,
+        "Generated identity hash"
+    );
 
     let inner_call = substrate::runtime_types::pallet_identity::pallet::Call::provide_judgement {
         reg_index: network_cfg.registrar_index,
@@ -135,10 +147,8 @@ pub async fn provide_judgement<'a>(
 
             match status? {
                 subxt::tx::TxStatus::InFinalizedBlock(in_block) => {
-                    info!(
-                        "Transaction {:?} is finalized in block {:?}",
-                        in_block.extrinsic_hash(),
-                        in_block.block_hash()
+                    info!(transaction=?in_block.extrinsic_hash(), block=?in_block.block_hash(),
+                        "Transaction is finalized",
                     );
 
                     match in_block.wait_for_success().await {
@@ -224,7 +234,10 @@ fn load_signer(network_cfg: &crate::config::RegistrarConfig) -> Result<PairSigne
     let acc = Sr25519Pair::from_string(seed.trim(), None)?;
     let signer = PairSigner::new(acc);
 
-    info!("Signer account: {}", signer.account_id());
+    info!(
+        account_id = &signer.account_id().to_string(),
+        "Signer account"
+    );
     Ok(signer)
 }
 
@@ -242,9 +255,11 @@ async fn fetch_latest_nonce(client: &Client, account: &AccountId32) -> Result<u6
         .map_err(|e| anyhow!("Failed to fetch nonce: {}", e))
 }
 
-/// Provides succesful judgement
-pub async fn register_identity<'a>(who: &AccountId32, network: &str) -> anyhow::Result<&'a str> {
-    info!("Providing jdugement for {} on {}", who, network);
+/// Provides successful judgement
+pub async fn register_identity<'a>(
+    who: &AccountId32,
+    network: &Network,
+) -> anyhow::Result<&'a str> {
     provide_judgement(who, Judgement::Reasonable, network).await
 }
 
@@ -253,12 +268,12 @@ pub async fn filter_accounts(
     info: &IdentityInfo,
     who: &AccountId32,
     _reg_index: u32,
-    network: &str,
+    network: &Network,
 ) -> anyhow::Result<HashMap<Account, bool>> {
-    info!("Starting account filtering for {}", who);
+    info!(account_id = %who.to_string(), "Filtering unsupported accounts");
 
     let accounts = Account::into_accounts(info);
-    info!("Found accounts: {:?}", accounts);
+    info!(accounts=?accounts,"Found accounts");
 
     let cfg = GLOBAL_CONFIG
         .get()
@@ -270,7 +285,7 @@ pub async fn filter_accounts(
         .ok_or_else(|| anyhow!("Network {} not configured", network))?;
 
     let supported = &network_cfg.fields;
-    info!("Supported fields for network {}: {:?}", network, supported);
+    info!(fields=?supported, network=?network,"Supported fields for requested network");
 
     if accounts.is_empty() {
         info!("No accounts found, providing Unknown judgment");
@@ -280,12 +295,12 @@ pub async fn filter_accounts(
 
     for account in &accounts {
         let account_type = account.account_type();
-        info!("Checking account type: {:?}", account_type);
+        info!(account_type = %account_type, "Checking account type");
         if !supported
             .iter()
             .any(|s| AccountType::from_str(s).ok() == Some(account_type))
         {
-            info!("Unsupported account type: {:?}", account_type);
+            error!(account_type=?account_type, "Unsupported account type");
             provide_judgement(who, Judgement::Erroneous, network).await?;
             return Ok(HashMap::new());
         }
@@ -326,9 +341,9 @@ mod tests {
 
         let target_account =
             AccountId32::from_str("1Qrotkokp6taAeLThuwgzR7Mu3YQonZohwrzixwGnrD1QDT")?;
-        info!("Target account: {:?}", target_account);
+        info!(target_account = %target_account.to_string(), "Target account");
 
-        let (client, network_cfg) = setup_network("paseo").await?;
+        let (client, network_cfg) = setup_network(&Network::Paseo).await?;
         info!(
             "Network config loaded: endpoint={}, registrar_index={}",
             network_cfg.endpoint, network_cfg.registrar_index
@@ -339,7 +354,8 @@ mod tests {
             Err(e) => warn!("Registration check failed: {}", e),
         }
 
-        let result = provide_judgement(&target_account, Judgement::Reasonable, "paseo").await?;
+        let result =
+            provide_judgement(&target_account, Judgement::Reasonable, &Network::Paseo).await?;
 
         info!("Judgment result: {}", result);
         assert_eq!(result, "Judgment submitted through proxy");

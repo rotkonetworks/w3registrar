@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use crate::adapter::Adapter;
 use matrix_sdk::{
     config::{RequestConfig, StoreConfig, SyncSettings},
     deserialized_responses::RawSyncOrStrippedState,
@@ -22,16 +21,15 @@ use matrix_sdk::{
     Client,
 };
 use serde_json::Value;
+use std::path::Path;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
 use tokio::time::{sleep, Duration};
-use tracing::{error, info, warn};
+use tracing::{error, info, instrument, warn};
 
-use std::path::Path;
-
-use crate::api::Account;
+use crate::api::{Account, RedisConnection};
 use crate::GLOBAL_CONFIG;
-use crate::{api::RedisConnection, node::register_identity};
+use crate::{adapter::Adapter, api::Network, node::register_identity};
 
 // TODO: move those "independent" functions inside the Matrix struct (handle_content, etc.)
 
@@ -43,6 +41,7 @@ struct Matrix {
 impl Adapter for Matrix {}
 
 impl Matrix {
+    #[instrument(skip_all)]
     async fn login() -> anyhow::Result<Client> {
         let cfg = GLOBAL_CONFIG.get().unwrap().adapter.matrix.clone();
         let state_dir = Path::new(&cfg.state_dir);
@@ -126,6 +125,7 @@ impl Matrix {
         Ok(client)
     }
 
+    #[instrument(skip_all)]
     async fn new() -> anyhow::Result<Self> {
         let client = Self::login().await?;
         let mut room = RoomEventFilter::default();
@@ -173,11 +173,12 @@ impl Matrix {
         panic!("FATAL: Matrix sync stopped unexpectedly. Forcing restart.");
     }
 
+    #[instrument(skip_all)]
     async fn on_room_message(ev: OriginalSyncRoomMessageEvent, _room: Room) {
         let MessageType::Text(text_content) = ev.content.msgtype else {
             return;
         };
-        info!("Recieved a text message!");
+        info!("Received a text message!");
 
         let state_events = match _room
             .get_state_events(ruma::events::StateEventType::RoomMember)
@@ -209,6 +210,7 @@ impl Matrix {
         }
     }
 
+    #[instrument(skip_all)]
     async fn on_stripped_state_member(event: StrippedRoomMemberEvent, client: Client, room: Room) {
         if event.state_key != client.user_id().unwrap() {
             return;
@@ -270,19 +272,17 @@ impl Matrix {
     /// # Arguments
     /// * `acc` - Parsed account information from message
     /// * `text_content` - Content of the message
+    #[instrument(skip_all)]
     async fn handle_incoming(
         acc: Account,
         text_content: &TextMessageEventContent,
     ) -> anyhow::Result<()> {
-        info!(
-            "\nMatrix Message\nSender: {:#?}\nMessage: {}\nRaw Content: {:#?}",
-            acc, text_content.body, text_content
-        );
+        info!(sender=?acc,body=?text_content.body,"Received matrix message");
         let cfg = GLOBAL_CONFIG.get().unwrap();
         let redis_cfg = cfg.redis.clone();
         let mut redis_connection = RedisConnection::get_connection(&redis_cfg).await?;
-        let query = format!("{}|*", acc);
-        info!("Search query: {}", query);
+        let query = format!("{acc}|*");
+        info!(query=?query, "Search query");
 
         let accounts_key = redis_connection.search(&query).await?;
 
@@ -296,15 +296,14 @@ impl Matrix {
             if parts.len() != 4 {
                 continue;
             }
-            info!("Parts: {:#?}", parts);
             let account = Account::from_str(&format!("{}|{}", parts[0], parts[1]))?;
-            let network = parts[2];
+            let network = Network::from_str(parts[2])?;
 
             if let Ok(account_id) = AccountId32::from_str(parts[3]) {
-                if let Ok(true) = <Matrix as Adapter>::handle_content(
+                if let Ok(()) = <Matrix as Adapter>::handle_content(
                     &text_content.body,
                     &mut redis_connection,
-                    network,
+                    &network,
                     &account_id,
                     &account,
                 )
@@ -320,6 +319,7 @@ impl Matrix {
 
 /// Verifies a Matrix device for secure communication
 /// This is required for end-to-end encryption functionality
+#[instrument(skip_all)]
 async fn verify_device(device: &Device) -> anyhow::Result<()> {
     match device.verify().await {
         Ok(_) => Ok(()),
@@ -329,6 +329,7 @@ async fn verify_device(device: &Device) -> anyhow::Result<()> {
 
 /// Initializes and runs the Matrix bot
 /// Sets up event handlers for room invites and messages
+#[instrument(name = "matrix_listener")]
 pub async fn start_bot() -> anyhow::Result<()> {
     Matrix::new().await?.listen().await;
     unreachable!("Matrix listener should never return");
@@ -368,14 +369,15 @@ fn extract_sender_account(
 /// * `network` - Network identifier
 /// * `account_id` - Account being verified
 /// * `account` - Account information
+#[instrument(skip_all)]
 async fn handle_content(
     text_content: &TextMessageEventContent,
     redis_connection: &mut RedisConnection,
-    network: &str,
+    network: &Network,
     account_id: &AccountId32,
     account: &Account,
 ) -> anyhow::Result<bool> {
-    let account_type = &account.account_type().to_string();
+    let account_type = &account.account_type();
 
     // get the current state
     let state = match redis_connection
@@ -387,7 +389,7 @@ async fn handle_content(
     };
 
     // get the challenge for the account type
-    let challenge = match state.challenges.get(account_type) {
+    let challenge = match state.challenges.get(&account_type.to_string()) {
         Some(challenge) => challenge,
         None => return Ok(false),
     };

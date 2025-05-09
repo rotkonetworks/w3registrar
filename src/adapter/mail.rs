@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 use anyhow::anyhow;
 use std::net::TcpStream;
 use std::str::FromStr;
@@ -7,14 +5,14 @@ use std::time::Duration;
 
 use crate::{
     adapter::Adapter,
-    api::{Account, RedisConnection},
+    api::{Account, Network, RedisConnection},
     config::RedisConfig,
 };
 use imap::Session;
 use native_tls::{TlsConnector, TlsStream};
 use subxt::utils::AccountId32;
 
-use tracing::{error, info, Level};
+use tracing::{error, info, instrument, Level};
 
 use crate::config::GLOBAL_CONFIG;
 
@@ -35,7 +33,7 @@ impl Mail {
         let account = Account::Email(self.sender.clone());
         let mut redis_connection = RedisConnection::get_connection(redis_cfg).await?;
 
-        let search_query = format!("{}|*", account);
+        let search_query = format!("{account}|*");
         let accounts = redis_connection.search(&search_query).await?;
 
         if accounts.is_empty() {
@@ -50,7 +48,7 @@ impl Mail {
                 continue;
             }
 
-            let network = info[2];
+            let network = Network::from_str(info[2])?;
             let id = info[3];
             if let Ok(wallet_id) = AccountId32::from_str(id) {
                 if let Some(text) = self
@@ -62,7 +60,7 @@ impl Mail {
                     match <Mail as Adapter>::handle_content(
                         &text,
                         &mut redis_connection,
-                        network,
+                        &network,
                         &wallet_id,
                         &account,
                     )
@@ -82,6 +80,7 @@ struct MailListener {
     session: Session<TlsStream<TcpStream>>,
     redis_cfg: RedisConfig,
     mailbox: String,
+    checking_frequency: u64,
 }
 
 impl MailListener {
@@ -134,8 +133,11 @@ impl MailListener {
 
     fn new() -> Option<Self> {
         let (session, redis_cfg, mailbox) = Self::connect()?;
+        let cfg = GLOBAL_CONFIG.get()?;
+        let checking_frequency = cfg.adapter.email.checking_frequency.unwrap_or(500);
 
         Some(Self {
+            checking_frequency,
             session,
             redis_cfg,
             mailbox,
@@ -143,26 +145,65 @@ impl MailListener {
     }
 
     // TODO: care about only first line
-    async fn get_mail(&mut self, id: u32) -> anyhow::Result<Mail> {
-        let mail = self.session.uid_fetch(format!("{}", id), "RFC822")?;
-        for msg in mail.iter() {
-            let parsed = mail_parser::MessageParser::default()
-                .parse(msg.body().unwrap_or_default())
-                .unwrap_or_default();
-            let address = parsed.return_address().unwrap().to_string();
-            let x = parsed.body_text(0).map(|body| body.to_string());
-            return Ok(Mail::new(address, x));
-        }
-        return Err(anyhow!("No message found"));
-    }
+    // async fn get_mail(&mut self, id: u32) -> anyhow::Result<Mail> {
+    //     let mail = self.session.uid_fetch(format!("{}", id), "RFC822")?;
+    //     for msg in mail.iter() {
+    //         let parsed = mail_parser::MessageParser::default()
+    //             .parse(msg.body().unwrap_or_default())
+    //             .unwrap_or_default();
+    //         let address = parsed.return_address().unwrap().to_string();
+    //         let x = parsed.body_text(0).map(|body| body.to_string());
+    //         return Ok(Mail::new(address, x));
+    //     }
+    //     return Err(anyhow!("No message found"));
+    // }
 
     async fn flag_mail_as_seen(&mut self, id: u32) -> anyhow::Result<()> {
         self.session
-            .uid_store(format!("{}", id), "+FLAGS (\\SEEN)")?;
+            .uid_store(format!("{id}"), "+FLAGS (\\SEEN)")?;
         self.session.expunge()?;
         Ok(())
     }
 
+    /// Retrieves and parses an email message by its ID
+    /// Extracts sender address and message body
+    async fn get_mail(&mut self, id: u32) -> anyhow::Result<Mail> {
+        info!("Attempting to fetch mail with UID {}", id);
+
+        let fetched_mails = self.session.fetch(format!("{id}"), "RFC822")?;
+        if fetched_mails.is_empty() {
+            info!("No mail found with MSN {}, trying UID fetch", id);
+            let fetched_mails = self.session.uid_fetch(format!("{id}"), "RFC822")?;
+            if fetched_mails.is_empty() {
+                return Err(anyhow!("No mail found with either MSN or UID {}", id));
+            }
+        }
+
+        let mail = fetched_mails
+            .first()
+            .ok_or_else(|| anyhow!("Fetch succeeded but returned empty result for {}", id))?;
+
+        let parsed = mail_parser::MessageParser::default()
+            .parse(mail.body().unwrap_or_default())
+            .ok_or_else(|| anyhow!("Failed to parse mail content"))?;
+
+        let address = parsed
+            .return_address()
+            .ok_or_else(|| anyhow!("No return address found"))?
+            .to_string();
+
+        let body = parsed.body_text(0).map(|body| body.to_string());
+
+        info!(
+            "Successfully fetched and parsed mail {} from {}",
+            id, address
+        );
+
+        Ok(Mail::new(address, body))
+    }
+
+    /// Polls mailbox for new unread messages and processes them
+    /// Uses IMAP IDLE for efficient notification of new messages
     async fn check_mailbox(&mut self) -> anyhow::Result<()> {
         info!("Selecting mailbox {}", self.mailbox);
         self.session.select(&self.mailbox).map_err(|e| {
@@ -174,9 +215,11 @@ impl MailListener {
                 e
             )
         })?;
-
+      
+        // TODO: make this duration configurable
         loop {
             info!("Starting idle session");
+            // it's here cuz .idle() takes &mut self
             let mut idle_handle = self.session.idle().map_err(|e| {
                 anyhow!(
                     "{}:{} Unable to start idle IMAP session {}",
@@ -186,8 +229,7 @@ impl MailListener {
                 )
             })?;
 
-            let keep_alive_duration = Duration::from_secs(60);
-            idle_handle.set_keepalive(keep_alive_duration);
+            idle_handle.set_keepalive(Duration::from_secs(self.checking_frequency));
 
             info!("Waiting for a mail");
             idle_handle
@@ -243,11 +285,10 @@ impl MailListener {
     }
 }
 
+#[instrument(name = "mail_watcher")]
 pub async fn watch_mailserver() -> anyhow::Result<()> {
     // NOTE: this duplicate exist since the guard is dropped after the end of watch_mailserver and
     // since we spawn a task that will out live this function which should inherit this context (span)
-    let span = tracing::span!(Level::INFO, "mail_watcher");
-    let _guard = span.enter();
     info!("watcher started");
 
     let mut server = match MailListener::new() {

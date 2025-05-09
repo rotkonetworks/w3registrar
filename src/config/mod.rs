@@ -8,11 +8,13 @@ use std::fs;
 use std::net::{SocketAddr, ToSocketAddrs};
 use tokio::sync::OnceCell;
 use url::Url;
+use crate::api::Network;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Adapter {
     pub matrix: MatrixConfig,
     pub email: EmailConfig,
+    pub github: GithubConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -20,6 +22,7 @@ pub struct Config {
     pub websocket: WebsocketConfig,
     pub registrar: RegistrarConfigs,
     pub redis: RedisConfig,
+    pub http: HTTPConfig,
     pub adapter: Adapter,
 }
 
@@ -32,24 +35,25 @@ pub struct EmailConfig {
     pub email: String,
     pub mailbox: String,
     pub server: String,
+    pub checking_frequency: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegistrarConfigs {
     #[serde(flatten)]
-    pub networks: HashMap<String, RegistrarConfig>,
+    pub networks: HashMap<Network, RegistrarConfig>,
 }
 
 impl RegistrarConfigs {
-    pub fn get_network(&self, network: &str) -> Option<&RegistrarConfig> {
+    pub fn get_network(&self, network: &Network) -> Option<&RegistrarConfig> {
         self.networks.get(network)
     }
 
-    pub fn supported_networks(&self) -> Vec<String> {
+    pub fn supported_networks(&self) -> Vec<Network> {
         self.networks.keys().cloned().collect()
     }
 
-    pub fn is_network_supported(&self, network: &str) -> bool {
+    pub fn is_network_supported(&self, network: &Network) -> bool {
         self.networks.contains_key(network)
     }
 }
@@ -170,5 +174,59 @@ impl WebsocketConfig {
             .to_socket_addrs()
             .unwrap()
             .next()
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct GithubConfig {
+    /// github application token
+    pub client_id: String,
+    /// used in the first stage of oauth
+    pub gh_url: url::Url,
+    /// github client secret
+    pub client_secret: String,
+    /// url to redirect to when first stage is completed
+    pub redirect_url: Option<url::Url>,
+}
+
+impl Default for GithubConfig {
+    fn default() -> Self {
+        let gh_url = url::Url::parse_with_params(
+            "https://github.com/login/oauth/authorize",
+            &[("client_id", ""), ("redirect_uri", "")],
+        )
+        .unwrap();
+        let client_id = String::new();
+        let redirect_uri = None;
+        let client_secret = String::new();
+
+        Self {
+            gh_url,
+            client_id,
+            redirect_url: redirect_uri,
+            client_secret,
+        }
+    }
+}
+
+impl GithubConfig {}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct HTTPConfig {
+    pub host: String,
+    pub port: u16,
+    pub gh_endpoint: Option<String>,
+}
+
+impl Default for HTTPConfig {
+    fn default() -> Self {
+        let ip = String::from("0.0.0.0");
+        let port: u16 = 3000;
+        let gh_endpoint = None;
+        Self {
+            host: ip,
+            port,
+            gh_endpoint,
+        }
     }
 }
