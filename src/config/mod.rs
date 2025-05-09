@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use crate::api::Network;
 use crate::node::identity::events::judgement_requested::RegistrarIndex;
 use anyhow::anyhow;
 use serde::Deserialize;
@@ -8,7 +9,6 @@ use std::fs;
 use std::net::{SocketAddr, ToSocketAddrs};
 use tokio::sync::OnceCell;
 use url::Url;
-use crate::api::Network;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Adapter {
@@ -24,6 +24,7 @@ pub struct Config {
     pub redis: RedisConfig,
     pub http: HTTPConfig,
     pub adapter: Adapter,
+    pub postgres: PostgresConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,6 +56,13 @@ impl RegistrarConfigs {
 
     pub fn is_network_supported(&self, network: &Network) -> bool {
         self.networks.contains_key(network)
+    }
+
+    pub fn registrar_config(&self, reg_index: u32) -> Option<RegistrarConfig> {
+        self.networks
+            .values()
+            .find(|conf| conf.registrar_index == reg_index)
+            .cloned()
     }
 }
 
@@ -227,6 +235,28 @@ impl Default for HTTPConfig {
             host: ip,
             port,
             gh_endpoint,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PostgresConfig {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub password: Option<String>,
+    pub dbname: String,
+}
+
+impl Default for PostgresConfig {
+    fn default() -> Self {
+        let user = env!("USER");
+        Self {
+            dbname: "postgres".to_string(),
+            user: user.to_string(),
+            password: None,
+            host: "127.0.0.1".to_string(),
+            port: 5432,
         }
     }
 }

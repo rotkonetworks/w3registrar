@@ -25,9 +25,16 @@ port = 8080
 [redis]
 host = "0.0.0.0"
 port = 6379
-# leave them empty if you don't wish to an account
+# leave them empty if you don't have an account
 # username = "asdf"
 # password = "abc"
+
+[postgres]
+host = "0.0.0.0"
+port = 5432
+user = "tinker"
+# password = "asdf" Optional
+dbname = "name"
 
 [adapter]
 [adapter.matrix]
