@@ -29,7 +29,8 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "${W3REG_PORT:-18080}:8080"
+      - "${W3REG_PORT:-18080}:8080" # http
+      - "${W3REG_PORT:-18081}:8081" # websocket
     networks:
       - w3r_network
     volumes:

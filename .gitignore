@@ -8,3 +8,4 @@ TODO*
 .keyfile.kusama
 .keyfile.polkadot
 .keyfile.paseo
+config.production.toml
