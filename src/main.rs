@@ -2,11 +2,13 @@ mod adapter;
 mod api;
 mod config;
 mod node;
+mod postgres;
 mod runner;
 mod token;
 
 use anyhow::{Context as _, Result};
 use api::spawn_http_serv;
+use postgres::PostgresConnection;
 use std::panic;
 use tracing::{error, info, instrument};
 use tracing_subscriber::EnvFilter;
@@ -92,6 +94,12 @@ async fn main() -> Result<()> {
 
     // init redis conn pool
     RedisConnection::initialize_pool(&config.redis)?;
+
+    // init postgress table
+    PostgresConnection::new(&config.postgres)
+        .await?
+        .init_tables()
+        .await?;
 
     // initialize runner
     let mut runner = runner::Runner::new();
