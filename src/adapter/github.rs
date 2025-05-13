@@ -45,9 +45,11 @@ impl Github {
     }
 
     /// Validates that the state parameter is a valid token
-    pub async fn validate_state(state: &str) -> anyhow::Result<()> {
-        // TODO: check against stored state tokens
-        if state.is_empty() {
+    ///
+    /// Checks state has invalid length (8) since the state url param is a `An unguessable random string.`
+    /// [source](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#1-request-a-users-github-identity)
+    pub async fn validate_state_length(state: &str) -> anyhow::Result<()> {
+        if state.len() != 8 {
             return Err(anyhow!("Invalid state parameter"));
         }
         Ok(())
@@ -83,7 +85,16 @@ impl Github {
     }
 
     /// Gets github credentials to creates a [Github] instance
+    ///
+    /// # Errors
+    ///
+    /// - `params.state` is empty or has invalid length (8)
+    /// - Failed to send http request to the Github API.
+    /// - Fails to deserialize Github http response to [GithubCred]
     pub async fn new(params: &GithubRedirectStepTwoParams) -> anyhow::Result<Self> {
+        // Validate state parameter first
+        Github::validate_state_length(&params.state).await?;
+
         let cfg = GLOBAL_CONFIG
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
@@ -138,10 +149,12 @@ impl Github {
 
 /// Those params are added to the redirected url by github in step 2, check this for more
 ///
-/// https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#2-users-are-redirected-back-to-your-site-by-github
+/// [Resource](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#2-users-are-redirected-back-to-your-site-by-github)
 #[derive(Debug, Deserialize, Clone)]
 pub struct GithubRedirectStepTwoParams {
+    /// Temporarily Constructed by Github to finish step 2 in OAuth
     pub code: String,
+    /// Constructed by w3r to uniquely identify a Github OAuth request
     pub state: String,
 }
 
