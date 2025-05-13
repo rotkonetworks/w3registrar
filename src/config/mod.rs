@@ -250,7 +250,7 @@ pub struct PostgresConfig {
 
 impl Default for PostgresConfig {
     fn default() -> Self {
-        let user = env!("USER");
+        let user = std::env::var("USER").unwrap_or("root".into());
         Self {
             dbname: "postgres".to_string(),
             user: user.to_string(),
