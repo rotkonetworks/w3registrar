@@ -521,18 +521,24 @@ pub struct VerifyIdentityRequest {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", content = "payload")]
 pub enum WebSocketMessage {
-    SubscribeAccountState(SubscribeAccountStateRequest),
-    RequestVerificationChallenge(VerificationRequest),
-    VerifyIdentity(VerifyIdentityRequest),
-    JsonResult(JsonResultPayload),
+    SubscribeAccountState(IncomingSubscribeRequest),
+    VerifyPGPKey(IncomingVerifyPGPRequest),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VersionedMessage {
     pub version: String,
-    #[serde(rename = "type")]
-    pub message_type: String,
-    pub payload: serde_json::Value,
+    #[serde(flatten)]
+    pub payload: WebSocketMessage,
+}
+
+impl VersionedMessage {
+    fn message_type_str(&self) -> &'static str {
+        match self.payload {
+            WebSocketMessage::SubscribeAccountState(_) => "SubscribeAccountState",
+            WebSocketMessage::VerifyPGPKey(_) => "VerifyPGPKey",
+        }
+    }
 }
 
 // ------------------
@@ -733,24 +739,14 @@ impl SocketListener {
         message: VersionedMessage,
         subscriber: &mut Option<AccountId32>,
     ) -> anyhow::Result<serde_json::Value> {
-        match message.message_type.as_str() {
-            "SubscribeAccountState" => {
-                let incoming: IncomingSubscribeRequest = serde_json::from_value(message.payload)
-                    .map_err(|e| anyhow!("Invalid SubscribeAccountState payload: {}", e))?;
-
+        match message.payload {
+            WebSocketMessage::SubscribeAccountState(incoming) => {
                 self.handle_subscription_request(incoming, subscriber).await
             }
-            "VerifyPGPKey" => {
-                let incoming: IncomingVerifyPGPRequest = serde_json::from_value(message.payload)
-                    .map_err(|e| anyhow!("Invalid SubscribeAccountState payload: {}", e))?;
+            WebSocketMessage::VerifyPGPKey(incoming) => {
                 self.handle_pgp_verification_request(incoming, subscriber)
                     .await
             }
-            // TODO: Add endpoint for inputting verifications
-            _ => Err(anyhow!(
-                "Unsupported message type: {}",
-                message.message_type
-            )),
         }
     }
 
@@ -781,6 +777,12 @@ impl SocketListener {
                 }))
             }
         };
+
+        info!(
+            message_version = %versioned_msg.version,
+            message_type = %versioned_msg.message_type_str(),
+            "Received WebSocket message"
+        );
 
         // 3) check the version
         if versioned_msg.version.as_str() != "1.0" {
@@ -925,15 +927,6 @@ impl SocketListener {
         Ok(())
     }
 
-    pub async fn filter_message(message: &Message) -> Option<AccountId32> {
-        if let Message::Text(text) = message {
-            let parsed: VersionedMessage = serde_json::from_str(text).ok()?;
-            let account_str = parsed.payload.as_str()?;
-            return AccountId32::from_str(account_str).ok();
-        }
-        None
-    }
-
     async fn send_message(
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         msg: String,
@@ -1066,20 +1059,6 @@ impl SocketListener {
         subscriber: &mut Option<AccountId32>,
         sender: Sender<serde_json::Value>,
     ) -> bool {
-        let parsed: VersionedMessage = match serde_json::from_str(&text) {
-            Ok(msg) => msg,
-            Err(_) => {
-                error!("Failed to parse WebSocket message");
-                return true;
-            }
-        };
-
-        info!(
-            message_version = %parsed.version,
-            message_type = %parsed.message_type,
-            "Received WebSocket message"
-        );
-
         match self
             ._handle_incoming(Message::Text(text.into()), subscriber)
             .await
