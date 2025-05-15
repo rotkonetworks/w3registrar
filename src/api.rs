@@ -2149,11 +2149,6 @@ fn log_error_and_return(log: String) -> String {
 async fn github_oauth_callback(Query(params): Query<GithubRedirectStepTwoParams>) -> String {
     info!(params=?params, "PARAMS");
 
-    // Validate state parameter first
-    if let Err(e) = Github::validate_state(&params.state).await {
-        return log_error_and_return(format!("State validation failed: {e}"));
-    }
-
     // github instance to request acc info
     let gh = match Github::new(&params).await {
         Ok(gh) => gh,
