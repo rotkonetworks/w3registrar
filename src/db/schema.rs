@@ -3,23 +3,27 @@
 diesel::table! {
     account (id) {
         id -> Int4,
-        address -> Varchar,
-        network -> Varchar,
+        address_id -> Int4,
+        name -> Varchar,
+        varified -> Bool,
+        created_at -> Timestamp,
+        updated_at -> Timestamp,
     }
 }
 
 diesel::table! {
-    challenge (id) {
+    address (id) {
         id -> Int4,
-        account_id -> Int4,
-        secret -> Varchar,
+        network -> Varchar,
         created_at -> Timestamp,
+        updated_at -> Timestamp,
+        public_key -> Bytea,
     }
 }
 
-diesel::joinable!(challenge -> account (account_id));
+diesel::joinable!(account -> address (address_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     account,
-    challenge,
+    address,
 );
