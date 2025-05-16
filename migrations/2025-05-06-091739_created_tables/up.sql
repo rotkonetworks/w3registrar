@@ -1,16 +1,20 @@
 -- Your SQL goes here
-CREATE TABLE "account"(
+CREATE TABLE "address" (
 	"id" INT4 NOT NULL PRIMARY KEY,
 	"address" VARCHAR NOT NULL,
-	"network" VARCHAR NOT NULL
+	"network" VARCHAR NOT NULL,
+	"created_at" TIMESTAMP NOT NULL DEFAULT NOW(),
+	"updated_at" TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE "challenge"(
+CREATE TABLE "account" (
 	"id" INT4 NOT NULL PRIMARY KEY,
-	"account_id" INT4 NOT NULL,
-	"secret" VARCHAR NOT NULL,
-	"created_at" TIMESTAMP NOT NULL
+	"address_id" INT4 NOT NULL,
+	"name" VARCHAR NOT NULL,
+	"varified" BOOLEAN NOT NULL DEFAULT FALSE,
+	"created_at" TIMESTAMP NOT NULL DEFAULT NOW(),
+	"updated_at" TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
-ALTER TABLE "challenge" ADD CONSTRAINT "fk_challenge_account" FOREIGN KEY ("account_id") REFERENCES "account"("id") ON DELETE CASCADE;
+ALTER TABLE "account" ADD CONSTRAINT "fk_address_account" FOREIGN KEY ("address_id") REFERENCES "address"("id") ON DELETE CASCADE;
 
