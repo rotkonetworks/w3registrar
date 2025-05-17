@@ -5,6 +5,6 @@ config.toml
 .DS_Store
 TODO*
 .keyfile
-.keyfile.kusama
-.keyfile.polkadot
-.keyfile.paseo
+.keyfile.*
+metadata
+.env
