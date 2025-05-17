@@ -521,18 +521,26 @@ pub struct VerifyIdentityRequest {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", content = "payload")]
 pub enum WebSocketMessage {
-    SubscribeAccountState(SubscribeAccountStateRequest),
-    RequestVerificationChallenge(VerificationRequest),
-    VerifyIdentity(VerifyIdentityRequest),
-    JsonResult(JsonResultPayload),
+    SubscribeAccountState(IncomingSubscribeRequest),
+    VerifyPGPKey(IncomingVerifyPGPRequest),
 }
 
+// TODO: Further add Error messages as Versioned messages to standarize
+//       all possibe ws messages
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VersionedMessage {
     pub version: String,
-    #[serde(rename = "type")]
-    pub message_type: String,
-    pub payload: serde_json::Value,
+    #[serde(flatten)]
+    pub payload: WebSocketMessage,
+}
+
+impl VersionedMessage {
+    fn message_type_str(&self) -> &'static str {
+        match self.payload {
+            WebSocketMessage::SubscribeAccountState(_) => "SubscribeAccountState",
+            WebSocketMessage::VerifyPGPKey(_) => "VerifyPGPKey",
+        }
+    }
 }
 
 // ------------------
@@ -733,24 +741,14 @@ impl SocketListener {
         message: VersionedMessage,
         subscriber: &mut Option<AccountId32>,
     ) -> anyhow::Result<serde_json::Value> {
-        match message.message_type.as_str() {
-            "SubscribeAccountState" => {
-                let incoming: IncomingSubscribeRequest = serde_json::from_value(message.payload)
-                    .map_err(|e| anyhow!("Invalid SubscribeAccountState payload: {}", e))?;
-
+        match message.payload {
+            WebSocketMessage::SubscribeAccountState(incoming) => {
                 self.handle_subscription_request(incoming, subscriber).await
             }
-            "VerifyPGPKey" => {
-                let incoming: IncomingVerifyPGPRequest = serde_json::from_value(message.payload)
-                    .map_err(|e| anyhow!("Invalid SubscribeAccountState payload: {}", e))?;
+            WebSocketMessage::VerifyPGPKey(incoming) => {
                 self.handle_pgp_verification_request(incoming, subscriber)
                     .await
             }
-            // TODO: Add endpoint for inputting verifications
-            _ => Err(anyhow!(
-                "Unsupported message type: {}",
-                message.message_type
-            )),
         }
     }
 
@@ -759,12 +757,12 @@ impl SocketListener {
         &mut self,
         message: Message,
         subscriber: &mut Option<AccountId32>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<serde_json::Value, serde_json::Value> {
         // 1) ensure the message is text
         let text = match message {
             Message::Text(t) => t,
             _ => {
-                return Ok(json!({
+                return Err(json!({
                     "type": "error",
                     "message": "Unsupported message format"
                 }))
@@ -775,16 +773,22 @@ impl SocketListener {
         let versioned_msg: VersionedMessage = match serde_json::from_str(&text) {
             Ok(v) => v,
             Err(e) => {
-                return Ok(json!({
+                return Err(json!({
                     "type": "error",
                     "message": format!("Failed to parse message: {}", e)
                 }))
             }
         };
 
+        info!(
+            message_version = %versioned_msg.version,
+            message_type = %versioned_msg.message_type_str(),
+            "Received WebSocket message"
+        );
+
         // 3) check the version
         if versioned_msg.version.as_str() != "1.0" {
-            return Ok(json!({
+            return Err(json!({
                 "type": "error",
                 "message": format!("Unsupported version: {}", versioned_msg.version),
             }));
@@ -793,7 +797,7 @@ impl SocketListener {
         // 4) handle the v1 version
         match self.process_v1(versioned_msg, subscriber).await {
             Ok(response) => Ok(response),
-            Err(e) => Ok(json!({
+            Err(e) => Err(json!({
                 "type": "error",
                 "message": e.to_string()
             })),
@@ -925,15 +929,6 @@ impl SocketListener {
         Ok(())
     }
 
-    pub async fn filter_message(message: &Message) -> Option<AccountId32> {
-        if let Message::Text(text) = message {
-            let parsed: VersionedMessage = serde_json::from_str(text).ok()?;
-            let account_str = parsed.payload.as_str()?;
-            return AccountId32::from_str(account_str).ok();
-        }
-        None
-    }
-
     async fn send_message(
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         msg: String,
@@ -951,15 +946,15 @@ impl SocketListener {
     }
 
     #[instrument(skip_all)]
-    async fn handle_non_text_message() -> bool {
+    async fn handle_non_text_message() -> anyhow::Result<()> {
         info!("Recived non text message");
-        true
+        Ok(())
     }
 
     #[instrument(skip_all)]
-    async fn handle_connection_errors(error: Error) -> bool {
+    async fn handle_connection_errors(error: Error) -> anyhow::Result<()> {
         error!(error = %error, "WebSocket error");
-        false
+        Ok(())
     }
 
     #[instrument(skip_all, parent = &self.span)]
@@ -974,7 +969,8 @@ impl SocketListener {
         loop {
             tokio::select! {
                 Some(msg) = receiver.next() => {
-                    if !self.handle_channel_message(&ws_write, msg).await {
+                    if let Err(e) = self.handle_channel_message(&ws_write, msg).await {
+                        error!(error = %e,"Error: ");
                         break;
                     }
                 }
@@ -986,7 +982,10 @@ impl SocketListener {
                             break;
                         }
                         _ => {
-                            if !self.handle_ws_message(&ws_write, msg_result, &mut subscriber, sender.clone()).await {
+                            if let Err(e) = self.handle_ws_message(
+                                &ws_write, msg_result, &mut subscriber, sender.clone()
+                            ).await {
+                                error!(error = %e, "Error");
                                 Self::close_ws_connection().await;
                                 break;
                             }
@@ -1013,28 +1012,15 @@ impl SocketListener {
         &self,
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         msg: serde_json::Value,
-    ) -> bool {
+    ) -> std::result::Result<(), anyhow::Error> {
         let resp_type = msg
             .get("type")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
 
-        match serde_json::to_string(&msg) {
-            Ok(serialized) => {
-                info!(response_type = %resp_type, "Sending response");
-                match Self::send_message(write, serialized).await {
-                    Ok(_) => true,
-                    Err(e) => {
-                        error!(error = %e, "Failed to send message");
-                        false
-                    }
-                }
-            }
-            Err(e) => {
-                error!(error = %e, "Failed to serialize response");
-                true
-            }
-        }
+        let serialized = serde_json::to_string(&msg)?;
+        info!(response_type = %resp_type, "Sending response");
+        Self::send_message(write, serialized).await
     }
 
     #[instrument(skip_all, parent = &self.span)]
@@ -1044,7 +1030,7 @@ impl SocketListener {
         msg_result: Result<Message, tokio_tungstenite::tungstenite::Error>,
         subscriber: &mut Option<AccountId32>,
         sender: Sender<serde_json::Value>,
-    ) -> bool {
+    ) -> anyhow::Result<()> {
         match msg_result {
             Ok(Message::Text(bytes)) => {
                 // Convert Utf8Bytes to string using to_string()
@@ -1052,7 +1038,7 @@ impl SocketListener {
                 self.handle_text_message(write, text, subscriber, sender)
                     .await
             }
-            Ok(Message::Close(_)) => false,
+            Ok(Message::Close(_)) => Ok(()),
             Ok(_) => Self::handle_non_text_message().await,
             Err(e) => Self::handle_connection_errors(e).await,
         }
@@ -1065,38 +1051,14 @@ impl SocketListener {
         text: String,
         subscriber: &mut Option<AccountId32>,
         sender: Sender<serde_json::Value>,
-    ) -> bool {
-        let parsed: VersionedMessage = match serde_json::from_str(&text) {
-            Ok(msg) => msg,
-            Err(_) => {
-                error!("Failed to parse WebSocket message");
-                return true;
-            }
-        };
-
-        info!(
-            message_version = %parsed.version,
-            message_type = %parsed.message_type,
-            "Received WebSocket message"
-        );
-
+    ) -> anyhow::Result<()> {
         match self
             ._handle_incoming(Message::Text(text.into()), subscriber)
             .await
         {
             Ok(response) => {
-                let serialized = match serde_json::to_string(&response) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!(error = %e, "Failed to serialize response");
-                        return true;
-                    }
-                };
-
-                if let Err(e) = Self::send_message(write, serialized).await {
-                    error!(error = %e, "Failed to send response");
-                    return false;
-                }
+                let serialized = serde_json::to_string(&response)?;
+                Self::send_message(write, serialized).await?;
 
                 if let Some(id) = subscriber.take() {
                     info!(subscriber_id = %id, "New subscriber registered");
@@ -1108,7 +1070,7 @@ impl SocketListener {
                         }
                     });
                 }
-                true
+                Ok(())
             }
             Err(e) => self.handle_error_response(write, e).await,
         }
@@ -1160,26 +1122,26 @@ impl SocketListener {
     async fn handle_error_response(
         &self,
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
-        error: anyhow::Error,
-    ) -> bool {
+        error: serde_json::Value,
+    ) -> anyhow::Result<()> {
         error!(error = %error, "Error handling message");
 
         let error_response = serde_json::json!({
             "version": "1.0",
-            "error": error.to_string()
+            "payload": error
         });
 
         match serde_json::to_string(&error_response) {
             Ok(serialized) => match Self::send_message(write, serialized).await {
-                Ok(_) => true,
+                Ok(_) => Ok(()),
                 Err(e) => {
                     error!(error = %e, "Failed to send error response");
-                    false
+                    Err(anyhow!("Failed to send error response, {e}"))
                 }
             },
             Err(e) => {
                 error!(error = %e, "Failed to serialize error response");
-                true
+                Err(anyhow!("Failed to serialize error response, {e}"))
             }
         }
     }
@@ -2148,11 +2110,6 @@ fn log_error_and_return(log: String) -> String {
 
 async fn github_oauth_callback(Query(params): Query<GithubRedirectStepTwoParams>) -> String {
     info!(params=?params, "PARAMS");
-
-    // Validate state parameter first
-    if let Err(e) = Github::validate_state(&params.state).await {
-        return log_error_and_return(format!("State validation failed: {e}"));
-    }
 
     // github instance to request acc info
     let gh = match Github::new(&params).await {
