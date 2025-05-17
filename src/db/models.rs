@@ -10,8 +10,8 @@ use chrono::NaiveDateTime;
 pub struct PgAddress {
     pub id: i32,
     pub network: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
     pub public_key: Vec<u8>,
 }
 
@@ -39,8 +39,8 @@ pub struct Account {
     pub type_: String,
     pub name: String,
     pub varified: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
 }
 
 #[derive(Insertable, Debug, Clone, Serialize)]
