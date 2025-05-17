@@ -8,6 +8,8 @@ diesel::table! {
         varified -> Bool,
         created_at -> Timestamp,
         updated_at -> Timestamp,
+        #[sql_name = "type"]
+        type_ -> Varchar,
     }
 }
 
