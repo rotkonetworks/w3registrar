@@ -3,6 +3,7 @@
 use anyhow::anyhow;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use diesel::RunQueryDsl;
 use futures::channel::mpsc::{self, Sender};
 use futures::stream::SplitSink;
 use futures::stream::SplitStream;
@@ -33,6 +34,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 use tracing::{debug, error, info, span, Level};
 
+use crate::db;
+use crate::db::models::NewPgAddress;
 use crate::{
     adapter::pgp::PGPHelper,
     config::{RedisConfig, RegistrarConfig, GLOBAL_CONFIG},
@@ -616,6 +619,30 @@ impl Listener {
         // save new state
         conn.init_verification_state(network, &request.payload, &verification, &accounts)
             .await?;
+
+        let pg_connection = db::get_connection();
+
+        let new_address = NewPgAddress {
+            network: network,
+            public_key: request.payload.as_ref(),
+        };
+        let inserted_address = diesel::insert_into(db::schema::address::table)
+            .values(&new_address)
+            .get_result::<db::models::PgAddress>(&pg_connection)?;
+        info!("PSQL Inserted address: {:?}", inserted_address);
+
+        for (account, is_done) in accounts {
+            let new_account = db::models::NewAccount {
+                address_id: inserted_address.id,
+                type_: &account.account_type().to_string(),
+                name: &account.inner(),
+                varified: is_done,
+            };
+            let inserted_account = diesel::insert_into(db::schema::account::table)
+                .values(&new_account)
+                .execute(&pg_connection)?;
+            info!("PSQL Inserted account: {:?}", inserted_account);
+        }
 
         // get hash and build state message
         let hash = self.hash_identity_info(&registration.info);
