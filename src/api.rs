@@ -3,6 +3,7 @@
 use anyhow::anyhow;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use diesel::dsl::any;
 use diesel::RunQueryDsl;
 use futures::channel::mpsc::{self, Sender};
 use futures::stream::SplitSink;
@@ -646,7 +647,7 @@ impl Listener {
             })
         ;
 
-        for (account, is_done) in accounts {
+        for (account, is_done) in &accounts {
             let now = chrono::Utc::now().naive_utc();
             // Use a simple select query to avoid any potential type mismatches
             let existing_account = db::schema::account::table
@@ -675,6 +676,17 @@ impl Listener {
                     .expect("Failed to insert new account");
             }
         }
+        // Delete every account that is not in the list
+        diesel::delete(db::schema::account::table)
+            .filter(db::schema::account::address_id.eq(pg_address.id))
+            .filter(
+                db::schema::account::type_.ne(any(&accounts.iter()
+                    .map(|(acc, _)| acc.account_type().to_string())
+                    .collect::<Vec<_>>()
+                ))
+            )
+            .execute(&pg_connection)
+            .expect("Failed to delete accounts");
 
         // get hash and build state message
         let hash = self.hash_identity_info(&registration.info);
