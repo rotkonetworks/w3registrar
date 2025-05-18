@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use serde::{Serialize};
 use diesel::prelude::*;
 use crate::db::schema::address;
@@ -25,7 +24,7 @@ pub struct NewPgAddress<'a> {
 // Updatable struct for address
 #[derive(AsChangeset, Debug, Clone)]
 #[table_name = "address"]
-pub struct UpdateAddress<'a> {
+pub struct UpdatePgAddress<'a> {
     pub network: Option<&'a str>,
     pub public_key: Option<&'a [u8]>,
     pub updated_at: Option<NaiveDateTime>,
@@ -33,7 +32,7 @@ pub struct UpdateAddress<'a> {
 
 #[derive(Queryable, Identifiable, Debug, Clone, Serialize)]
 #[table_name = "account"]
-pub struct Account {
+pub struct PgAccount {
     pub id: i32,
     pub address_id: i32,
     pub type_: String,
@@ -45,7 +44,7 @@ pub struct Account {
 
 #[derive(Insertable, Debug, Clone, Serialize)]
 #[table_name = "account"]
-pub struct NewAccount<'a> {
+pub struct NewPgAccount<'a> {
     pub address_id: i32,
     pub type_: &'a str,
     pub name: &'a str,
@@ -55,7 +54,7 @@ pub struct NewAccount<'a> {
 // Updatable struct for account
 #[derive(AsChangeset, Debug, Clone)]
 #[table_name = "account"]
-pub struct UpdateAccount<'a> {
+pub struct UpdatePgAccount<'a> {
     pub type_: Option<&'a str>,
     pub name: Option<&'a str>,
     pub varified: Option<bool>,
