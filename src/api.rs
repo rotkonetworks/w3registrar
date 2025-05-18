@@ -36,6 +36,10 @@ use tracing::{debug, error, info, span, Level};
 
 use crate::db;
 use crate::db::models::NewPgAddress;
+use crate::db::models::PgAddress;
+use diesel::QueryDsl;
+use diesel::OptionalExtension;
+use diesel::ExpressionMethods;
 use crate::{
     adapter::pgp::PGPHelper,
     config::{RedisConfig, RegistrarConfig, GLOBAL_CONFIG},
@@ -622,26 +626,54 @@ impl Listener {
 
         let pg_connection = db::get_connection();
 
-        let new_address = NewPgAddress {
-            network: network,
-            public_key: request.payload.as_ref(),
-        };
-        let inserted_address = diesel::insert_into(db::schema::address::table)
-            .values(&new_address)
-            .get_result::<db::models::PgAddress>(&pg_connection)?;
-        info!("PSQL Inserted address: {:?}", inserted_address);
+        // Explicitly specify we want to use the AsRef<[u8]> implementation
+        let public_key_bytes: &[u8] = <AccountId32 as AsRef<[u8]>>::as_ref(&request.payload);
+        
+        let pg_address = db::schema::address::table
+            .filter(db::schema::address::network.eq(network))
+            .filter(db::schema::address::public_key.eq(public_key_bytes))
+            .first::<PgAddress>(&pg_connection)
+            .optional()?
+            // TODO set updated_at
+            .unwrap_or_else(|| {
+                diesel::insert_into(db::schema::address::table)
+                    .values(NewPgAddress {
+                        network,
+                        public_key: public_key_bytes,
+                    })
+                    .get_result::<PgAddress>(&pg_connection)
+                    .expect("Failed to insert new address")
+            })
+        ;
 
         for (account, is_done) in accounts {
-            let new_account = db::models::NewAccount {
-                address_id: inserted_address.id,
-                type_: &account.account_type().to_string(),
-                name: &account.inner(),
-                varified: is_done,
-            };
-            let inserted_account = diesel::insert_into(db::schema::account::table)
-                .values(&new_account)
-                .execute(&pg_connection)?;
-            info!("PSQL Inserted account: {:?}", inserted_account);
+            let now = chrono::Utc::now().naive_utc();
+            // Use a simple select query to avoid any potential type mismatches
+            let existing_account = db::schema::account::table
+                .filter(db::schema::account::address_id.eq(pg_address.id))
+                .filter(db::schema::account::type_.eq(account.account_type().to_string()))
+                .select((db::schema::account::id, db::schema::account::type_))
+                .first::<(i32, String)>(&pg_connection)
+                .optional()?;
+            
+            if let Some(_) = existing_account {
+                // Account exists, no need to create a new one
+                // If you need to update it, you would do so here
+                // TODO Update updated_at
+            } else {
+                // Insert a new account
+                diesel::insert_into(db::schema::account::table)
+                    .values((
+                        db::schema::account::address_id.eq(pg_address.id),
+                        db::schema::account::type_.eq(account.account_type().to_string()),
+                        db::schema::account::name.eq(account.inner()),
+                        db::schema::account::varified.eq(is_done),
+                        db::schema::account::created_at.eq(now),
+                        db::schema::account::updated_at.eq(now),
+                    ))
+                    .execute(&pg_connection)
+                    .expect("Failed to insert new account");
+            }
         }
 
         // get hash and build state message
