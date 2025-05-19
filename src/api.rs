@@ -77,8 +77,7 @@ pub struct AccountVerification {
     pub updated_at: DateTime<Utc>,
     pub network: String,
     /// AccountType: challengeInfo
-    //TODO: change key to AccountType isntead of String
-    pub challenges: HashMap<String, ChallengeInfo>,
+    pub challenges: HashMap<AccountType, ChallengeInfo>,
     pub completed: bool,
 }
 
@@ -108,7 +107,7 @@ impl AccountVerification {
         token: Option<String>,
     ) {
         self.challenges.insert(
-            account_type.to_string(),
+            account_type.to_owned(),
             ChallengeInfo {
                 name,
                 done: token.is_none(), // for now if no token provided, challenge is done
@@ -124,7 +123,7 @@ impl AccountVerification {
     }
 
     pub fn mark_challenge_done(&mut self, account_type: &AccountType) -> anyhow::Result<()> {
-        match self.challenges.get_mut(&account_type.to_string()) {
+        match self.challenges.get_mut(&account_type) {
             Some(challenge) => {
                 challenge.done = true;
                 challenge.token = None;
@@ -175,16 +174,26 @@ impl Display for Account {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Copy, Hash)]
+#[serde(rename_all = "snake_case")]
 pub enum AccountType {
+    #[serde(alias = "discord", alias = "DISCORD")]
     Discord,
-    #[serde(rename = "display_name")]
+    #[serde(alias = "display_name", alias = "DISPLAY_NAME")]
+    #[serde(rename = "DisplayName")]
     Display,
+    #[serde(alias = "email", alias = "EMAIL")]
     Email,
+    #[serde(alias = "matrix", alias = "MATRIX")]
     Matrix,
+    #[serde(alias = "twitter", alias = "TWITTER")]
     Twitter,
+    #[serde(alias = "github", alias = "GITHUB")]
     Github,
+    #[serde(alias = "legal", alias = "LEGAL")]
     Legal,
+    #[serde(alias = "web", alias = "WEB")]
     Web,
+    #[serde(alias = "pgp_fingerprint", alias = "PGP_FINGERPRINT")]
     PGPFingerprint,
 }
 
@@ -525,6 +534,8 @@ pub enum WebSocketMessage {
     VerifyPGPKey(IncomingVerifyPGPRequest),
 }
 
+// TODO: Further add Error messages as Versioned messages to standarize
+//       all possibe ws messages
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VersionedMessage {
     pub version: String,
@@ -708,7 +719,7 @@ impl SocketListener {
 
             // only add a new challenge if not already present.
             // if *is_done or it's a display_name, we set `token=None` so it's considered done.
-            if !verification.challenges.contains_key(&acc_type.to_string()) {
+            if !verification.challenges.contains_key(&acc_type) {
                 let token = account.generate_token(*is_done).await;
                 verification.add_challenge(&acc_type, name.clone(), token);
             }
@@ -755,15 +766,15 @@ impl SocketListener {
         &mut self,
         message: Message,
         subscriber: &mut Option<AccountId32>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<serde_json::Value, ErrorPayload> {
         // 1) ensure the message is text
         let text = match message {
             Message::Text(t) => t,
             _ => {
-                return Ok(json!({
-                    "type": "error",
-                    "message": "Unsupported message format"
-                }))
+                return Err(ErrorPayload::new(
+                        ErrorType::MessageTypeNotSupported,
+                        ErrorMessage("Unsupported message format".to_string()),
+                ));
             }
         };
 
@@ -771,10 +782,10 @@ impl SocketListener {
         let versioned_msg: VersionedMessage = match serde_json::from_str(&text) {
             Ok(v) => v,
             Err(e) => {
-                return Ok(json!({
-                    "type": "error",
-                    "message": format!("Failed to parse message: {}", e)
-                }))
+                return Err(ErrorPayload::new(
+                    ErrorType::UnknownMessageFormat,
+                    ErrorMessage(format!("Failed to parse message: {}", e)),
+                ));
             }
         };
 
@@ -786,16 +797,16 @@ impl SocketListener {
 
         // 3) check the version
         if versioned_msg.version.as_str() != "1.0" {
-            return Ok(json!({
-                "type": "error",
-                "message": format!("Unsupported version: {}", versioned_msg.version),
-            }));
+            return Err(ErrorPayload::new(
+                ErrorType::VersionNotSupported,
+                ErrorMessage(format!("Unsupported version: {}", versioned_msg.version)),
+            ));
         }
 
         // 4) handle the v1 version
         match self.process_v1(versioned_msg, subscriber).await {
             Ok(response) => Ok(response),
-            Err(e) => Ok(json!({
+            Err(e) => Err(json!({
                 "type": "error",
                 "message": e.to_string()
             })),
@@ -944,15 +955,15 @@ impl SocketListener {
     }
 
     #[instrument(skip_all)]
-    async fn handle_non_text_message() -> bool {
+    async fn handle_non_text_message() -> anyhow::Result<()> {
         info!("Recived non text message");
-        true
+        Ok(())
     }
 
     #[instrument(skip_all)]
-    async fn handle_connection_errors(error: Error) -> bool {
+    async fn handle_connection_errors(error: Error) -> anyhow::Result<()> {
         error!(error = %error, "WebSocket error");
-        false
+        Ok(())
     }
 
     #[instrument(skip_all, parent = &self.span)]
@@ -967,7 +978,8 @@ impl SocketListener {
         loop {
             tokio::select! {
                 Some(msg) = receiver.next() => {
-                    if !self.handle_channel_message(&ws_write, msg).await {
+                    if let Err(e) = self.handle_channel_message(&ws_write, msg).await {
+                        error!(error = %e,"Error: ");
                         break;
                     }
                 }
@@ -979,7 +991,10 @@ impl SocketListener {
                             break;
                         }
                         _ => {
-                            if !self.handle_ws_message(&ws_write, msg_result, &mut subscriber, sender.clone()).await {
+                            if let Err(e) = self.handle_ws_message(
+                                &ws_write, msg_result, &mut subscriber, sender.clone()
+                            ).await {
+                                error!(error = %e, "Error");
                                 Self::close_ws_connection().await;
                                 break;
                             }
@@ -1006,28 +1021,15 @@ impl SocketListener {
         &self,
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         msg: serde_json::Value,
-    ) -> bool {
+    ) -> std::result::Result<(), anyhow::Error> {
         let resp_type = msg
             .get("type")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
 
-        match serde_json::to_string(&msg) {
-            Ok(serialized) => {
-                info!(response_type = %resp_type, "Sending response");
-                match Self::send_message(write, serialized).await {
-                    Ok(_) => true,
-                    Err(e) => {
-                        error!(error = %e, "Failed to send message");
-                        false
-                    }
-                }
-            }
-            Err(e) => {
-                error!(error = %e, "Failed to serialize response");
-                true
-            }
-        }
+        let serialized = serde_json::to_string(&msg)?;
+        info!(response_type = %resp_type, "Sending response");
+        Self::send_message(write, serialized).await
     }
 
     #[instrument(skip_all, parent = &self.span)]
@@ -1037,7 +1039,7 @@ impl SocketListener {
         msg_result: Result<Message, tokio_tungstenite::tungstenite::Error>,
         subscriber: &mut Option<AccountId32>,
         sender: Sender<serde_json::Value>,
-    ) -> bool {
+    ) -> anyhow::Result<()> {
         match msg_result {
             Ok(Message::Text(bytes)) => {
                 // Convert Utf8Bytes to string using to_string()
@@ -1045,7 +1047,7 @@ impl SocketListener {
                 self.handle_text_message(write, text, subscriber, sender)
                     .await
             }
-            Ok(Message::Close(_)) => false,
+            Ok(Message::Close(_)) => Ok(()),
             Ok(_) => Self::handle_non_text_message().await,
             Err(e) => Self::handle_connection_errors(e).await,
         }
@@ -1058,24 +1060,14 @@ impl SocketListener {
         text: String,
         subscriber: &mut Option<AccountId32>,
         sender: Sender<serde_json::Value>,
-    ) -> bool {
+    ) -> anyhow::Result<()> {
         match self
             ._handle_incoming(Message::Text(text.into()), subscriber)
             .await
         {
             Ok(response) => {
-                let serialized = match serde_json::to_string(&response) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!(error = %e, "Failed to serialize response");
-                        return true;
-                    }
-                };
-
-                if let Err(e) = Self::send_message(write, serialized).await {
-                    error!(error = %e, "Failed to send response");
-                    return false;
-                }
+                let serialized = serde_json::to_string(&response)?;
+                Self::send_message(write, serialized).await?;
 
                 if let Some(id) = subscriber.take() {
                     info!(subscriber_id = %id, "New subscriber registered");
@@ -1087,7 +1079,7 @@ impl SocketListener {
                         }
                     });
                 }
-                true
+                Ok(())
             }
             Err(e) => self.handle_error_response(write, e).await,
         }
@@ -1139,26 +1131,23 @@ impl SocketListener {
     async fn handle_error_response(
         &self,
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
-        error: anyhow::Error,
-    ) -> bool {
+        error: ErrorPayload,
+    ) -> anyhow::Result<()> {
         error!(error = %error, "Error handling message");
 
-        let error_response = serde_json::json!({
-            "version": "1.0",
-            "error": error.to_string()
-        });
+        let error_response = WSError::new(error);
 
         match serde_json::to_string(&error_response) {
             Ok(serialized) => match Self::send_message(write, serialized).await {
-                Ok(_) => true,
+                Ok(_) => Ok(()),
                 Err(e) => {
                     error!(error = %e, "Failed to send error response");
-                    false
+                    Err(anyhow!("Failed to send error response, {e}"))
                 }
             },
             Err(e) => {
                 error!(error = %e, "Failed to serialize error response");
-                true
+                Err(anyhow!("Failed to serialize error response, {e}"))
             }
         }
     }
@@ -1813,7 +1802,6 @@ impl RedisConnection {
     #[instrument(skip_all, name = "keyspace_notification", parent = None)]
     async fn enable_keyspace_notifications(conn: &mut ConnectionManager) -> anyhow::Result<()> {
         info!("Enabling keyspace notification");
-      
         match conn
             .send_packed_command(
                 redis::cmd("CONFIG")
@@ -1847,7 +1835,7 @@ impl RedisConnection {
         &mut self,
         network: &Network,
         account_id: &AccountId32,
-    ) -> anyhow::Result<Vec<Vec<String>>> {
+    ) -> anyhow::Result<Vec<Vec<(AccountType, String)>>> {
         info!(account_id = ?account_id.to_string(), network = ?network, "Getting challenges");
         let state = match self.get_verification_state(network, account_id).await? {
             Some(s) => s,
@@ -1863,7 +1851,7 @@ impl RedisConnection {
                 challenge
                     .token
                     .as_ref()
-                    .map(|token| vec![acc_type.clone(), token.clone()])
+                    .map(|token| vec![(acc_type.clone(), token.clone())])
             })
             .collect();
 
@@ -1891,17 +1879,16 @@ impl RedisConnection {
 
         for (acc_type, challenge) in &state.challenges {
             if challenge.done {
-                match acc_type.as_str() {
-                    "discord" => fields.discord = true,
-                    "twitter" => fields.twitter = true,
-                    "matrix" => fields.matrix = true,
-                    "display_name" => fields.display_name = true,
-                    "email" => fields.email = true,
-                    "github" => fields.github = true,
-                    "legal" => fields.legal = true,
-                    "web" => fields.web = true,
-                    "pgp_fingerprint" => fields.pgp_fingerprint = true,
-                    _ => {}
+                match acc_type {
+                    AccountType::Discord => fields.discord = true,
+                    AccountType::Display => fields.display_name = true,
+                    AccountType::Email => fields.email = true,
+                    AccountType::Matrix => fields.matrix = true,
+                    AccountType::Twitter => fields.twitter = true,
+                    AccountType::Github => fields.github = true,
+                    AccountType::Legal => fields.legal = true,
+                    AccountType::Web => fields.web = true,
+                    AccountType::PGPFingerprint => fields.pgp_fingerprint = true,
                 }
             }
         }
@@ -1939,8 +1926,7 @@ impl RedisConnection {
         for account in accounts.keys() {
             let key = format!("{account}|{network}|{account_id}");
             let pipe = pipe.cmd("SET").arg(&key);
-            if let Some(challenge_info) = state.challenges.get(&account.account_type().to_string())
-            {
+            if let Some(challenge_info) = state.challenges.get(&account.account_type()) {
                 pipe.arg(&serde_json::to_string(&challenge_info)?);
             }
         }
@@ -1980,8 +1966,7 @@ impl RedisConnection {
         let mut pipe = redis::pipe();
 
         for (acc_type, info) in state.challenges.iter() {
-            let account_type = AccountType::from_str(acc_type)?;
-            let acc_key = Account::from_type_and_value(account_type, info.name.clone());
+            let acc_key = Account::from_type_and_value(acc_type.to_owned(), info.name.clone());
             let key = format!("{acc_key}|{network}|{account_id}");
             pipe.cmd("SET")
                 .arg(&key)
