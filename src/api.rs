@@ -77,8 +77,7 @@ pub struct AccountVerification {
     pub updated_at: DateTime<Utc>,
     pub network: String,
     /// AccountType: challengeInfo
-    //TODO: change key to AccountType isntead of String
-    pub challenges: HashMap<String, ChallengeInfo>,
+    pub challenges: HashMap<AccountType, ChallengeInfo>,
     pub completed: bool,
 }
 
@@ -108,7 +107,7 @@ impl AccountVerification {
         token: Option<String>,
     ) {
         self.challenges.insert(
-            account_type.to_string(),
+            account_type.to_owned(),
             ChallengeInfo {
                 name,
                 done: token.is_none(), // for now if no token provided, challenge is done
@@ -124,7 +123,7 @@ impl AccountVerification {
     }
 
     pub fn mark_challenge_done(&mut self, account_type: &AccountType) -> anyhow::Result<()> {
-        match self.challenges.get_mut(&account_type.to_string()) {
+        match self.challenges.get_mut(&account_type) {
             Some(challenge) => {
                 challenge.done = true;
                 challenge.token = None;
@@ -175,16 +174,26 @@ impl Display for Account {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Copy, Hash)]
+#[serde(rename_all = "snake_case")]
 pub enum AccountType {
+    #[serde(alias = "discord", alias = "DISCORD")]
     Discord,
-    #[serde(rename = "display_name")]
+    #[serde(alias = "display_name", alias = "DISPLAY_NAME")]
+    #[serde(rename = "DisplayName")]
     Display,
+    #[serde(alias = "email", alias = "EMAIL")]
     Email,
+    #[serde(alias = "matrix", alias = "MATRIX")]
     Matrix,
+    #[serde(alias = "twitter", alias = "TWITTER")]
     Twitter,
+    #[serde(alias = "github", alias = "GITHUB")]
     Github,
+    #[serde(alias = "legal", alias = "LEGAL")]
     Legal,
+    #[serde(alias = "web", alias = "WEB")]
     Web,
+    #[serde(alias = "pgp_fingerprint", alias = "PGP_FINGERPRINT")]
     PGPFingerprint,
 }
 
@@ -708,7 +717,7 @@ impl SocketListener {
 
             // only add a new challenge if not already present.
             // if *is_done or it's a display_name, we set `token=None` so it's considered done.
-            if !verification.challenges.contains_key(&acc_type.to_string()) {
+            if !verification.challenges.contains_key(&acc_type) {
                 let token = account.generate_token(*is_done).await;
                 verification.add_challenge(&acc_type, name.clone(), token);
             }
@@ -1813,7 +1822,6 @@ impl RedisConnection {
     #[instrument(skip_all, name = "keyspace_notification", parent = None)]
     async fn enable_keyspace_notifications(conn: &mut ConnectionManager) -> anyhow::Result<()> {
         info!("Enabling keyspace notification");
-      
         match conn
             .send_packed_command(
                 redis::cmd("CONFIG")
@@ -1847,7 +1855,7 @@ impl RedisConnection {
         &mut self,
         network: &Network,
         account_id: &AccountId32,
-    ) -> anyhow::Result<Vec<Vec<String>>> {
+    ) -> anyhow::Result<Vec<Vec<(AccountType, String)>>> {
         info!(account_id = ?account_id.to_string(), network = ?network, "Getting challenges");
         let state = match self.get_verification_state(network, account_id).await? {
             Some(s) => s,
@@ -1863,7 +1871,7 @@ impl RedisConnection {
                 challenge
                     .token
                     .as_ref()
-                    .map(|token| vec![acc_type.clone(), token.clone()])
+                    .map(|token| vec![(acc_type.clone(), token.clone())])
             })
             .collect();
 
@@ -1891,17 +1899,16 @@ impl RedisConnection {
 
         for (acc_type, challenge) in &state.challenges {
             if challenge.done {
-                match acc_type.as_str() {
-                    "discord" => fields.discord = true,
-                    "twitter" => fields.twitter = true,
-                    "matrix" => fields.matrix = true,
-                    "display_name" => fields.display_name = true,
-                    "email" => fields.email = true,
-                    "github" => fields.github = true,
-                    "legal" => fields.legal = true,
-                    "web" => fields.web = true,
-                    "pgp_fingerprint" => fields.pgp_fingerprint = true,
-                    _ => {}
+                match acc_type {
+                    AccountType::Discord => fields.discord = true,
+                    AccountType::Display => fields.display_name = true,
+                    AccountType::Email => fields.email = true,
+                    AccountType::Matrix => fields.matrix = true,
+                    AccountType::Twitter => fields.twitter = true,
+                    AccountType::Github => fields.github = true,
+                    AccountType::Legal => fields.legal = true,
+                    AccountType::Web => fields.web = true,
+                    AccountType::PGPFingerprint => fields.pgp_fingerprint = true,
                 }
             }
         }
@@ -1939,8 +1946,7 @@ impl RedisConnection {
         for account in accounts.keys() {
             let key = format!("{account}|{network}|{account_id}");
             let pipe = pipe.cmd("SET").arg(&key);
-            if let Some(challenge_info) = state.challenges.get(&account.account_type().to_string())
-            {
+            if let Some(challenge_info) = state.challenges.get(&account.account_type()) {
                 pipe.arg(&serde_json::to_string(&challenge_info)?);
             }
         }
@@ -1980,8 +1986,7 @@ impl RedisConnection {
         let mut pipe = redis::pipe();
 
         for (acc_type, info) in state.challenges.iter() {
-            let account_type = AccountType::from_str(acc_type)?;
-            let acc_key = Account::from_type_and_value(account_type, info.name.clone());
+            let acc_key = Account::from_type_and_value(acc_type.to_owned(), info.name.clone());
             let key = format!("{acc_key}|{network}|{account_id}");
             pipe.cmd("SET")
                 .arg(&key)
