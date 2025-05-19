@@ -534,6 +534,8 @@ pub enum WebSocketMessage {
     VerifyPGPKey(IncomingVerifyPGPRequest),
 }
 
+// TODO: Further add Error messages as Versioned messages to standarize
+//       all possibe ws messages
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VersionedMessage {
     pub version: String,
@@ -764,15 +766,15 @@ impl SocketListener {
         &mut self,
         message: Message,
         subscriber: &mut Option<AccountId32>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<serde_json::Value, ErrorPayload> {
         // 1) ensure the message is text
         let text = match message {
             Message::Text(t) => t,
             _ => {
-                return Ok(json!({
-                    "type": "error",
-                    "message": "Unsupported message format"
-                }))
+                return Err(ErrorPayload::new(
+                        ErrorType::MessageTypeNotSupported,
+                        ErrorMessage("Unsupported message format".to_string()),
+                ));
             }
         };
 
@@ -780,10 +782,10 @@ impl SocketListener {
         let versioned_msg: VersionedMessage = match serde_json::from_str(&text) {
             Ok(v) => v,
             Err(e) => {
-                return Ok(json!({
-                    "type": "error",
-                    "message": format!("Failed to parse message: {}", e)
-                }))
+                return Err(ErrorPayload::new(
+                    ErrorType::UnknownMessageFormat,
+                    ErrorMessage(format!("Failed to parse message: {}", e)),
+                ));
             }
         };
 
@@ -795,16 +797,16 @@ impl SocketListener {
 
         // 3) check the version
         if versioned_msg.version.as_str() != "1.0" {
-            return Ok(json!({
-                "type": "error",
-                "message": format!("Unsupported version: {}", versioned_msg.version),
-            }));
+            return Err(ErrorPayload::new(
+                ErrorType::VersionNotSupported,
+                ErrorMessage(format!("Unsupported version: {}", versioned_msg.version)),
+            ));
         }
 
         // 4) handle the v1 version
         match self.process_v1(versioned_msg, subscriber).await {
             Ok(response) => Ok(response),
-            Err(e) => Ok(json!({
+            Err(e) => Err(json!({
                 "type": "error",
                 "message": e.to_string()
             })),
@@ -953,15 +955,15 @@ impl SocketListener {
     }
 
     #[instrument(skip_all)]
-    async fn handle_non_text_message() -> bool {
+    async fn handle_non_text_message() -> anyhow::Result<()> {
         info!("Recived non text message");
-        true
+        Ok(())
     }
 
     #[instrument(skip_all)]
-    async fn handle_connection_errors(error: Error) -> bool {
+    async fn handle_connection_errors(error: Error) -> anyhow::Result<()> {
         error!(error = %error, "WebSocket error");
-        false
+        Ok(())
     }
 
     #[instrument(skip_all, parent = &self.span)]
@@ -976,7 +978,8 @@ impl SocketListener {
         loop {
             tokio::select! {
                 Some(msg) = receiver.next() => {
-                    if !self.handle_channel_message(&ws_write, msg).await {
+                    if let Err(e) = self.handle_channel_message(&ws_write, msg).await {
+                        error!(error = %e,"Error: ");
                         break;
                     }
                 }
@@ -988,7 +991,10 @@ impl SocketListener {
                             break;
                         }
                         _ => {
-                            if !self.handle_ws_message(&ws_write, msg_result, &mut subscriber, sender.clone()).await {
+                            if let Err(e) = self.handle_ws_message(
+                                &ws_write, msg_result, &mut subscriber, sender.clone()
+                            ).await {
+                                error!(error = %e, "Error");
                                 Self::close_ws_connection().await;
                                 break;
                             }
@@ -1015,28 +1021,15 @@ impl SocketListener {
         &self,
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         msg: serde_json::Value,
-    ) -> bool {
+    ) -> std::result::Result<(), anyhow::Error> {
         let resp_type = msg
             .get("type")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
 
-        match serde_json::to_string(&msg) {
-            Ok(serialized) => {
-                info!(response_type = %resp_type, "Sending response");
-                match Self::send_message(write, serialized).await {
-                    Ok(_) => true,
-                    Err(e) => {
-                        error!(error = %e, "Failed to send message");
-                        false
-                    }
-                }
-            }
-            Err(e) => {
-                error!(error = %e, "Failed to serialize response");
-                true
-            }
-        }
+        let serialized = serde_json::to_string(&msg)?;
+        info!(response_type = %resp_type, "Sending response");
+        Self::send_message(write, serialized).await
     }
 
     #[instrument(skip_all, parent = &self.span)]
@@ -1046,7 +1039,7 @@ impl SocketListener {
         msg_result: Result<Message, tokio_tungstenite::tungstenite::Error>,
         subscriber: &mut Option<AccountId32>,
         sender: Sender<serde_json::Value>,
-    ) -> bool {
+    ) -> anyhow::Result<()> {
         match msg_result {
             Ok(Message::Text(bytes)) => {
                 // Convert Utf8Bytes to string using to_string()
@@ -1054,7 +1047,7 @@ impl SocketListener {
                 self.handle_text_message(write, text, subscriber, sender)
                     .await
             }
-            Ok(Message::Close(_)) => false,
+            Ok(Message::Close(_)) => Ok(()),
             Ok(_) => Self::handle_non_text_message().await,
             Err(e) => Self::handle_connection_errors(e).await,
         }
@@ -1067,24 +1060,14 @@ impl SocketListener {
         text: String,
         subscriber: &mut Option<AccountId32>,
         sender: Sender<serde_json::Value>,
-    ) -> bool {
+    ) -> anyhow::Result<()> {
         match self
             ._handle_incoming(Message::Text(text.into()), subscriber)
             .await
         {
             Ok(response) => {
-                let serialized = match serde_json::to_string(&response) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!(error = %e, "Failed to serialize response");
-                        return true;
-                    }
-                };
-
-                if let Err(e) = Self::send_message(write, serialized).await {
-                    error!(error = %e, "Failed to send response");
-                    return false;
-                }
+                let serialized = serde_json::to_string(&response)?;
+                Self::send_message(write, serialized).await?;
 
                 if let Some(id) = subscriber.take() {
                     info!(subscriber_id = %id, "New subscriber registered");
@@ -1096,7 +1079,7 @@ impl SocketListener {
                         }
                     });
                 }
-                true
+                Ok(())
             }
             Err(e) => self.handle_error_response(write, e).await,
         }
@@ -1148,26 +1131,23 @@ impl SocketListener {
     async fn handle_error_response(
         &self,
         write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
-        error: anyhow::Error,
-    ) -> bool {
+        error: ErrorPayload,
+    ) -> anyhow::Result<()> {
         error!(error = %error, "Error handling message");
 
-        let error_response = serde_json::json!({
-            "version": "1.0",
-            "error": error.to_string()
-        });
+        let error_response = WSError::new(error);
 
         match serde_json::to_string(&error_response) {
             Ok(serialized) => match Self::send_message(write, serialized).await {
-                Ok(_) => true,
+                Ok(_) => Ok(()),
                 Err(e) => {
                     error!(error = %e, "Failed to send error response");
-                    false
+                    Err(anyhow!("Failed to send error response, {e}"))
                 }
             },
             Err(e) => {
                 error!(error = %e, "Failed to serialize error response");
-                true
+                Err(anyhow!("Failed to serialize error response, {e}"))
             }
         }
     }
