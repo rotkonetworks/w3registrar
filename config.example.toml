@@ -12,7 +12,7 @@ endpoint = "wss://people-paseo.dotters.network"
 registrar_index = 1
 keystore_path = "./.keyfile.example"
 registrar_account = "12BtBrcorHAvSeTLYo6YTq8kdiRG948vkvmxHEmSzZjwZ97u"
-fields = ["email","matrix", "twitter", "discord", "display_name"]
+fields = ["email","matrix", "twitter", "discord", "display_name", "pgp_fingerprint", "github"]
 
 [http]
 host = "0.0.0.0"
