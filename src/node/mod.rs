@@ -19,6 +19,7 @@ use subxt::SubstrateConfig;
 use tracing::{error, info, warn};
 
 use super::api::Account;
+use super::api::RedisConnection;
 use substrate::identity::calls::types::provide_judgement::Identity;
 use substrate::runtime_types::pallet_identity::types::Judgement;
 use substrate::runtime_types::pallet_identity::types::Registration;
@@ -260,7 +261,9 @@ pub async fn register_identity<'a>(
     who: &AccountId32,
     network: &Network,
 ) -> anyhow::Result<&'a str> {
-    provide_judgement(who, Judgement::Reasonable, network).await
+    let reg_state = provide_judgement(who, Judgement::Reasonable, network).await;
+    RedisConnection::default().await.flushall().await?;
+    reg_state
 }
 
 /// Filter accounts based on supported fields and provide appropriate judgment
