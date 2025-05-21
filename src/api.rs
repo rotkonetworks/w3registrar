@@ -1871,6 +1871,16 @@ impl RedisConnection {
             .unwrap()
     }
 
+    /// Clears all caches
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn flushall(&mut self) -> anyhow::Result<()> {
+        redis::cmd("FLUSHALL")
+            .arg("ASYNC")
+            .exec_async(&mut self.conn)
+            .await?;
+        Ok(())
+    }
+
     // TODO: replace all occurance of .get_connection() to .default()
     #[instrument(skip_all, parent = None)]
     pub fn initialize_pool(addr: &RedisConfig) -> anyhow::Result<()> {
