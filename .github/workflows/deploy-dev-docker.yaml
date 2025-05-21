@@ -5,7 +5,6 @@ on:
   pull_request:
     branches:
       - main
-  workflow_dispatch:
 
 jobs:
   build-and-deploy:
@@ -21,6 +20,7 @@ jobs:
       REDIS_PORT: 36379
       W3REG_HTTP_PORT: 38080
       W3REG_WS_PORT: 38081
+      CONFIG_PATH: ./config.docker.toml
       KEYFILE_POLKADOT: ${{ secrets.KEYFILE_POLKADOT }}
       KEYFILE_KUSAMA: ${{ secrets.KEYFILE_KUSAMA }}
       KEYFILE_ROCOCO: ${{ secrets.KEYFILE_ROCOCO }}
@@ -91,6 +91,7 @@ jobs:
             echo "REDIS_PORT=${{ env.REDIS_PORT }}" >> .env
             echo "W3REG_HTTP_PORT=${{ env.W3REG_HTTP_PORT }}" >> .env
             echo "W3REG_WS_PORT=${{ env.W3REG_WS_PORT }}" >> .env
+            echo "CONFIG_PATH=${{ env.CONFIG_PATH }}" >> .env
             docker load -i ${{ env.DEPLOY_PATH }}/w3registrar.tar
             docker compose -f ./docker-compose.yaml up -d
           EOF
