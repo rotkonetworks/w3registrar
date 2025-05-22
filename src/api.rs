@@ -29,7 +29,6 @@ use redis::RedisResult;
 use redis::{self, Client as RedisClient};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sp_core::blake2_256;
 use sp_core::Encode;
 use std::fmt;
@@ -534,8 +533,6 @@ pub enum WebSocketMessage {
     VerifyPGPKey(IncomingVerifyPGPRequest),
 }
 
-// TODO: Further add Error messages as Versioned messages to standarize
-//       all possibe ws messages
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VersionedMessage {
     pub version: String,
@@ -676,13 +673,6 @@ impl SocketListener {
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
 
-        if !cfg.registrar.is_network_supported(&request.network) {
-            return Ok(serde_json::json!({
-                "type": "error",
-                "message": format!("Network {} not supported", request.network)
-            }));
-        }
-
         let network_cfg = cfg
             .registrar
             .get_network(&request.network)
@@ -749,16 +739,50 @@ impl SocketListener {
         &mut self,
         message: VersionedMessage,
         subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<serde_json::Value> {
+    ) -> anyhow::Result<serde_json::Value, ErrorPayload> {
         match message.payload {
             WebSocketMessage::SubscribeAccountState(incoming) => {
-                self.handle_subscription_request(incoming, subscriber).await
+                self.network_check(&incoming.network)?;
+                self.handle_subscription_request(incoming, subscriber)
+                    .await
+                    .map_err(|v| {
+                        ErrorPayload::new(
+                            ErrorType::InternalError,
+                            ErrorMessage(format!("Error: {}", v)),
+                        )
+                    })
             }
+
             WebSocketMessage::VerifyPGPKey(incoming) => {
+                self.network_check(&incoming.network)?;
                 self.handle_pgp_verification_request(incoming, subscriber)
                     .await
+                    .map_err(|v| {
+                        ErrorPayload::new(
+                            ErrorType::InternalError,
+                            ErrorMessage(format!("Error: {}", v)),
+                        )
+                    })
             }
         }
+    }
+
+    #[instrument(skip_all, parent = &self.span, name = "network_check")]
+    pub fn network_check(
+        &mut self,
+        network: &Network,
+    ) -> anyhow::Result<serde_json::Value, ErrorPayload> {
+        let cfg = GLOBAL_CONFIG
+            .get()
+            .expect("GLOBAL_CONFIG is not initialized");
+
+        if !cfg.registrar.is_network_supported(&network) {
+            return Err(ErrorPayload::new(
+                ErrorType::NetworkNotSupported,
+                ErrorMessage(format!("Network {} not supported", network)),
+            ));
+        }
+        Ok(serde_json::Value::Null)
     }
 
     #[instrument(skip_all, parent = &self.span)]
@@ -772,8 +796,8 @@ impl SocketListener {
             Message::Text(t) => t,
             _ => {
                 return Err(ErrorPayload::new(
-                        ErrorType::MessageTypeNotSupported,
-                        ErrorMessage("Unsupported message format".to_string()),
+                    ErrorType::MessageTypeNotSupported,
+                    ErrorMessage("Unsupported message format".to_string()),
                 ));
             }
         };
@@ -804,13 +828,7 @@ impl SocketListener {
         }
 
         // 4) handle the v1 version
-        match self.process_v1(versioned_msg, subscriber).await {
-            Ok(response) => Ok(response),
-            Err(e) => Err(json!({
-                "type": "error",
-                "message": e.to_string()
-            })),
-        }
+        self.process_v1(versioned_msg, subscriber).await
     }
 
     // TODO: check if Judgement is requested (JudgementRequested)
@@ -2217,4 +2235,71 @@ pub async fn spawn_http_serv() -> anyhow::Result<()> {
         .unwrap();
     axum::serve(listener, app).await.unwrap();
     Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+enum ErrorType {
+    UnknownWalletId,
+    MessageTypeNotSupported,
+    VersionNotSupported,
+    UnknownMessageFormat,
+    InternalError,
+    NetworkNotSupported,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ErrorMessage(String);
+
+#[derive(Serialize, Deserialize)]
+struct ErrorPayload {
+    #[serde(rename = "type")]
+    _type: ErrorType,
+    message: ErrorMessage,
+}
+
+impl Display for ErrorPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", serde_json::to_string_pretty(self).unwrap())
+    }
+}
+
+impl ErrorPayload {
+    fn new(_type: ErrorType, message: ErrorMessage) -> Self {
+        Self { _type, message }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct WSError {
+    version: &'static str,
+    payload: ErrorPayload,
+}
+
+impl WSError {
+    fn new(payload: ErrorPayload) -> Self {
+        Self {
+            version: "1.0",
+            payload,
+        }
+    }
+}
+
+#[allow(unused_imports)]
+mod test {
+    use super::{ErrorMessage, ErrorPayload, ErrorType, WSError};
+    use serde_json;
+
+    #[test]
+    fn test_ws_error() {
+        let err_type = ErrorType::UnknownWalletId;
+        let err_message = ErrorMessage(format!("SOME ERROR MESSAGE"));
+        let payload = ErrorPayload::new(err_type, err_message);
+        let obj = serde_json::to_string(&WSError::new(payload)).unwrap();
+        assert_eq!(
+            obj,
+            r#"{"version":"1.0","payload":{"type":"UnknownWalletId","message":"SOME ERROR MESSAGE"}}"#
+        );
+        println!("{}", obj);
+        // TODO: more tests...
+    }
 }
