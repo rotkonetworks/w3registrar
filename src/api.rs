@@ -668,7 +668,7 @@ impl SocketListener {
         &mut self,
         request: IncomingSubscribeRequest,
         subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<serde_json::Value> {
+    ) -> anyhow::Result<Box<dyn ToOkResponse + Send>> {
         let cfg = GLOBAL_CONFIG
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
@@ -739,30 +739,34 @@ impl SocketListener {
         &mut self,
         message: VersionedMessage,
         subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<serde_json::Value, ErrorPayload> {
+    ) -> anyhow::Result<Box<dyn ToOkResponse + Send>, ErrorPayload> {
         match message.payload {
             WebSocketMessage::SubscribeAccountState(incoming) => {
                 self.network_check(&incoming.network)?;
-                self.handle_subscription_request(incoming, subscriber)
+                let t = self
+                    .handle_subscription_request(incoming, subscriber)
                     .await
                     .map_err(|v| {
                         ErrorPayload::new(
                             ErrorType::InternalError,
                             ErrorMessage(format!("Error: {}", v)),
                         )
-                    })
+                    });
+                t
             }
 
             WebSocketMessage::VerifyPGPKey(incoming) => {
                 self.network_check(&incoming.network)?;
-                self.handle_pgp_verification_request(incoming, subscriber)
+                let t = self
+                    .handle_pgp_verification_request(incoming, subscriber)
                     .await
                     .map_err(|v| {
                         ErrorPayload::new(
                             ErrorType::InternalError,
                             ErrorMessage(format!("Error: {}", v)),
                         )
-                    })
+                    });
+                t
             }
         }
     }
@@ -790,7 +794,7 @@ impl SocketListener {
         &mut self,
         message: Message,
         subscriber: &mut Option<AccountId32>,
-    ) -> Result<serde_json::Value, ErrorPayload> {
+    ) -> Result<Box<dyn ToOkResponse + Send>, ErrorPayload> {
         // 1) ensure the message is text
         let text = match message {
             Message::Text(t) => t,
@@ -1084,14 +1088,17 @@ impl SocketListener {
             .await
         {
             Ok(response) => {
-                let serialized = serde_json::to_string(&response)?;
+                let serialized = serde_json::to_string(&response.to_response())?;
+
                 Self::send_message(write, serialized).await?;
 
                 if let Some(id) = subscriber.take() {
                     info!(subscriber_id = %id, "New subscriber registered");
                     let mut cloned_self = self.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = cloned_self.spawn_redis_listener(sender, id, response).await
+                        if let Err(e) = cloned_self
+                            .spawn_redis_listener(sender, id, response.to_response())
+                            .await
                         {
                             error!(error = %e, "Redis listener error");
                         }
@@ -1101,48 +1108,6 @@ impl SocketListener {
             }
             Err(e) => self.handle_error_response(write, e).await,
         }
-    }
-
-    #[instrument(skip_all, parent = &self.span)]
-    async fn handle_successful_response(
-        &self,
-        write: &Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
-        response: serde_json::Value,
-        subscriber: &mut Option<AccountId32>,
-        sender: Sender<serde_json::Value>,
-    ) -> bool {
-        debug!("Handling successful response: {:?}", response);
-
-        let serialized = match serde_json::to_string(&response) {
-            Ok(s) => s,
-            Err(e) => {
-                error!(error = %e, "Failed to serialize response");
-                return true;
-            }
-        };
-
-        let resp_type = response
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        debug!(response_type = %resp_type, "Sending response");
-
-        if let Err(e) = Self::send_message(write, serialized).await {
-            error!(error = %e, "Failed to send response");
-            return false;
-        }
-
-        if let Some(id) = subscriber.take() {
-            info!(subscriber_id = %id, "New subscriber registered");
-            let mut cloned_self = self.clone();
-            tokio::spawn(async move {
-                if let Err(e) = cloned_self.spawn_redis_listener(sender, id, response).await {
-                    error!(error = %e, "Redis listener error");
-                }
-            });
-        }
-
-        true
     }
 
     #[instrument(skip_all)]
@@ -1243,6 +1208,7 @@ impl SocketListener {
         }
     }
 
+    // TODO: this is bad, chage the singature of this method, `response` in particular
     #[instrument(skip_all, parent = &self.span)]
     async fn spawn_redis_listener(
         &mut self,
@@ -1297,7 +1263,8 @@ impl SocketListener {
                 };
 
                 // send message, break if channel closed
-                if (sender.send(obj).await).is_err() {
+                let value = obj.to_response();
+                if sender.send(value).await.is_err() {
                     info!("WebSocket channel closed, stopping Redis listener");
                     break;
                 }
@@ -1314,7 +1281,7 @@ impl SocketListener {
         &self,
         request: IncomingVerifyPGPRequest,
         subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<serde_json::Value> {
+    ) -> anyhow::Result<Box<dyn ToOkResponse + Send>> {
         let cfg = GLOBAL_CONFIG
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
@@ -1337,7 +1304,7 @@ impl SocketListener {
 
         let Some(registred_fingerprint) = registration.info.pgp_fingerprint else {
             return Err(anyhow!(
-                "No fingerprint is registered on chain for {:?}",
+                "No fingerprint is registered on chain for {}",
                 request.account
             ));
         };
@@ -1665,7 +1632,11 @@ pub struct VerificationFields {
 
 async fn handle_redis_message(redis_cfg: &RedisConfig, msg: &redis::Msg) -> anyhow::Result<()> {
     if let Ok(Some((id, value))) = RedisConnection::process_state_change(redis_cfg, msg).await {
-        info!("Processed state change for {}: {:?}", id, value);
+        info!(
+            "Processed state change for {}: {:?}",
+            id,
+            value.to_response()
+        );
     }
     Ok(())
 }
@@ -1701,7 +1672,7 @@ impl RedisSubscriber {
     pub async fn process_state_change(
         &self,
         msg: &redis::Msg,
-    ) -> anyhow::Result<Option<(AccountId32, serde_json::Value)>> {
+    ) -> anyhow::Result<Option<(AccountId32, Box<dyn ToOkResponse>)>> {
         let mut conn = RedisConnection::get_connection(&self.redis_cfg).await?;
         let payload: String = msg.get_payload()?;
         let channel = msg.get_channel_name();
@@ -1740,7 +1711,7 @@ impl RedisSubscriber {
     async fn handle_redis_message(&self, msg: Msg) -> anyhow::Result<()> {
         if let Ok(Some((id, value))) = self.process_state_change(&msg).await {
             info!(
-                account_id = %id.to_string(), new_state = %value.to_string(),
+                account_id = %id.to_string(), new_state = %value.to_response().to_string(),
                 "Processed new state"
             );
         }
@@ -2056,34 +2027,21 @@ impl RedisConnection {
         network: &Network,
         account_id: &AccountId32,
         hash: Option<String>, // optional for state updates
-    ) -> anyhow::Result<serde_json::Value> {
+    ) -> anyhow::Result<Box<dyn ToOkResponse + Send>> {
         let fields = self.extract_info(network, account_id).await?;
         let pending_challenges = self.get_challenges(network, account_id).await?;
-
-        Ok(serde_json::json!({
-            "type": "JsonResult",
-            "payload": {
-                "type": "ok",
-                "message": {
-                    "AccountState": {
-                        "account": account_id.to_string(),
-                        "network": network,
-                        "hashed_info": hash,
-                        "verification_state": {
-                            "fields": fields
-                        },
-                        "pending_challenges": pending_challenges
-                    }
-                }
-            }
-        }))
+        let acc_state = AccountState::new(account_id.to_owned(), network.to_owned(), fields, hash);
+        let message =
+            OkMessage::SubscribeMessage(SubscribeMessage::new(acc_state, pending_challenges));
+        let payload = OkPayload::new(OkResponseType::SubscribeResponse, message);
+        Ok(Box::new(SubscribeResponse::new(payload)))
     }
 
     #[instrument(skip_all)]
     pub async fn process_state_change(
         redis_cfg: &RedisConfig,
         msg: &redis::Msg,
-    ) -> anyhow::Result<Option<(AccountId32, serde_json::Value)>> {
+    ) -> anyhow::Result<Option<(AccountId32, Box<dyn ToOkResponse + Send>)>> {
         let mut conn = RedisConnection::get_connection(redis_cfg).await?;
         let payload: String = msg.get_payload()?;
         let channel = msg.get_channel_name();
@@ -2276,8 +2234,16 @@ impl WSError {
 
 #[allow(unused_imports)]
 mod test {
+    use std::str::FromStr;
+
+    use super::Network;
+    use super::{
+        AccountState, OkMessage, OkPayload, OkResponseType, SubscribeMessage, SubscribeResponse,
+    };
     use super::{ErrorMessage, ErrorPayload, ErrorType, WSError};
+    use super::{PGPResponse, PGPResponseMessage};
     use serde_json;
+    use subxt::utils::AccountId32;
 
     #[test]
     fn test_ws_error() {
@@ -2292,4 +2258,158 @@ mod test {
         println!("{}", obj);
         // TODO: more tests...
     }
+
+    #[test]
+    fn test_ws_subscribe_response() {
+        let response_type = OkResponseType::SubscribeResponse;
+        let acc_id =
+            AccountId32::from_str("5CrEhF4Wqpw524kAJm6fLwdtas3EwRQcjZaVFjNEBdcnAfUS").unwrap();
+        let pending_challenges = vec![vec![]];
+        let acc_state = AccountState::new(
+            acc_id,
+            Network::Paseo,
+            super::VerificationFields::default(),
+            None,
+        );
+        let subscribe_message = SubscribeMessage::new(acc_state, pending_challenges);
+        let response_message = OkMessage::SubscribeMessage(subscribe_message);
+        let payload = OkPayload::new(response_type, response_message);
+        let thing = serde_json::to_string_pretty(&SubscribeResponse::new(payload)).unwrap();
+        println!("{}", thing);
+    }
+
+    #[test]
+    fn test_ws_pgp_response() {
+        let response_type = OkResponseType::PGPResponse;
+        let pgp_message = crate::api::PGPResponseMessage::new("HIO".to_string());
+        let response_message = OkMessage::PGPResponseMessage(pgp_message);
+        let payload = OkPayload::new(response_type, response_message);
+        let thing = serde_json::to_string_pretty(&PGPResponse::new(payload)).unwrap();
+        println!("{}", thing);
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum OkResponseType {
+    SubscribeResponse,
+    PGPResponse,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SubscribeResponse {
+    version: &'static str,
+    payload: OkPayload,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct OkPayload {
+    #[serde(rename = "type")]
+    _type: OkResponseType,
+    message: OkMessage,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OkMessage {
+    SubscribeMessage(SubscribeMessage),
+    PGPResponseMessage(PGPResponseMessage),
+}
+
+impl SubscribeResponse {
+    pub fn new(payload: OkPayload) -> Self {
+        Self {
+            version: "1.0",
+            payload,
+        }
+    }
+}
+
+impl OkPayload {
+    pub fn new(_type: OkResponseType, message: OkMessage) -> Self {
+        Self { _type, message }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AccountState {
+    account: AccountId32,
+    network: Network,
+    verification_state: VerificationFields,
+    hashed_info: Option<String>,
+}
+
+impl AccountState {
+    pub fn new(
+        account: AccountId32,
+        network: Network,
+        verification_state: VerificationFields,
+        hashed_info: Option<String>,
+    ) -> Self {
+        Self {
+            account,
+            network,
+            verification_state,
+            hashed_info,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SubscribeMessage {
+    account_state: AccountState,
+    pending_challenges: Vec<Vec<(AccountType, String)>>,
+}
+
+impl SubscribeMessage {
+    pub fn new(
+        account_state: AccountState,
+        pending_challenges: Vec<Vec<(AccountType, String)>>,
+    ) -> Self {
+        Self {
+            account_state,
+            pending_challenges,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PGPResponseMessage {
+    message: String,
+}
+
+impl PGPResponseMessage {
+    pub fn new(message: String) -> Self {
+        Self { message }
+    }
+}
+
+impl ToOkResponse for SubscribeResponse {
+    fn to_response(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PGPResponse {
+    version: &'static str,
+    payload: OkPayload,
+}
+
+impl PGPResponse {
+    pub fn new(payload: OkPayload) -> Self {
+        Self {
+            version: "1.0",
+            payload,
+        }
+    }
+}
+
+impl ToOkResponse for PGPResponse {
+    fn to_response(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap()
+    }
+}
+
+pub trait ToOkResponse {
+    fn to_response(&self) -> serde_json::Value;
 }

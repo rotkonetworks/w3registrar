@@ -7,9 +7,11 @@ use subxt::utils::AccountId32;
 use tracing::error;
 use tracing::info;
 
-use crate::api::Network;
-use crate::api::{Account, RedisConnection};
 use super::Adapter;
+use crate::api::{
+    Account, Network, OkMessage, OkPayload, OkResponseType, PGPResponse, PGPResponseMessage,
+    RedisConnection, ToOkResponse,
+};
 
 pub struct PGPHelper {
     signature: Vec<u8>,
@@ -31,7 +33,7 @@ impl PGPHelper {
         registered_fingerprint: [u8; 20],
         network: &Network,
         account_id: AccountId32,
-    ) -> anyhow::Result<serde_json::Value> {
+    ) -> anyhow::Result<Box<dyn ToOkResponse + Send>> {
         let policy = &StandardPolicy::new();
         let helper = PGPHelper::new(&registered_fingerprint);
 
@@ -55,19 +57,17 @@ impl PGPHelper {
         )
         .await
         {
-            Ok(_) => Ok(serde_json::json!({
-                "type": "JsonResult",
-                "payload": {
-                    "type": "ok",
-                    "message": "PGP verification is done",
-                }
-            })),
+            Ok(_) => {
+                let response = PGPResponseMessage::new("PGP verification is done".to_string());
+                let payload = OkPayload::new(
+                    OkResponseType::PGPResponse,
+                    OkMessage::PGPResponseMessage(response),
+                );
+                return Ok(Box::new(PGPResponse::new(payload)));
+            }
             Err(e) => {
                 info!(error=?e, "Verification error");
-                Ok(serde_json::json!({
-                    "type": "error",
-                    "message": format!("{e}"),
-                }))
+                Err(e)
             }
         }
     }
