@@ -114,15 +114,19 @@ pub async fn provide_judgement<'a>(
         Some(ProxyType::IdentityJudgement),
         RuntimeCall::Identity(inner_call),
     );
+    info!("Proxy connected!");
 
     let signer = load_signer(&network_cfg)?;
+    info!("Signer loaded");
     let mut resubmit_count = 0;
     let mut current_fee_multiplier = 1.0;
     let mut current_nonce = client.tx().account_nonce(signer.account_id()).await?;
+    info!("Nonce fetched");
 
     'tx_loop: while resubmit_count < MAX_RESUBMIT_ATTEMPTS {
         let start_time = Instant::now();
         let latest_block = client.blocks().at_latest().await?;
+        info!(block_hash=?hex::encode(latest_block.hash().0), "Latest block");
 
         // build transaction params with current nonce
         let tx_params = subxt::config::substrate::SubstrateExtrinsicParamsBuilder::new()
@@ -136,6 +140,7 @@ pub async fn provide_judgement<'a>(
             .tx()
             .sign_and_submit_then_watch(&tx, &signer, tx_params)
             .await?;
+        info!("Watching transactions");
 
         while let Some(status) = tx_progress.next().await {
             if start_time.elapsed() > FINALIZATION_TIMEOUT {

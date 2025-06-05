@@ -58,11 +58,11 @@ impl RegistrarConfigs {
         self.networks.contains_key(network)
     }
 
-    pub fn registrar_config(&self, reg_index: u32) -> Option<RegistrarConfig> {
+    pub fn registrar_config(&self, reg_index: u32) -> Option<(Network, RegistrarConfig)> {
         self.networks
-            .values()
-            .find(|conf| conf.registrar_index == reg_index)
-            .cloned()
+            .iter()
+            .find(|(_, conf)| conf.registrar_index == reg_index)
+            .map(|(network, conf)| (network.to_owned(), conf.to_owned()))
     }
 }
 
