@@ -262,7 +262,11 @@ pub async fn register_identity<'a>(
     network: &Network,
 ) -> anyhow::Result<&'a str> {
     let reg_state = provide_judgement(who, Judgement::Reasonable, network).await;
-    RedisConnection::default().await.flushall().await?;
+    
+    // Clear only this user's verification data instead of all caches
+    let mut redis_conn = RedisConnection::default().await?;
+    redis_conn.clear_all_related_to(network, who).await?;
+    
     reg_state
 }
 
