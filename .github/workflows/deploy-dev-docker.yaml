@@ -91,8 +91,13 @@ jobs:
             echo "SERVICE_NAME=${{ env.SERVICE_NAME }}" > .env
             echo "VERSION_TAG=${{ env.VERSION_TAG }}" >> .env
             echo "REDIS_PORT=${{ env.REDIS_PORT }}" >> .env
+<<<<<<< HEAD
             echo "POSTGRES_PORT=${{ env.POSTGRES_PORT }}" >> .env
             echo "POSTGRES_PASSWORD=${{ env.POSTGRES_PASSWORD }}" >> .env
+=======
+            echo "POSTGRES_PORT=${{ env.POSTGES_PORT }}" >> .env
+            echo "POSTGERS_PASSWORD=${{ env.POSTGRES_PASSWORD }}" >> .env
+>>>>>>> a5f4d46 (fix: deploy the docker image with postgres config)
             echo "W3REG_HTTP_PORT=${{ env.W3REG_HTTP_PORT }}" >> .env
             echo "W3REG_WS_PORT=${{ env.W3REG_WS_PORT }}" >> .env
             echo "CONFIG_PATH=${{ env.CONFIG_PATH }}" >> .env
