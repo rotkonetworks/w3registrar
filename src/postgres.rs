@@ -12,7 +12,7 @@ use tracing::{error, info};
 
 use crate::{
     api::{
-        identity_data_tostring, AccountType, Filter, FilterFields, IncomingSearchRequest, Network,
+        identity_data_tostring, AccountType, FieldsFilter, Filter, IncomingSearchRequest, Network,
     },
     config::{PostgresConfig, GLOBAL_CONFIG},
     node::{
@@ -59,7 +59,7 @@ $$;";
 DO $$
 BEGIN
     IF NOT EXISTS ( SELECT 1 from pg_type WHERE typname='network' )
-    THEN CREATE TYPE NETWORK AS ENUM ('Paseo', 'Polkadot', 'Kusama', 'Rococo');
+    THEN CREATE TYPE NETWORK AS ENUM ('paseo', 'polkadot', 'kusama', 'rococo');
     END IF;
 END
 $$;";
@@ -349,7 +349,7 @@ $$;";
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TimelineRecord {
     pub event: TimelineEvent,
     // FIXME
@@ -531,11 +531,9 @@ impl From<&tokio_postgres::Row> for RegistrationRecord {
                 DisplayedInfo::PGPFingerprint => {
                     record.pgp_fingerprint = value.get("pgp_fingerprint")
                 }
-                DisplayedInfo::Timeline => {
-                    // NOTE: This should not happen as [DisplayedInfo::from_str] never returns
-                    // [DisplayedInfo::Timeline]
-                    error!("Found `timeline` field in  a registration record!");
-                }
+                // NOTE: This should not happen as [DisplayedInfo::from_str] never returns
+                // [DisplayedInfo::Timeline]
+                DisplayedInfo::Timeline => unreachable!(),
             }
         }
 
@@ -590,11 +588,8 @@ impl Query for TimelineQuery {
 impl TimelineQuery {
     /// supplies a [Vec<RegistrationRecord>] by [TimelineRecord]. This usually is done
     /// when a search request fields includes [DisplayedInfo::Timeline]
-    pub async fn supply(
-        rec: &Vec<RegistrationRecord>,
-    ) -> Vec<(RegistrationRecord, Vec<TimelineRecord>)> {
-        let mut res = vec![];
-        for record in rec.iter() {
+    pub async fn supply(rec: &mut Vec<RegistrationRecord>) -> anyhow::Result<()> {
+        for record in rec.iter_mut() {
             let mut timeline_query = TimelineQuery::default();
             let mut condition = Condition::default();
 
@@ -604,17 +599,13 @@ impl TimelineQuery {
 
             if let Some(wallet_id) = &record.wallet_id {
                 condition = condition.condition(&SearchInfo::AccountId32(wallet_id.clone()));
-                // FIXME
-                // condition = condition.wallet_id(&AccountId32::from_str(&wallet_id).unwrap());
-                // condition = condition.wallet_id_str(&wallet_id);
             };
 
             let selected = Displayed::default().wallet_id().event().date();
             timeline_query = timeline_query.condition(condition).selected(selected);
-
-            res.push((record.to_owned(), timeline_query.exec().await.unwrap()));
+            record.timeline = Some(timeline_query.exec().await?);
         }
-        res
+        Ok(())
     }
 
     pub async fn exec(&self) -> anyhow::Result<Vec<TimelineRecord>> {
@@ -712,7 +703,7 @@ impl RegistrationQuery {
 #[derive(Deserialize, Serialize, Debug)]
 pub struct SearchResult {
     /// timeline record for each registreation
-    pub result: Vec<(RegistrationRecord, Vec<TimelineRecord>)>,
+    pub result: Vec<RegistrationRecord>,
 }
 
 #[derive(Default)]
@@ -936,11 +927,32 @@ impl Condition {
         self
     }
 
-    pub fn filter(mut self, filter: &FilterFields) -> Self {
+    pub fn filter(mut self, filter: &FieldsFilter) -> Self {
         if filter.strict {
             self = self.condition(&filter.field).and();
         } else {
             self = self.like_condition(&filter.field).and();
+        }
+        self
+    }
+
+    pub fn date(mut self, date: chrono::NaiveDate, cmp: ComparisonOperator) -> Self {
+        match cmp {
+            ComparisonOperator::Eq => {
+                self.querry.push_str("");
+            }
+            ComparisonOperator::Lt => {
+                self.querry.push_str("");
+            }
+            ComparisonOperator::Gt => {
+                self.querry.push_str("");
+            }
+            ComparisonOperator::Ge => {
+                self.querry.push_str("");
+            }
+            ComparisonOperator::Le => {
+                self.querry.push_str("");
+            }
         }
         self
     }
@@ -1167,6 +1179,7 @@ impl DisplayedInfo {
             Self::Legal,
             Self::Web,
             Self::PGPFingerprint,
+            Self::Timeline,
         ];
         format!("{v:?}")
     }
@@ -1428,10 +1441,11 @@ mod test {
         let outputs: Vec<DisplayedInfo> = vec![DisplayedInfo::WalletID, DisplayedInfo::Display];
         let filters: Filter = Filter::new(
             vec![
-                FilterFields::new(SearchInfo::Display("Travis Hernandez".to_string()), false),
-                FilterFields::new(SearchInfo::Discord("Travis Hernandez".to_string()), true),
+                FieldsFilter::new(SearchInfo::Display("Travis Hernandez".to_string()), false),
+                FieldsFilter::new(SearchInfo::Discord("Travis Hernandez".to_string()), true),
             ],
             Some(2),
+            None,
         );
 
         let search_req = IncomingSearchRequest::new(network, outputs.clone(), filters.clone());
@@ -1444,11 +1458,12 @@ mod test {
         //  ------------------------------------------------------------------------------
         let network: Option<Network> = None;
         let filters: Filter = Filter::new(
-            vec![FilterFields::new(
+            vec![FieldsFilter::new(
                 SearchInfo::Display("Travis Hernandez".to_string()),
                 true,
             )],
             Some(2),
+            None,
         );
 
         let search_req =
@@ -1486,8 +1501,6 @@ mod test {
         // InsertQuery
     }
 }
-// TODO: test timeline
-// TODO: integrate the timeline in the search funcitonality
 // TODO: init timeline when registration is requested and reset previous one
 // TODO: add a "way" to backup table, and creating a new one if it's structure is different
 // TODO: sort timelines by date
