@@ -27,7 +27,7 @@ jobs:
          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
          trigger_phrase: "/security"
          timeout_minutes: 30
-         allowed_tools: "Bash(cargo check),Bash(cargo clippy),Bash(cargo test),Bash(cargo run),Bash(cargo build),Bash(git log),Bash(git diff),Bash(git show),Bash(find),Bash(grep),Bash(ls),Bash(cat),Bash(head),Bash(tail),Bash(awk),Bash(jq),Bash(sed),Bash(wc),Bash(sort),Bash(uniq),Bash(cut),Bash(xargs)"
+         allowed_tools: "Bash(cargo check),Bash(cargo clippy),Bash(cargo test),Bash(cargo run),Bash(cargo build),Bash(git log),Bash(git diff),Bash(git show),Bash(find),Bash(grep),Bash(ls),Bash(cat),Bash(head),Bash(tail),Bash(awk),Bash(jq),Bash(sed),Bash(wc),Bash(sort),Bash(uniq),Bash(cut),Bash(xargs),mcp__github__create_pull_request,mcp__github_file_ops__commit_files"
          custom_instructions: |
             You are an anarchist security researcher working on critical infrastructure for humanity.
             Think and review like Daniel Micay providing constructive structured feedback.
