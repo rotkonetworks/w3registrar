@@ -70,9 +70,8 @@ use crate::{
         Client as NodeClient,
     },
     postgres::{
-        Condition, Displayed, DisplayedInfo, Limit, PostgresConnection, Query as _,
-        RegistrationRecord, SearchInfo, SearchResult, SimpleSearchQuery, TimelineQuery,
-        TimelineRecord,
+        Condition, Displayed, DisplayedInfo, Limit, PostgresConnection, RegistrationRecord,
+        SearchInfo, SimpleSearchQuery, TimelineQuery,
     },
     token::{AuthToken, Token},
 };
@@ -497,15 +496,57 @@ pub struct IncomingSearchRequest {
     filters: Filter,
 }
 
+mod date_format {
+    use chrono::NaiveDate;
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    const FORMAT: &'static str = "%d-%m-%Y";
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<NaiveDate>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = Option::<String>::deserialize(deserializer)?;
+        match s {
+            Some(date_str) => NaiveDate::parse_from_str(&date_str, FORMAT)
+                .map(Some)
+                .map_err(serde::de::Error::custom),
+            None => Ok(None),
+        }
+    }
+
+    pub fn serialize<S>(date: &Option<NaiveDate>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match date {
+            Some(date) => serializer.serialize_str(&date.format(FORMAT).to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct TimeFilter {
+    #[serde(with = "date_format")]
+    gt: Option<chrono::NaiveDate>,
+    #[serde(with = "date_format")]
+    lt: Option<chrono::NaiveDate>,
+    #[serde(with = "date_format")]
+    eq: Option<chrono::NaiveDate>,
+
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 /// Display condition
 pub struct Filter {
-    pub fields: Vec<FilterFields>,
+    pub fields: Vec<FieldsFilter>,
     pub result_size: Option<u8>,
+    // pub time: Option<Vec<TimeFilter>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct FilterFields {
+pub struct FieldsFilter {
     pub field: SearchInfo,
     pub strict: bool,
     // starts_with: bool,
@@ -513,17 +554,22 @@ pub struct FilterFields {
     // contains: bool,
 }
 
-impl FilterFields {
+impl FieldsFilter {
     pub fn new(field: SearchInfo, strict: bool) -> Self {
         Self { field, strict }
     }
 }
 
 impl Filter {
-    pub fn new(fields: Vec<FilterFields>, result_size: Option<u8>) -> Self {
+    pub fn new(
+        fields: Vec<FieldsFilter>,
+        result_size: Option<u8>,
+        time: Option<Vec<TimeFilter>>,
+    ) -> Self {
         Self {
             fields,
             result_size,
+            // time,
         }
     }
 }
@@ -537,15 +583,10 @@ impl IncomingSearchRequest {
         }
     }
 
-    async fn search(self) -> SearchResult {
-        // NOTE: the RegistrationRecord is associated with the outputs field in the search request,
-        // so if the user don't want to "display" the wallet id and/or network we can't display the
-        // timeline since it's associated per registration record
-        // NOTE: we probably going to add "finished" column in the registration table so we can
-        // have "not finished yet" registration record and be able to derive it's timeline elements
+    async fn search(self) -> anyhow::Result<Vec<RegistrationRecord>> {
         if self.outputs.contains(&DisplayedInfo::Timeline) {
             let mut registration_query = RegistrationQuery::default();
-            let mut dispalyed = Displayed::default();
+            let dispalyed = Displayed::default();
             let mut condition = Condition::default();
 
             for filter in self.filters.fields.iter() {
@@ -556,57 +597,13 @@ impl IncomingSearchRequest {
                 condition = condition.network(&network);
             }
 
-            // for output in self.outputs.iter() {
-            //     dispalyed = dispalyed.displayed_info(output);
-            // }
-
             registration_query = registration_query.selected(dispalyed).condition(condition);
 
-            let registrations = registration_query.exec().await.unwrap();
+            let mut registrations = registration_query.exec().await?;
 
-            let search_result = TimelineQuery::supply(&registrations).await;
+            TimelineQuery::supply(&mut registrations).await?;
 
-            // let registrations = registrations
-            //     .iter_mut()
-            //     .map(|v| {
-            //         if !self.outputs.contains(&DisplayedInfo::WalletID) {
-            //             v.wallet_id = None;
-            //         }
-            //         if !self.outputs.contains(&DisplayedInfo::Display) {
-            //             v.display_name = None;
-            //         }
-            //         if !self.outputs.contains(&DisplayedInfo::Web) {
-            //             v.web = None;
-            //         }
-            //
-            //         if !self.outputs.contains(&DisplayedInfo::Email) {
-            //             v.email = None;
-            //         }
-            //
-            //         if !self.outputs.contains(&DisplayedInfo::Legal) {
-            //             v.legal = None;
-            //         }
-            //
-            //         if !self.outputs.contains(&DisplayedInfo::Matrix) {
-            //             v.matrix = None;
-            //         }
-            //         if !self.outputs.contains(&DisplayedInfo::Github) {
-            //             v.github = None;
-            //         }
-            //
-            //         if !self.outputs.contains(&DisplayedInfo::Twitter) {
-            //             v.twitter = None;
-            //         }
-            //         if !self.outputs.contains(&DisplayedInfo::PGPFingerprint) {
-            //             v.twitter = None;
-            //         }
-            //         v.clone()
-            //     })
-            //     .collect::<Vec<RegistrationRecord>>();
-
-            SearchResult {
-                result: search_result,
-            }
+            Ok(registrations)
         } else {
             let mut registration_query = RegistrationQuery::default();
             let mut dispalyed = Displayed::default();
@@ -626,13 +623,7 @@ impl IncomingSearchRequest {
 
             registration_query = registration_query.selected(dispalyed).condition(condition);
 
-            let res = registration_query.exec().await.unwrap();
-
-            let result = res
-                .iter()
-                .map(|v| (v.clone(), vec![]))
-                .collect::<Vec<(RegistrationRecord, Vec<TimelineRecord>)>>();
-            SearchResult { result }
+            registration_query.exec().await
         }
     }
 }
@@ -1576,7 +1567,7 @@ impl SocketListener {
         &self,
         request: IncomingSearchRequest,
     ) -> anyhow::Result<serde_json::Value> {
-        let query: SearchResult = request.search().await;
+        let query: Vec<RegistrationRecord> = request.search().await?;
         Ok(serde_json::to_value(query)?)
     }
 }
