@@ -22,6 +22,8 @@ jobs:
       SERVICE_NAME: w3registrar-api
       VERSION_TAG: prod
       REDIS_PORT: 16379
+      POSTGRES_PORT: 35432
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
       W3REG_HTTP_PORT: 18080
       W3REG_WS_PORT: 18081
       CONFIG_PATH: ./config.docker.toml
@@ -76,6 +78,8 @@ jobs:
             echo "SERVICE_NAME=${{ env.SERVICE_NAME }}" > .env
             echo "VERSION_TAG=${{ env.VERSION_TAG }}" >> .env
             echo "REDIS_PORT=${{ env.REDIS_PORT }}" >> .env
+            echo "POSTGRES_PORT=${{ env.POSTGES_PORT }}" >> .env
+            echo "POSTGRES_PASSWORD=${{ env.POSTGRES_PASSWORD }}" >> .env
             echo "W3REG_HTTP_PORT=${{ env.W3REG_HTTP_PORT }}" >> .env
             echo "W3REG_WS_PORT=${{ env.W3REG_WS_PORT }}" >> .env
             echo "CONFIG_PATH=${{ env.CONFIG_PATH }}" >> .env

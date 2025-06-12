@@ -35,6 +35,7 @@ port = 5432
 user = "tinker"
 # password = "asdf" Optional
 dbname = "name"
+cert_path = "/path/to/pg_cert.pem"
 
 [adapter]
 [adapter.matrix]
