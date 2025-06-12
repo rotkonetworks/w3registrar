@@ -108,7 +108,7 @@ impl DnsChallenge {
             None => return Ok(None),
         };
 
-        let token = match state.challenges.get("web") {
+        let token = match state.challenges.get(&crate::api::AccountType::Web) {
             Some(challenge) if !challenge.done => match &challenge.token {
                 Some(t) => t.clone(),
                 None => return Ok(None),
@@ -216,7 +216,7 @@ pub async fn _verify_dns_challenge(
         }
     };
 
-    let token = match state.challenges.get("web") {
+    let token = match state.challenges.get(&crate::api::AccountType::Web) {
         Some(challenge) if !challenge.done => match &challenge.token {
             Some(t) => t.clone(),
             None => {

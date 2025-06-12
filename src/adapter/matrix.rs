@@ -389,7 +389,7 @@ async fn handle_content(
     };
 
     // get the challenge for the account type
-    let challenge = match state.challenges.get(&account_type.to_string()) {
+    let challenge = match state.challenges.get(&account_type) {
         Some(challenge) => challenge,
         None => return Ok(false),
     };
