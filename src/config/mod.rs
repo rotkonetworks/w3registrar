@@ -246,6 +246,7 @@ pub struct PostgresConfig {
     pub user: String,
     pub password: Option<String>,
     pub dbname: String,
+    pub ssl_mode: Option<String>,
 }
 
 impl Default for PostgresConfig {
@@ -257,6 +258,7 @@ impl Default for PostgresConfig {
             password: None,
             host: "127.0.0.1".to_string(),
             port: 5432,
+            ssl_mode: None,
         }
     }
 }

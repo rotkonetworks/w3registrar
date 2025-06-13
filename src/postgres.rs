@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use subxt::utils::AccountId32;
 use tokio_postgres::{Client, NoTls};
+use postgres_native_tls::{MakeTlsConnector, TlsConnector};
+use native_tls::{TlsConnector as NativeTlsConnector};
 use tracing::info;
 
 use crate::{
@@ -111,7 +113,36 @@ impl PostgresConnection {
         if let Some(pwd) = &cfg.password {
             conn_cfg.password(pwd);
         };
-        let (client, connection) = conn_cfg.connect(NoTls).await?;
+        
+        let (client, connection) = match cfg.ssl_mode.as_deref() {
+            Some("require") => {
+                let tls_connector = NativeTlsConnector::builder()
+                    .danger_accept_invalid_certs(false)
+                    .build()?;
+                let tls = MakeTlsConnector::new(tls_connector);
+                conn_cfg.connect(tls).await?
+            }
+            Some("prefer") => {
+                let tls_connector = NativeTlsConnector::builder()
+                    .danger_accept_invalid_certs(false)
+                    .build()?;
+                let tls = MakeTlsConnector::new(tls_connector);
+                match conn_cfg.connect(tls).await {
+                    Ok(conn) => conn,
+                    Err(_) => {
+                        tracing::warn!("SSL connection failed, falling back to unencrypted connection");
+                        conn_cfg.connect(NoTls).await?
+                    }
+                }
+            }
+            Some("disable") | None => conn_cfg.connect(NoTls).await?,
+            Some(mode) => {
+                return Err(anyhow!(
+                    "Invalid SSL mode '{}'. Valid modes: 'require', 'prefer', 'disable'",
+                    mode
+                ));
+            }
+        };
 
         let _join_handle = tokio::spawn(async move {
             if let Err(e) = connection.await {

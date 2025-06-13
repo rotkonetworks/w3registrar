@@ -35,6 +35,7 @@ port = 5432
 user = "tinker"
 # password = "asdf" Optional
 dbname = "name"
+# ssl_mode = "require" # Options: "require", "prefer", "disable" (default: disable)
 
 [adapter]
 [adapter.matrix]
