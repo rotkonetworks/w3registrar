@@ -5,10 +5,10 @@ use anyhow::anyhow;
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 use subxt::utils::AccountId32;
 use tokio_postgres::{Client, NoTls};
-use tracing::{info, error};
+use tracing::{error, info};
 
 use crate::{
     api::{identity_data_tostring, AccountType, Filter, IncomingSearchRequest, Network},
@@ -116,10 +116,20 @@ impl PostgresConnection {
                     .host(&cfg.host)
                     .port(cfg.port)
                     .dbname(&cfg.dbname);
-                let (client, connection) = conn_cfg.connect(connector).await?;
+
                 if let Some(pwd) = &cfg.password {
                     conn_cfg.password(pwd);
                 };
+
+                if let Some(opts) = &cfg.options {
+                    conn_cfg.options(opts);
+                }
+
+                if let Some(timeout) = cfg.timeout {
+                    conn_cfg.connect_timeout(Duration::from_millis(timeout));
+                }
+
+                let (client, connection) = conn_cfg.connect(connector).await?;
 
                 let _join_handle = tokio::spawn(async move {
                     if let Err(e) = connection.await {
@@ -134,6 +144,15 @@ impl PostgresConnection {
                     .host(&cfg.host)
                     .port(cfg.port)
                     .dbname(&cfg.dbname);
+
+                if let Some(opts) = &cfg.options {
+                    conn_cfg.options(opts);
+                }
+
+                if let Some(timeout) = cfg.timeout {
+                    conn_cfg.connect_timeout(Duration::from_millis(timeout));
+                }
+
                 let (client, connection) = conn_cfg.connect(NoTls).await?;
                 if let Some(pwd) = &cfg.password {
                     conn_cfg.password(pwd);

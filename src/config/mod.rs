@@ -248,6 +248,8 @@ pub struct PostgresConfig {
     pub password: Option<String>,
     pub dbname: String,
     pub cert_path: Option<PathBuf>,
+    pub options: Option<String>,
+    pub timeout: Option<u64>,
 }
 
 impl Default for PostgresConfig {
@@ -260,6 +262,8 @@ impl Default for PostgresConfig {
             host: "127.0.0.1".to_string(),
             port: 5432,
             cert_path: None,
+            options: None,
+            timeout: None,
         }
     }
 }

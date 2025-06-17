@@ -36,6 +36,9 @@ user = "tinker"
 # password = "asdf" Optional
 dbname = "name"
 cert_path = "/path/to/pg_cert.pem"
+# cert_path = "./cert.crt" # Optional
+# timeout = 30 # Optional
+# options = "key=value" # Optional
 
 [adapter]
 [adapter.matrix]
