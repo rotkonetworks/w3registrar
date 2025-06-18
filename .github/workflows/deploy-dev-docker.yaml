@@ -92,7 +92,7 @@ jobs:
             echo "VERSION_TAG=${{ env.VERSION_TAG }}" >> .env
             echo "REDIS_PORT=${{ env.REDIS_PORT }}" >> .env
             echo "POSTGRES_PORT=${{ env.POSTGRES_PORT }}" >> .env
-            echo "POSTGERS_PASSWORD=${{ env.POSTGRES_PASSWORD }}" >> .env
+            echo "POSTGRES_PASSWORD=${{ env.POSTGRES_PASSWORD }}" >> .env
             echo "W3REG_HTTP_PORT=${{ env.W3REG_HTTP_PORT }}" >> .env
             echo "W3REG_WS_PORT=${{ env.W3REG_WS_PORT }}" >> .env
             echo "CONFIG_PATH=${{ env.CONFIG_PATH }}" >> .env
