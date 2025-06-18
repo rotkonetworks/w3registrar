@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::net::{SocketAddr, ToSocketAddrs};
+use std::path::PathBuf;
 use tokio::sync::OnceCell;
 use url::Url;
 
@@ -246,6 +247,9 @@ pub struct PostgresConfig {
     pub user: String,
     pub password: Option<String>,
     pub dbname: String,
+    pub cert_path: Option<PathBuf>,
+    pub options: Option<String>,
+    pub timeout: Option<u64>,
 }
 
 impl Default for PostgresConfig {
@@ -257,6 +261,9 @@ impl Default for PostgresConfig {
             password: None,
             host: "127.0.0.1".to_string(),
             port: 5432,
+            cert_path: None,
+            options: None,
+            timeout: None,
         }
     }
 }

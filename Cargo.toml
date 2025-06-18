@@ -43,6 +43,8 @@ axum = "0.8.3"
 reqwest = { version = "0.12.15", features = ["json"] }
 sequoia-openpgp = {version = "2.0.0", default-features = false, features = ["compression", "crypto-openssl"]}
 tokio-postgres = "0.7.13"
+postgres-openssl = "0.5.1"
+openssl = "0.10.73"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

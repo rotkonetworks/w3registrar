@@ -2,11 +2,13 @@
 // TODO: add table name for the queries?
 
 use anyhow::anyhow;
+use openssl::ssl::{SslConnector, SslMethod};
+use postgres_openssl::MakeTlsConnector;
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 use subxt::utils::AccountId32;
 use tokio_postgres::{Client, NoTls};
-use tracing::info;
+use tracing::{error, info};
 
 use crate::{
     api::{identity_data_tostring, AccountType, Filter, IncomingSearchRequest, Network},
@@ -103,21 +105,67 @@ impl PostgresConnection {
 
     pub async fn new(cfg: &PostgresConfig) -> anyhow::Result<Self> {
         let mut conn_cfg = tokio_postgres::Config::new();
-        conn_cfg
-            .user(&cfg.user)
-            .host(&cfg.host)
-            .port(cfg.port)
-            .dbname(&cfg.dbname);
-        if let Some(pwd) = &cfg.password {
-            conn_cfg.password(pwd);
-        };
-        let (client, connection) = conn_cfg.connect(NoTls).await?;
+        // this is because we have incompatible types of 'connection' (tls vs raw)
+        let client = match &cfg.cert_path {
+            Some(path) => {
+                let mut builder = SslConnector::builder(SslMethod::tls())?;
+                builder.set_ca_file(path)?;
+                let connector = MakeTlsConnector::new(builder.build());
+                conn_cfg
+                    .user(&cfg.user)
+                    .host(&cfg.host)
+                    .port(cfg.port)
+                    .dbname(&cfg.dbname);
 
-        let _join_handle = tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("connection error: {}", e);
+                if let Some(pwd) = &cfg.password {
+                    conn_cfg.password(pwd);
+                };
+
+                if let Some(opts) = &cfg.options {
+                    conn_cfg.options(opts);
+                }
+
+                if let Some(timeout) = cfg.timeout {
+                    conn_cfg.connect_timeout(Duration::from_millis(timeout));
+                }
+
+                let (client, connection) = conn_cfg.connect(connector).await?;
+
+                let _join_handle = tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        error!(error = ?e, "postgres connection error");
+                    }
+                });
+                client
             }
-        });
+            None => {
+                conn_cfg
+                    .user(&cfg.user)
+                    .host(&cfg.host)
+                    .port(cfg.port)
+                    .dbname(&cfg.dbname);
+
+                if let Some(opts) = &cfg.options {
+                    conn_cfg.options(opts);
+                }
+
+                if let Some(timeout) = cfg.timeout {
+                    conn_cfg.connect_timeout(Duration::from_millis(timeout));
+                }
+
+                let (client, connection) = conn_cfg.connect(NoTls).await?;
+                if let Some(pwd) = &cfg.password {
+                    conn_cfg.password(pwd);
+                };
+
+                let _join_handle = tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        error!(error = ?e, "postgres connection error");
+                    }
+                });
+                client
+            }
+        };
         info!("New postgress connection established!");
 
         Ok(Self { client })
