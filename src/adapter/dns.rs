@@ -5,6 +5,7 @@ use crate::{
 };
 use anyhow::Result;
 use once_cell::sync::OnceCell;
+use w3r_macro::AdapterDerive;
 use std::str::FromStr;
 use std::sync::Arc;
 use subxt::utils::AccountId32;
@@ -73,8 +74,8 @@ pub async fn verify_txt(domain: &str, challenge: &str) -> bool {
     }
 }
 
+#[derive(AdapterDerive)]
 pub struct DnsAdapter;
-impl Adapter for DnsAdapter {}
 
 struct DnsChallenge {
     domain: String,

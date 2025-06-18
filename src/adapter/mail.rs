@@ -1,4 +1,5 @@
 use anyhow::anyhow;
+use w3r_macro::AdapterDerive;
 use std::net::TcpStream;
 use std::str::FromStr;
 use std::time::Duration;
@@ -16,13 +17,11 @@ use tracing::{error, info, instrument, Level};
 
 use crate::config::GLOBAL_CONFIG;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, AdapterDerive)]
 pub struct Mail {
     pub body: Option<String>,
     pub sender: String,
 }
-
-impl Adapter for Mail {}
 
 impl Mail {
     fn new(sender: String, body: Option<String>) -> Self {
@@ -159,8 +158,7 @@ impl MailListener {
     // }
 
     async fn flag_mail_as_seen(&mut self, id: u32) -> anyhow::Result<()> {
-        self.session
-            .uid_store(format!("{id}"), "+FLAGS (\\SEEN)")?;
+        self.session.uid_store(format!("{id}"), "+FLAGS (\\SEEN)")?;
         self.session.expunge()?;
         Ok(())
     }
@@ -215,7 +213,7 @@ impl MailListener {
                 e
             )
         })?;
-      
+
         // TODO: make this duration configurable
         loop {
             info!("Starting idle session");

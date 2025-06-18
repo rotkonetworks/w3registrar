@@ -6,16 +6,16 @@ use sequoia_openpgp::{self as openpgp, KeyHandle};
 use subxt::utils::AccountId32;
 use tracing::error;
 use tracing::info;
+use w3r_macro::AdapterDerive;
 
 use crate::api::Network;
 use crate::api::{Account, RedisConnection};
 use super::Adapter;
 
+#[derive(AdapterDerive)]
 pub struct PGPHelper {
     signature: Vec<u8>,
 }
-
-impl Adapter for PGPHelper {}
 
 impl PGPHelper {
     pub fn new(signature: &[u8]) -> Self {

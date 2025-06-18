@@ -5,18 +5,16 @@ use crate::{
     config::GLOBAL_CONFIG,
     token::{AuthToken, Token},
 };
+use anyhow::anyhow;
 use reqwest::{header::ACCEPT, Client};
 use serde::Deserialize;
-use anyhow::anyhow;
+use w3r_macro::AdapterDerive;
 
 /// Used to interact with the github api
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, AdapterDerive)]
 pub struct Github {
     pub cred: GithubCred,
 }
-
-// TODO: make a derive macro?
-impl Adapter for Github {}
 
 impl Github {
     /// Reconstruct the redirected url with the appended state (challenge)
@@ -27,9 +25,10 @@ impl Github {
         let gh_config = cfg.adapter.github.clone();
         let base_url = gh_config.gh_url;
         let client_id = gh_config.client_id;
-        
+
         // get the redirect URI or return an error if not configured
-        let redirect_uri = gh_config.redirect_url
+        let redirect_uri = gh_config
+            .redirect_url
             .ok_or_else(|| anyhow::anyhow!("GitHub redirect URL not configured"))?;
 
         // build the URL with the required parameters
@@ -41,7 +40,8 @@ impl Github {
                 ("state", state), // this corresponds to a registration request (challenge)
                                   // https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps
             ],
-        ).map_err(|e| anyhow::anyhow!("Failed to construct URL: {}", e))
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to construct URL: {}", e))
     }
 
     /// Validates that the state parameter is a valid token

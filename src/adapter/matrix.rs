@@ -21,6 +21,7 @@ use matrix_sdk::{
     Client,
 };
 use serde_json::Value;
+use w3r_macro::AdapterDerive;
 use std::path::Path;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
@@ -33,12 +34,12 @@ use crate::{adapter::Adapter, api::Network, node::register_identity};
 
 // TODO: move those "independent" functions inside the Matrix struct (handle_content, etc.)
 
+#[derive(AdapterDerive)]
 struct Matrix {
     client: Client,
     settings: SyncSettings,
 }
 
-impl Adapter for Matrix {}
 
 impl Matrix {
     #[instrument(skip_all)]
