@@ -9,6 +9,7 @@ use crate::{
 use reqwest::{header::ACCEPT, Client};
 use serde::Deserialize;
 use anyhow::anyhow;
+use redis::AsyncCommands;
 
 /// Used to interact with the github api
 #[derive(Clone, Debug)]
