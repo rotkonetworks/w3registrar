@@ -145,6 +145,10 @@ impl PostgresConnection {
                     .port(cfg.port)
                     .dbname(&cfg.dbname);
 
+                if let Some(pwd) = &cfg.password {
+                    conn_cfg.password(pwd);
+                };
+
                 if let Some(opts) = &cfg.options {
                     conn_cfg.options(opts);
                 }
@@ -154,9 +158,6 @@ impl PostgresConnection {
                 }
 
                 let (client, connection) = conn_cfg.connect(NoTls).await?;
-                if let Some(pwd) = &cfg.password {
-                    conn_cfg.password(pwd);
-                };
 
                 let _join_handle = tokio::spawn(async move {
                     if let Err(e) = connection.await {
@@ -251,7 +252,7 @@ impl Record {
     }
 
     pub fn wallet_id(&self) -> String {
-        self.discord.to_owned().unwrap_or("NULL".to_string())
+        self.wallet_id.to_owned().unwrap_or("NULL".to_string())
     }
 
     pub fn discord(&self) -> String {
