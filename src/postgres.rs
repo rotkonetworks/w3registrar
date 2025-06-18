@@ -56,8 +56,8 @@ impl PostgresConnection {
     pub async fn write(&mut self, record: &Record) -> anyhow::Result<()> {
         info!(who = ?record.wallet_id(), "Writing record");
         let insert_reg_record =
-            "INSERT INTO registration (wallet_id, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ";
+            "INSERT INTO registration(wallet_id, network, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
         info!(query=?insert_reg_record,"QUERRY");
 
         self.client
@@ -65,6 +65,7 @@ impl PostgresConnection {
                 insert_reg_record,
                 &[
                     &record.wallet_id(),
+                    &record.network(),
                     &record.discord(),
                     &record.twitter(),
                     &record.matrix(),
@@ -210,12 +211,16 @@ pub struct Record {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pgp_fingerprint: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<Network>,
 }
 
 impl Record {
     pub fn from_registration(
         acc: &AccountId32,
         registration: &Registration<u128, IdentityInfo>,
+        network: Option<Network>,
     ) -> Self {
         let pgp_fingerprint = match registration.info.pgp_fingerprint {
             Some(bytes) => Some(hex::encode(bytes)),
@@ -232,6 +237,7 @@ impl Record {
             legal: identity_data_tostring(&registration.info.legal),
             web: identity_data_tostring(&registration.info.web),
             pgp_fingerprint,
+            network,
         }
     }
 
@@ -241,14 +247,18 @@ impl Record {
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
 
-        let reg_config = match cfg.registrar.registrar_config(jud.registrar_index) {
+        let (network, reg_config) = match cfg.registrar.registrar_config(jud.registrar_index) {
             Some(v) => v,
             None => return Ok(None),
         };
 
         let client = NodeClient::from_url(&reg_config.endpoint).await?;
         let registration = node::get_registration(&client, &jud.target).await?;
-        Ok(Some(Self::from_registration(&jud.target, &registration)))
+        Ok(Some(Self::from_registration(
+            &jud.target,
+            &registration,
+            Some(network),
+        )))
     }
 
     pub fn wallet_id(&self) -> String {
@@ -291,6 +301,10 @@ impl Record {
         self.pgp_fingerprint
             .to_owned()
             .unwrap_or("NULL".to_string())
+    }
+
+    fn network(&self) -> String {
+        format!("{}", self.network.clone().unwrap_or_default())
     }
 }
 
