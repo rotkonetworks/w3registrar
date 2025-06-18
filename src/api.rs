@@ -1858,17 +1858,15 @@ pub async fn spawn_redis_subscriber() -> anyhow::Result<()> {
 }
 
 pub struct RedisConnection {
-    span: Span,
-    conn: ConnectionManager,
-    pubsub: PubSub,
+    pub span: Span,
+    pub conn: ConnectionManager,
+    pub pubsub: PubSub,
 }
 
 impl RedisConnection {
     #[instrument(skip_all, parent = None)]
-    pub async fn default() -> Self {
-        Self::get_connection(&GLOBAL_CONFIG.get().unwrap().redis)
-            .await
-            .unwrap()
+    pub async fn default() -> anyhow::Result<Self> {
+        Self::get_connection(&GLOBAL_CONFIG.get().unwrap().redis).await
     }
 
     /// Clears all caches
@@ -2030,7 +2028,7 @@ impl RedisConnection {
     }
 
     #[instrument(skip_all, parent = &self.span)]
-    async fn clear_all_related_to(
+    pub async fn clear_all_related_to(
         &mut self,
         network: &Network,
         who: &AccountId32,
