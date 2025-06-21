@@ -4,12 +4,17 @@
 use anyhow::anyhow;
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
+use postgres_types::ToSql;
 use serde::{Deserialize, Serialize};
+use std::fmt::Display;
 use std::{str::FromStr, time::Duration};
 use subxt::utils::AccountId32;
+use tokio_postgres::types::FromSql;
 use tokio_postgres::{Client, NoTls};
-use tracing::{error, info};
+use tracing::instrument;
+use tracing::{error, info, info_span, Span};
 
+use crate::api::TimeFilter;
 use crate::{
     api::{
         identity_data_tostring, AccountType, FieldsFilter, Filter, IncomingSearchRequest, Network,
@@ -354,6 +359,7 @@ pub struct TimelineRecord {
     pub event: TimelineEvent,
     // FIXME
     pub date: String,
+    #[serde(skip_serializing)]
     pub wallet_id: AccountId32,
 }
 
@@ -379,10 +385,10 @@ impl TimelineRecord {}
 pub struct RegistrationRecord {
     // NOTE: should network and wallet_id bet Option?
     #[serde(skip_serializing_if = "Option::is_none")]
-    network: Option<Network>,
+    pub wallet_id: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub wallet_id: Option<String>,
+    network: Option<Network>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub discord: Option<String>,
@@ -412,7 +418,7 @@ pub struct RegistrationRecord {
     pub pgp_fingerprint: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub network: Option<Network>,
+    pub timeline: Option<Vec<TimelineRecord>>,
 }
 
 impl RegistrationRecord {
@@ -437,7 +443,7 @@ impl RegistrationRecord {
             legal: identity_data_tostring(&registration.info.legal),
             web: identity_data_tostring(&registration.info.web),
             pgp_fingerprint,
-            network,
+            timeline: None,
         }
     }
 
@@ -588,7 +594,11 @@ impl Query for TimelineQuery {
 impl TimelineQuery {
     /// supplies a [Vec<RegistrationRecord>] by [TimelineRecord]. This usually is done
     /// when a search request fields includes [DisplayedInfo::Timeline]
-    pub async fn supply(rec: &mut Vec<RegistrationRecord>) -> anyhow::Result<()> {
+    pub async fn supply(
+        rec: &mut Vec<RegistrationRecord>,
+        size: Option<usize>,
+        time: Option<TimeFilter>,
+    ) -> anyhow::Result<()> {
         for record in rec.iter_mut() {
             let mut timeline_query = TimelineQuery::default();
             let mut condition = Condition::default();
@@ -597,13 +607,26 @@ impl TimelineQuery {
                 condition = condition.network(&network);
             };
 
+            if let Some(time) = &time {
+                condition = condition.date(&time);
+            }
+
             if let Some(wallet_id) = &record.wallet_id {
                 condition = condition.condition(&SearchInfo::AccountId32(wallet_id.clone()));
             };
 
             let selected = Displayed::default().wallet_id().event().date();
-            timeline_query = timeline_query.condition(condition).selected(selected);
-            record.timeline = Some(timeline_query.exec().await?);
+            let mut timeline = timeline_query
+                .selected(selected)
+                .condition(condition)
+                .exec()
+                .await?;
+
+            if let Some(size) = size {
+                timeline.truncate(size);
+            }
+
+            record.timeline = Some(timeline);
         }
         Ok(())
     }
@@ -840,7 +863,7 @@ impl Display for Order {
 
 #[derive(Default, Debug, Clone)]
 pub struct Limit {
-    querry: u8,
+    querry: usize,
 }
 
 impl Query for Limit {
@@ -850,7 +873,7 @@ impl Query for Limit {
 }
 
 impl Limit {
-    pub fn new(querry: u8) -> Self {
+    pub fn new(querry: usize) -> Self {
         Self { querry }
     }
 }
@@ -914,7 +937,7 @@ impl Condition {
 
     pub fn network(mut self, network: &Network) -> Self {
         self.querry.push_str(&format!("network='{}' ", network));
-        self
+        self.and()
     }
 
     pub fn wallet_id(mut self, wallet_id: &AccountId32) -> Self {
@@ -936,23 +959,26 @@ impl Condition {
         self
     }
 
-    pub fn date(mut self, date: chrono::NaiveDate, cmp: ComparisonOperator) -> Self {
-        match cmp {
-            ComparisonOperator::Eq => {
-                self.querry.push_str("");
-            }
-            ComparisonOperator::Lt => {
-                self.querry.push_str("");
-            }
-            ComparisonOperator::Gt => {
-                self.querry.push_str("");
-            }
-            ComparisonOperator::Ge => {
-                self.querry.push_str("");
-            }
-            ComparisonOperator::Le => {
-                self.querry.push_str("");
-            }
+    pub fn gt_date(mut self, gt: Option<chrono::NaiveDate>) -> Self {
+        if let Some(time) = gt {
+            self.querry.push_str(&format!("date > '{}'", time));
+        }
+        self
+    }
+
+    pub fn lt_date(mut self, lt: Option<chrono::NaiveDate>) -> Self {
+        if let Some(time) = lt {
+            self.querry.push_str(&format!("date < '{}'", time));
+        }
+        self
+    }
+
+    pub fn date(mut self, time: &TimeFilter) -> Self {
+        if time.gt.is_some() {
+            self = self.gt_date(time.gt).and()
+        };
+        if time.lt.is_some() {
+            self = self.lt_date(time.lt).and();
         }
         self
     }
@@ -1307,6 +1333,8 @@ impl Display for TimelineEvent {
 }
 
 mod test {
+    use chrono::{NaiveDate, NaiveDateTime};
+
     #[allow(unused_imports)]
     use super::*;
 
@@ -1497,11 +1525,29 @@ mod test {
     }
 
     #[test]
+    fn search_by_date() {
+        let mut timeline_query = TimelineQuery::default();
+        let selected = Displayed::default().wallet_id().event().date();
+        let date = NaiveDate::from_ymd_opt(2015, 6, 3).unwrap();
+        let time_filter = TimeFilter {
+            gt: Some(date),
+            lt: None,
+            // eq: None,
+        };
+        let mut condition = Condition::default()
+            .date(&time_filter)
+            .and()
+            .network(&Network::Paseo);
+
+        let mut sql = timeline_query
+            .selected(selected)
+            .condition(condition)
+            .to_sql();
+        assert_eq!(sql, "SELECT wallet_id, event, date FROM timeline_elem WHERE date > '2015-06-03' AND network='paseo'");
+    }
+
+    #[test]
     fn insert_query_test() {
         // InsertQuery
     }
 }
-// TODO: init timeline when registration is requested and reset previous one
-// TODO: add a "way" to backup table, and creating a new one if it's structure is different
-// TODO: sort timelines by date
-// NOTE: do you want to save network name with upper or lower case

@@ -440,7 +440,7 @@ impl Display for Network {
             Network::Paseo => write!(f, "paseo"),
             Network::Polkadot => write!(f, "polkadot"),
             Network::Kusama => write!(f, "kusama"),
-            Network::Rococo => write!(f, "pococo"),
+            Network::Rococo => write!(f, "rococo"),
         }
     }
 }
@@ -509,7 +509,7 @@ mod date_format {
     use chrono::NaiveDate;
     use serde::{self, Deserialize, Deserializer, Serializer};
 
-    const FORMAT: &'static str = "%d-%m-%Y";
+    const FORMAT: &'static str = "%Y-%m-%d";
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<NaiveDate>, D::Error>
     where
@@ -537,21 +537,18 @@ mod date_format {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct TimeFilter {
-    #[serde(with = "date_format")]
-    gt: Option<chrono::NaiveDate>,
-    #[serde(with = "date_format")]
-    lt: Option<chrono::NaiveDate>,
-    #[serde(with = "date_format")]
-    eq: Option<chrono::NaiveDate>,
-
+    #[serde(with = "date_format", default)]
+    pub gt: Option<chrono::NaiveDate>,
+    #[serde(with = "date_format", default)]
+    pub lt: Option<chrono::NaiveDate>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 /// Display condition
 pub struct Filter {
     pub fields: Vec<FieldsFilter>,
-    pub result_size: Option<u8>,
-    // pub time: Option<Vec<TimeFilter>>,
+    pub result_size: Option<usize>,
+    pub time: Option<TimeFilter>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -572,13 +569,13 @@ impl FieldsFilter {
 impl Filter {
     pub fn new(
         fields: Vec<FieldsFilter>,
-        result_size: Option<u8>,
-        time: Option<Vec<TimeFilter>>,
+        result_size: Option<usize>,
+        time: Option<TimeFilter>,
     ) -> Self {
         Self {
             fields,
             result_size,
-            // time,
+            time,
         }
     }
 }
@@ -610,7 +607,12 @@ impl IncomingSearchRequest {
 
             let mut registrations = registration_query.exec().await?;
 
-            TimelineQuery::supply(&mut registrations).await?;
+            TimelineQuery::supply(
+                &mut registrations,
+                self.filters.result_size,
+                self.filters.time,
+            )
+            .await?;
 
             Ok(registrations)
         } else {
