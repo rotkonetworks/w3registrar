@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
     // init postgress table
     PostgresConnection::new(&config.postgres)
         .await?
-        .init_tables()
+        .init()
         .await?;
 
     // initialize runner

@@ -5,6 +5,7 @@ use tracing::info;
 use crate::{
     api::{Account, Network, RedisConnection},
     node::register_identity,
+    postgres::PostgresConnection,
 };
 
 pub mod dns;
@@ -59,6 +60,7 @@ pub trait Adapter {
         account: &Account,
     ) -> anyhow::Result<()> {
         let account_type = &account.account_type();
+        let pog_connection = PostgresConnection::default().await?;
 
         // get the current state
         let state = match redis_connection
@@ -87,6 +89,7 @@ pub trait Adapter {
 
         info!("Checking if this challenge is already done...");
         // challenge is already completed
+        // FIXME: 
         if challenge.done {
             return Err(anyhow::anyhow!(
                 "{}",
@@ -118,6 +121,11 @@ pub trait Adapter {
             .update_challenge_status(network, account_id, account_type)
             .await?;
 
+        // save timeline info
+        pog_connection
+            .update_timeline(account_type.into(), account_id, network)
+            .await?;
+
         let state = match redis_connection
             .get_verification_state(network, account_id)
             .await?
@@ -130,7 +138,15 @@ pub trait Adapter {
         info!("Checking if all challenges are done");
         if state.completed {
             info!("All challenges are completed");
+            // FIXME: Metadata error: The generated code is not compatible with the node
             register_identity(account_id, network).await?;
+            info!("Identity registred on chain");
+
+            // TODO: finalize when jdugement is given not here
+            pog_connection
+                .finalize_timeline(account_id, network)
+                .await?;
+            info!("Registration timeline updated");
         }
 
         Ok(())

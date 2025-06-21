@@ -9,6 +9,9 @@
 // 4.5) Use skip()/skip_all for sensitive info (passwords)
 // 5) Log error as they happen and pass then upward if feasible
 // 6) Refrain from using .unwrap and use anyhow::Result whenever is possible/feasible
+//
+// TODO: clear data related to registration if it fails at some point
+// TODO: reduce the usage [Clone] :)
 use anyhow::anyhow;
 use anyhow::Result;
 use axum::extract::Query;
@@ -48,6 +51,7 @@ use tracing::Span;
 use tracing::{debug, error, info};
 use tungstenite::Error;
 
+use crate::postgres::RegistrationQuery;
 use crate::{
     adapter::{
         github::{Github, GithubRedirectStepTwoParams},
@@ -66,8 +70,8 @@ use crate::{
         Client as NodeClient,
     },
     postgres::{
-        Condition, Displayed, DisplayedInfo, PostgresConnection, Query as _, Record, SearchInfo,
-        SearchQuery,
+        Condition, Displayed, DisplayedInfo, Limit, PostgresConnection, RegistrationRecord,
+        SearchInfo, SimpleSearchQuery, TimelineQuery,
     },
     token::{AuthToken, Token},
 };
@@ -498,40 +502,145 @@ pub struct IncomingVerifyPGPRequest {
 pub struct IncomingSearchRequest {
     network: Option<Network>,
     outputs: Vec<DisplayedInfo>,
-    filters: Vec<Filter>,
+    filters: Filter,
+}
+
+mod date_format {
+    use chrono::NaiveDate;
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    const FORMAT: &'static str = "%Y-%m-%d";
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<NaiveDate>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = Option::<String>::deserialize(deserializer)?;
+        match s {
+            Some(date_str) => NaiveDate::parse_from_str(&date_str, FORMAT)
+                .map(Some)
+                .map_err(serde::de::Error::custom),
+            None => Ok(None),
+        }
+    }
+
+    pub fn serialize<S>(date: &Option<NaiveDate>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match date {
+            Some(date) => serializer.serialize_str(&date.format(FORMAT).to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct TimeFilter {
+    #[serde(with = "date_format", default)]
+    pub gt: Option<chrono::NaiveDate>,
+    #[serde(with = "date_format", default)]
+    pub lt: Option<chrono::NaiveDate>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+/// Display condition
+pub struct Filter {
+    pub fields: Vec<FieldsFilter>,
+    pub result_size: Option<usize>,
+    pub time: Option<TimeFilter>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Filter {
-    field: SearchInfo,
-    strict: bool,
+pub struct FieldsFilter {
+    pub field: SearchInfo,
+    pub strict: bool,
     // starts_with: bool,
     // ends_with: bool,
     // contains: bool,
 }
 
-impl Filter {
+impl FieldsFilter {
     pub fn new(field: SearchInfo, strict: bool) -> Self {
         Self { field, strict }
     }
 }
 
-impl IncomingSearchRequest {
+impl Filter {
     pub fn new(
-        network: Option<Network>,
-        outputs: Vec<DisplayedInfo>,
-        filters: Vec<Filter>,
+        fields: Vec<FieldsFilter>,
+        result_size: Option<usize>,
+        time: Option<TimeFilter>,
     ) -> Self {
+        Self {
+            fields,
+            result_size,
+            time,
+        }
+    }
+}
+
+impl IncomingSearchRequest {
+    pub fn new(network: Option<Network>, outputs: Vec<DisplayedInfo>, filters: Filter) -> Self {
         Self {
             network,
             outputs,
             filters,
         }
     }
+
+    async fn search(self) -> anyhow::Result<Vec<RegistrationRecord>> {
+        if self.outputs.contains(&DisplayedInfo::Timeline) {
+            let mut registration_query = RegistrationQuery::default();
+            let dispalyed = Displayed::default();
+            let mut condition = Condition::default();
+
+            for filter in self.filters.fields.iter() {
+                condition = condition.filter(filter);
+            }
+
+            if let Some(network) = self.network {
+                condition = condition.network(&network);
+            }
+
+            registration_query = registration_query.selected(dispalyed).condition(condition);
+
+            let mut registrations = registration_query.exec().await?;
+
+            TimelineQuery::supply(
+                &mut registrations,
+                self.filters.result_size,
+                self.filters.time,
+            )
+            .await?;
+
+            Ok(registrations)
+        } else {
+            let mut registration_query = RegistrationQuery::default();
+            let mut dispalyed = Displayed::default();
+            let mut condition = Condition::default();
+
+            for filter in self.filters.fields.iter() {
+                condition = condition.filter(filter);
+            }
+
+            if let Some(network) = self.network {
+                condition = condition.network(&network);
+            }
+
+            for output in self.outputs.iter() {
+                dispalyed = dispalyed.displayed_info(output);
+            }
+
+            registration_query = registration_query.selected(dispalyed).condition(condition);
+
+            registration_query.exec().await
+        }
+    }
 }
 
-impl Into<SearchQuery> for IncomingSearchRequest {
-    fn into(self) -> SearchQuery {
+impl Into<SimpleSearchQuery> for IncomingSearchRequest {
+    fn into(self) -> SimpleSearchQuery {
         let displayed = self
             .outputs
             .iter()
@@ -546,6 +655,7 @@ impl Into<SearchQuery> for IncomingSearchRequest {
                 DisplayedInfo::Legal => displayed.account(AccountType::Legal),
                 DisplayedInfo::Web => displayed.account(AccountType::Web),
                 DisplayedInfo::PGPFingerprint => displayed.account(AccountType::PGPFingerprint),
+                DisplayedInfo::Timeline => todo!(),
             });
 
         let mut condition = self
@@ -553,7 +663,8 @@ impl Into<SearchQuery> for IncomingSearchRequest {
             .iter()
             .fold(Condition::default(), |cond, net| cond.network(&net).and());
 
-        condition = self.filters.iter().fold(condition, |cond, filter| {
+        condition = self.filters.fields.iter().fold(condition, |cond, filter| {
+            // TODO: make this as cond.condition(&filter.field, filter.strict).and()
             if filter.strict {
                 cond.condition(&filter.field).and()
             } else {
@@ -561,10 +672,13 @@ impl Into<SearchQuery> for IncomingSearchRequest {
             }
         });
 
-        SearchQuery::default()
+        let limit = self.filters.result_size.map(Limit::new);
+
+        SimpleSearchQuery::default()
             .table_name("registration".to_string())
             .selected(displayed)
             .condition(condition)
+            .limit(limit)
     }
 }
 
@@ -1442,11 +1556,8 @@ impl SocketListener {
         &self,
         request: IncomingSearchRequest,
     ) -> anyhow::Result<serde_json::Value> {
-        let query: SearchQuery = request.into();
-        let mut pog_connection = PostgresConnection::default().await?;
-        info!(query=?query.to_sql(), "SEARCH QUERY");
-        let res = pog_connection.search(query.to_sql()).await?;
-        Ok(serde_json::to_value(res)?)
+        let query: Vec<RegistrationRecord> = request.search().await?;
+        Ok(serde_json::to_value(query)?)
     }
 }
 
@@ -1549,6 +1660,10 @@ impl NodeListener {
         // Save verification state to Redis
         conn.init_verification_state(network, who, &verification, &filtered_accounts)
             .await?;
+
+        // clears all "timelines" related to this requester and reconstruct a new one
+        let pog_connection = PostgresConnection::default().await?;
+        pog_connection.init_timeline(&who, &network).await?;
 
         Ok(())
     }
@@ -1673,13 +1788,15 @@ impl NodeListener {
                         }
                     }
                 } else if let Ok(Some(jud)) = event.as_event::<JudgementGiven>() {
+                    // TODO: handle unwrap(s)?
                     let cfg = GLOBAL_CONFIG.get().unwrap();
                     let pog_config = cfg.postgres.clone();
                     let mut pog_connection = PostgresConnection::new(&pog_config).await.unwrap();
-                    if let Some(record) = Record::from_judgement(&jud).await.unwrap() {
-                        pog_connection.write(&record).await.unwrap();
+                    if let Some(record) = RegistrationRecord::from_judgement(&jud).await.unwrap() {
+                        info!("Writing registration record to dB after");
+                        let _ = pog_connection.write(&record).await;
                     }
-                    info!(who = ?jud.target, "Jugdement saved to DB");
+                    info!(who = ?jud.target.to_string(), "Jugdement saved to DB");
                 }
             }
         }
@@ -1750,6 +1867,10 @@ impl NodeListener {
 
         let mut conn = RedisConnection::get_connection(&self.redis_cfg).await?;
         conn.clear_all_related_to(network, who).await?;
+
+        let pog_connection = PostgresConnection::default().await?;
+        pog_connection.delete_timelines(&who, &network).await?;
+
         Ok(())
     }
 }
