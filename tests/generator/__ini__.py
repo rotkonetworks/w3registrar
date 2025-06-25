@@ -124,10 +124,13 @@ def read_config(path):
 def connect_postgres(config):
     config=config["postgres"]
 
-    ssl_params = {
-        "sslmode": "require",
-        "sslkey": config.get("cert_path"),
-    }
+    if config.get("cert_path"): 
+        ssl_params = {
+            "sslmode": "require",
+            "sslkey": config.get("cert_path"),
+        }
+    else:
+        ssl_params = {}
 
     print(f"{bcolors.OKGREEN}CONNECTING...{bcolors.ENDC}")
 
