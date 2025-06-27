@@ -2,12 +2,14 @@
 ///
 use crate::{
     adapter::Adapter,
+    api::RedisConnection,
     config::GLOBAL_CONFIG,
     token::{AuthToken, Token},
 };
 use reqwest::{header::ACCEPT, Client};
 use serde::Deserialize;
 use anyhow::anyhow;
+use redis::AsyncCommands;
 
 /// Used to interact with the github api
 #[derive(Clone, Debug)]
@@ -44,18 +46,39 @@ impl Github {
         ).map_err(|e| anyhow::anyhow!("Failed to construct URL: {}", e))
     }
 
-    /// Validates that the state parameter is a valid token
+    /// Validates that the state parameter is a valid, stored, single-use token
+    ///
+    /// Validates the state parameter is:
+    /// - Cryptographically secure (8 characters from base-20 alphabet)
+    /// - Previously stored in Redis with expiration
+    /// - Single-use (removed after validation)
     pub async fn validate_state(state: &str) -> anyhow::Result<()> {
-        // TODO: check against stored state tokens
-        if state.is_empty() {
-            return Err(anyhow!("Invalid state parameter"));
+        if state.len() != 8 {
+            return Err(anyhow!("Invalid state parameter length"));
         }
+        
+        let mut redis_conn = RedisConnection::default().await?;
+        let key = format!("oauth_state:{}", state);
+        
+        // Check if state exists in Redis
+        let exists: bool = redis_conn.conn.exists(&key).await
+            .map_err(|e| anyhow!("Failed to check state in Redis: {}", e))?;
+        
+        if !exists {
+            return Err(anyhow!("Invalid or expired state parameter"));
+        }
+        
+        // Remove state to prevent replay attacks (single-use)
+        let _: () = redis_conn.conn.del(&key).await
+            .map_err(|e| anyhow!("Failed to remove state from Redis: {}", e))?;
+        
         Ok(())
     }
 
-    /// Generate a url that uses should open to authenticate their github account
+    /// Generate a url that users should open to authenticate their github account
     ///
-    /// This constructs a unique url per call, where each differs by the `state` parameter
+    /// This constructs a unique url per call, where each differs by the `state` parameter.
+    /// The state is stored in Redis with 10-minute expiration for security validation.
     pub async fn request_url() -> Option<String> {
         let cfg = GLOBAL_CONFIG
             .get()
@@ -68,13 +91,22 @@ impl Github {
             // FIXME
             .unwrap_or(url::Url::parse("https://rotko.net/").unwrap());
 
+        // Generate cryptographically secure state token
+        let state_token = Token::generate().await.show();
+        
+        // Store state in Redis with 10-minute expiration
+        if let Ok(mut redis_conn) = RedisConnection::default().await {
+            let key = format!("oauth_state:{}", state_token);
+            let _: Result<(), _> = redis_conn.conn.set_ex(&key, "valid", 600).await;
+        }
+
         let url = url::Url::parse_with_params(
             base_url.as_str(),
             &[
                 ("client_id", client_id.as_str()),
                 ("redirect_uri", redirect_uri.as_str()),
-                ("state", &Token::generate().await.show()),
-                // `state` is a number corresponds to a registration request
+                ("state", &state_token),
+                // `state` corresponds to a registration request
                 // https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps
             ],
         )
@@ -83,7 +115,16 @@ impl Github {
     }
 
     /// Gets github credentials to creates a [Github] instance
+    ///
+    /// # Errors
+    ///
+    /// - `params.state` is invalid, expired, or already used (replay attack protection)
+    /// - Failed to send http request to the Github API.
+    /// - Fails to deserialize Github http response to [GithubCred]
     pub async fn new(params: &GithubRedirectStepTwoParams) -> anyhow::Result<Self> {
+        // Validate state parameter against stored tokens
+        Github::validate_state(&params.state).await?;
+
         let cfg = GLOBAL_CONFIG
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
@@ -138,10 +179,12 @@ impl Github {
 
 /// Those params are added to the redirected url by github in step 2, check this for more
 ///
-/// https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#2-users-are-redirected-back-to-your-site-by-github
+/// [Resource](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#2-users-are-redirected-back-to-your-site-by-github)
 #[derive(Debug, Deserialize, Clone)]
 pub struct GithubRedirectStepTwoParams {
+    /// Temporarily Constructed by Github to finish step 2 in OAuth
     pub code: String,
+    /// Constructed by w3r to uniquely identify a Github OAuth request
     pub state: String,
 }
 

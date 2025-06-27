@@ -12,7 +12,7 @@ endpoint = "wss://people-paseo.dotters.network"
 registrar_index = 1
 keystore_path = "./.keyfile.example"
 registrar_account = "12BtBrcorHAvSeTLYo6YTq8kdiRG948vkvmxHEmSzZjwZ97u"
-fields = ["email","matrix", "twitter", "discord", "display_name"]
+fields = ["email","matrix", "twitter", "discord", "display_name", "pgp_fingerprint", "github"]
 
 [http]
 host = "0.0.0.0"
@@ -35,6 +35,10 @@ port = 5432
 user = "tinker"
 # password = "asdf" Optional
 dbname = "name"
+cert_path = "/path/to/pg_cert.pem"
+# cert_path = "./cert.crt" # Optional
+# timeout = 30 # Optional
+# options = "key=value" # Optional
 
 [adapter]
 [adapter.matrix]

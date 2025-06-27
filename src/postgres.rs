@@ -2,11 +2,13 @@
 // TODO: add table name for the queries?
 
 use anyhow::anyhow;
+use openssl::ssl::{SslConnector, SslMethod};
+use postgres_openssl::MakeTlsConnector;
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 use subxt::utils::AccountId32;
 use tokio_postgres::{Client, NoTls};
-use tracing::info;
+use tracing::{error, info};
 
 use crate::{
     api::{identity_data_tostring, AccountType, Filter, IncomingSearchRequest, Network},
@@ -54,8 +56,8 @@ impl PostgresConnection {
     pub async fn write(&mut self, record: &Record) -> anyhow::Result<()> {
         info!(who = ?record.wallet_id(), "Writing record");
         let insert_reg_record =
-            "INSERT INTO registration (wallet_id, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ";
+            "INSERT INTO registration(wallet_id, network, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
         info!(query=?insert_reg_record,"QUERRY");
 
         self.client
@@ -63,6 +65,7 @@ impl PostgresConnection {
                 insert_reg_record,
                 &[
                     &record.wallet_id(),
+                    &record.network(),
                     &record.discord(),
                     &record.twitter(),
                     &record.matrix(),
@@ -103,21 +106,68 @@ impl PostgresConnection {
 
     pub async fn new(cfg: &PostgresConfig) -> anyhow::Result<Self> {
         let mut conn_cfg = tokio_postgres::Config::new();
-        conn_cfg
-            .user(&cfg.user)
-            .host(&cfg.host)
-            .port(cfg.port)
-            .dbname(&cfg.dbname);
-        if let Some(pwd) = &cfg.password {
-            conn_cfg.password(pwd);
-        };
-        let (client, connection) = conn_cfg.connect(NoTls).await?;
+        // this is because we have incompatible types of 'connection' (tls vs raw)
+        let client = match &cfg.cert_path {
+            Some(path) => {
+                let mut builder = SslConnector::builder(SslMethod::tls())?;
+                builder.set_ca_file(path)?;
+                let connector = MakeTlsConnector::new(builder.build());
+                conn_cfg
+                    .user(&cfg.user)
+                    .host(&cfg.host)
+                    .port(cfg.port)
+                    .dbname(&cfg.dbname);
 
-        let _join_handle = tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("connection error: {}", e);
+                if let Some(pwd) = &cfg.password {
+                    conn_cfg.password(pwd);
+                };
+
+                if let Some(opts) = &cfg.options {
+                    conn_cfg.options(opts);
+                }
+
+                if let Some(timeout) = cfg.timeout {
+                    conn_cfg.connect_timeout(Duration::from_millis(timeout));
+                }
+
+                let (client, connection) = conn_cfg.connect(connector).await?;
+
+                let _join_handle = tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        error!(error = ?e, "postgres connection error");
+                    }
+                });
+                client
             }
-        });
+            None => {
+                conn_cfg
+                    .user(&cfg.user)
+                    .host(&cfg.host)
+                    .port(cfg.port)
+                    .dbname(&cfg.dbname);
+
+                if let Some(pwd) = &cfg.password {
+                    conn_cfg.password(pwd);
+                };
+
+                if let Some(opts) = &cfg.options {
+                    conn_cfg.options(opts);
+                }
+
+                if let Some(timeout) = cfg.timeout {
+                    conn_cfg.connect_timeout(Duration::from_millis(timeout));
+                }
+
+                let (client, connection) = conn_cfg.connect(NoTls).await?;
+
+                let _join_handle = tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        error!(error = ?e, "postgres connection error");
+                    }
+                });
+                client
+            }
+        };
         info!("New postgress connection established!");
 
         Ok(Self { client })
@@ -161,12 +211,16 @@ pub struct Record {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pgp_fingerprint: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<Network>,
 }
 
 impl Record {
     pub fn from_registration(
         acc: &AccountId32,
         registration: &Registration<u128, IdentityInfo>,
+        network: Option<Network>,
     ) -> Self {
         let pgp_fingerprint = match registration.info.pgp_fingerprint {
             Some(bytes) => Some(hex::encode(bytes)),
@@ -183,6 +237,7 @@ impl Record {
             legal: identity_data_tostring(&registration.info.legal),
             web: identity_data_tostring(&registration.info.web),
             pgp_fingerprint,
+            network,
         }
     }
 
@@ -192,18 +247,22 @@ impl Record {
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
 
-        let reg_config = match cfg.registrar.registrar_config(jud.registrar_index) {
+        let (network, reg_config) = match cfg.registrar.registrar_config(jud.registrar_index) {
             Some(v) => v,
             None => return Ok(None),
         };
 
         let client = NodeClient::from_url(&reg_config.endpoint).await?;
         let registration = node::get_registration(&client, &jud.target).await?;
-        Ok(Some(Self::from_registration(&jud.target, &registration)))
+        Ok(Some(Self::from_registration(
+            &jud.target,
+            &registration,
+            Some(network),
+        )))
     }
 
     pub fn wallet_id(&self) -> String {
-        self.discord.to_owned().unwrap_or("NULL".to_string())
+        self.wallet_id.to_owned().unwrap_or("NULL".to_string())
     }
 
     pub fn discord(&self) -> String {
@@ -242,6 +301,10 @@ impl Record {
         self.pgp_fingerprint
             .to_owned()
             .unwrap_or("NULL".to_string())
+    }
+
+    fn network(&self) -> String {
+        format!("{}", self.network.clone().unwrap_or_default())
     }
 }
 

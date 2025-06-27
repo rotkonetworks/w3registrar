@@ -44,7 +44,7 @@ impl PGPHelper {
         std::io::copy(&mut verifier, &mut output_buffer)?;
         let output = &String::from_utf8(output_buffer)?;
 
-        let mut redis_connection = RedisConnection::default().await;
+        let mut redis_connection = RedisConnection::default().await?;
         let account = Account::PGPFingerprint(registered_fingerprint);
         match PGPHelper::handle_content(
             output,
