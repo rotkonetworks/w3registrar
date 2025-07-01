@@ -24,6 +24,7 @@ use futures::Stream;
 use futures::StreamExt;
 use futures_util::SinkExt;
 use once_cell::sync::OnceCell;
+use postgres_types::ToSql;
 use redis::aio::ConnectionManager;
 use redis::aio::PubSub;
 use redis::AsyncCommands;
@@ -51,7 +52,6 @@ use tracing::Span;
 use tracing::{debug, error, info};
 use tungstenite::Error;
 
-use crate::postgres::RegistrationQuery;
 use crate::{
     adapter::{
         github::{Github, GithubRedirectStepTwoParams},
@@ -70,8 +70,8 @@ use crate::{
         Client as NodeClient,
     },
     postgres::{
-        Condition, Displayed, DisplayedInfo, Limit, PostgresConnection, RegistrationRecord,
-        SearchInfo, SimpleSearchQuery, TimelineQuery,
+        DisplayedInfo, PostgresConnection, RegistrationCondition, RegistrationDisplayed,
+        RegistrationQuery, RegistrationRecord, SearchInfo, TimelineQuery,
     },
     token::{AuthToken, Token},
 };
@@ -420,7 +420,7 @@ impl<'de> Deserialize<'de> for Account {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, Hash, ToSql)]
 #[serde(rename_all(serialize = "lowercase"))]
 pub enum Network {
     #[serde(alias = "paseo", alias = "PASEO")]
@@ -500,9 +500,9 @@ pub struct IncomingVerifyPGPRequest {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IncomingSearchRequest {
-    network: Option<Network>,
-    outputs: Vec<DisplayedInfo>,
-    filters: Filter,
+    pub network: Option<Network>,
+    pub outputs: Vec<DisplayedInfo>,
+    pub filters: Filter,
 }
 
 mod date_format {
@@ -592,18 +592,10 @@ impl IncomingSearchRequest {
     async fn search(self) -> anyhow::Result<Vec<RegistrationRecord>> {
         if self.outputs.contains(&DisplayedInfo::Timeline) {
             let mut registration_query = RegistrationQuery::default();
-            let dispalyed = Displayed::default();
-            let mut condition = Condition::default();
+            let displayed = RegistrationDisplayed::from(&self);
+            let condition = RegistrationCondition::from(&self);
 
-            for filter in self.filters.fields.iter() {
-                condition = condition.filter(filter);
-            }
-
-            if let Some(network) = self.network {
-                condition = condition.network(&network);
-            }
-
-            registration_query = registration_query.selected(dispalyed).condition(condition);
+            registration_query = registration_query.selected(displayed).condition(condition);
 
             let mut registrations = registration_query.exec().await?;
 
@@ -617,8 +609,8 @@ impl IncomingSearchRequest {
             Ok(registrations)
         } else {
             let mut registration_query = RegistrationQuery::default();
-            let mut dispalyed = Displayed::default();
-            let mut condition = Condition::default();
+            let mut displayed = RegistrationDisplayed::default();
+            let mut condition = RegistrationCondition::default();
 
             for filter in self.filters.fields.iter() {
                 condition = condition.filter(filter);
@@ -628,57 +620,20 @@ impl IncomingSearchRequest {
                 condition = condition.network(&network);
             }
 
-            for output in self.outputs.iter() {
-                dispalyed = dispalyed.displayed_info(output);
+            for output in self.outputs {
+                if let Ok(output) = output.try_into() {
+                    displayed.push(output);
+                }
             }
 
-            registration_query = registration_query.selected(dispalyed).condition(condition);
+            if let Some(result_size) = self.filters.result_size {
+                displayed = displayed.result_size(result_size);
+            }
+
+            registration_query = registration_query.selected(displayed).condition(condition);
 
             registration_query.exec().await
         }
-    }
-}
-
-impl Into<SimpleSearchQuery> for IncomingSearchRequest {
-    fn into(self) -> SimpleSearchQuery {
-        let displayed = self
-            .outputs
-            .iter()
-            .fold(Displayed::default(), |displayed, v| match v {
-                DisplayedInfo::WalletID => displayed.wallet_id(),
-                DisplayedInfo::Discord => displayed.account(AccountType::Discord),
-                DisplayedInfo::Display => displayed.account(AccountType::Display),
-                DisplayedInfo::Email => displayed.account(AccountType::Email),
-                DisplayedInfo::Matrix => displayed.account(AccountType::Matrix),
-                DisplayedInfo::Twitter => displayed.account(AccountType::Twitter),
-                DisplayedInfo::Github => displayed.account(AccountType::Github),
-                DisplayedInfo::Legal => displayed.account(AccountType::Legal),
-                DisplayedInfo::Web => displayed.account(AccountType::Web),
-                DisplayedInfo::PGPFingerprint => displayed.account(AccountType::PGPFingerprint),
-                DisplayedInfo::Timeline => todo!(),
-            });
-
-        let mut condition = self
-            .network
-            .iter()
-            .fold(Condition::default(), |cond, net| cond.network(&net).and());
-
-        condition = self.filters.fields.iter().fold(condition, |cond, filter| {
-            // TODO: make this as cond.condition(&filter.field, filter.strict).and()
-            if filter.strict {
-                cond.condition(&filter.field).and()
-            } else {
-                cond.like_condition(&filter.field).and()
-            }
-        });
-
-        let limit = self.filters.result_size.map(Limit::new);
-
-        SimpleSearchQuery::default()
-            .table_name("registration".to_string())
-            .selected(displayed)
-            .condition(condition)
-            .limit(limit)
     }
 }
 
@@ -2218,7 +2173,7 @@ impl RedisConnection {
         let mut pipe = redis::pipe();
 
         for (acc_type, info) in state.challenges.iter() {
-            let acc_key = Account::from_type_and_value(acc_type.to_owned(), info.name.clone());
+            let acc_key = Account::from_type_and_value(acc_type.to_owned(), info.name.to_string());
             let key = format!("{acc_key}|{network}|{account_id}");
             pipe.cmd("SET")
                 .arg(&key)

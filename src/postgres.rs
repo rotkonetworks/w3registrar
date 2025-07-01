@@ -4,13 +4,15 @@
 use anyhow::anyhow;
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
-use postgres_types::ToSql;
+use postgres_types::{to_sql_checked, Kind, ToSql, Type};
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
+use std::any::Any;
+use std::fmt::{format, Display};
+use std::slice::Iter;
 use std::{str::FromStr, time::Duration};
 use subxt::utils::AccountId32;
 use tokio_postgres::types::FromSql;
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::{Client, GenericClient, NoTls, Statement, ToStatement};
 use tracing::instrument;
 use tracing::{error, info, info_span, Span};
 
@@ -52,7 +54,7 @@ BEGIN
 END
 $$;";
 
-        info!("QUERRY");
+        info!("QUERY");
         info!("{create_acctype_enum}");
 
         self.client.simple_query(create_acctype_enum).await?;
@@ -69,7 +71,7 @@ BEGIN
 END
 $$;";
 
-        info!("QUERRY");
+        info!("QUERY");
         info!("{create_network_enum}");
 
         self.client.simple_query(create_network_enum).await?;
@@ -99,7 +101,7 @@ $$;";
             PRIMARY KEY     (wallet_id, network)
         )";
 
-        info!("QUERRY");
+        info!("QUERY");
         info!("{create_reg_record}");
 
         self.client.simple_query(create_reg_record).await?;
@@ -115,7 +117,7 @@ $$;";
             PRIMARY KEY     (wallet_id, network, event)
         );";
 
-        info!("QUERRY");
+        info!("QUERY");
         info!("{create_timeline_elem}");
 
         self.client.simple_query(create_timeline_elem).await?;
@@ -170,15 +172,14 @@ $$;";
         network: &Network,
     ) -> anyhow::Result<()> {
         info!(wallet_id=?wallet_id.to_string(), network=?network, event=?event_info, "Updating timeline info");
-        let insert_timeline = format!(
-            "INSERT INTO timeline_elem (wallet_id, network, EVENT) VALUES ('{}', '{}', '{}')",
-            &wallet_id.to_string(),
-            &network.to_string(),
-            &event_info,
-        );
-        info!("QUERRY: {insert_timeline}");
 
-        self.client.simple_query(&insert_timeline).await?;
+        self.client
+            .query(
+                "INSERT INTO timeline_elem (wallet_id, network, EVENT) VALUES ($1, $2, $3)",
+                &[&wallet_id.to_string(), &network.to_string(), &event_info],
+            )
+            .await?;
+
         Ok(())
     }
 
@@ -190,17 +191,27 @@ $$;";
         network: &Network,
     ) -> anyhow::Result<()> {
         info!(wallet_id=?wallet_id.to_string(), network=?network,"Deleting timeline info");
-        let condition = Condition::default()
+        let condition = TimelineCondition::default()
             .network(network)
-            .and()
-            .condition(&SearchInfo::AccountId32(wallet_id.to_string()));
+            .wallet_id(wallet_id.clone());
         let table_name = "timeline_elem".to_string();
 
         let delete_query = DeleteQuery::default()
             .table_name(table_name)
             .condition(condition);
+        let params = delete_query.params();
 
-        self.client.simple_query(&delete_query.to_sql()).await?;
+        let query_params: Vec<&(dyn ToSql + Sync)> = params
+            .iter()
+            .map(|v| v as &(dyn ToSql + Sync))
+            .collect::<Vec<_>>();
+
+        info!(statement=?delete_query.statement(), params=?query_params.as_slice(), "Delete query");
+
+        self.client
+            .query(&delete_query.statement(), query_params.as_slice())
+            .await?;
+
         Ok(())
     }
 
@@ -210,7 +221,7 @@ $$;";
         let insert_reg_record =
             "INSERT INTO registration(wallet_id, network, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
-        info!(query=?insert_reg_record,"QUERRY");
+        info!(query=?insert_reg_record,"QUERY");
         info!(record = ?record);
 
         self.client
@@ -236,43 +247,63 @@ $$;";
         Ok(())
     }
 
-    pub async fn search_registration_records<Q>(
+    pub async fn search_registration_records(
         &mut self,
-        search_querry: Q,
-    ) -> anyhow::Result<Vec<RegistrationRecord>>
-    where
-        Q: Query,
-    {
+        search_query: &RegistrationQuery,
+    ) -> anyhow::Result<Vec<RegistrationRecord>> {
+        let params = search_query.params();
+
+        let query_params: Vec<&(dyn ToSql + Sync)> = params
+            .iter()
+            .map(|v| v as &(dyn ToSql + Sync))
+            .collect::<Vec<_>>();
+
+        info!(statement=?search_query.statement(), params=?query_params.as_slice(), "Registration request");
+
         Ok(self
             .client
-            .query(&search_querry.to_sql(), &[])
+            .query(&search_query.statement(), query_params.as_slice())
             .await?
             .iter()
             .map(RegistrationRecord::from)
             .collect())
     }
 
-    pub async fn search_timeline_records<Q>(
+    pub async fn search_timeline_records(
         &mut self,
-        search_querry: Q,
-    ) -> anyhow::Result<Vec<TimelineRecord>>
-    where
-        Q: Query,
-    {
+        search_query: &TimelineQuery,
+    ) -> anyhow::Result<Vec<TimelineRecord>> {
+        let params = search_query.params();
+
+        let query_params: Vec<&(dyn ToSql + Sync)> = params
+            .iter()
+            .map(|v| v as &(dyn ToSql + Sync))
+            .collect::<Vec<_>>();
+
+        info!(statement=?search_query.statement(), params=?query_params.as_slice(), "Timeline request");
+
         Ok(self
             .client
-            .query(&search_querry.to_sql(), &[])
+            .query(&search_query.statement(), query_params.as_slice())
             .await?
             .iter()
             .map(TimelineRecord::from)
             .collect())
     }
 
-    pub async fn delete<Q>(&mut self, query: Q) -> anyhow::Result<()>
-    where
-        Q: Query,
-    {
-        self.client.simple_query(&query.to_sql()).await?;
+    pub async fn delete(&mut self, query: DeleteQuery<TimelineCondition>) -> anyhow::Result<()> {
+        let params = query.params();
+
+        let query_params: Vec<&(dyn ToSql + Sync)> = params
+            .iter()
+            .map(|v| v as &(dyn ToSql + Sync))
+            .collect::<Vec<_>>();
+
+        info!(statement=?query.statement(), params=?query_params.as_slice(), "Delete query");
+
+        self.client
+            .query(&query.statement(), query_params.as_slice())
+            .await?;
         Ok(())
     }
 
@@ -547,47 +578,122 @@ impl From<&tokio_postgres::Row> for RegistrationRecord {
     }
 }
 
+/// Trait all queries MUST implement
 pub trait Query {
-    // TODO
-    // fn to_sql<Q>(&self) -> Q
-    // where
-    //     Q: Query;
-    fn to_sql(&self) -> String;
+    type STATEMENT: ?Sized + ToStatement;
+    type PARAM: ToSql + Sync;
+
+    fn statement(&self) -> Self::STATEMENT;
+
+    fn params(&self) -> Vec<Self::PARAM>;
 }
+
+/// Marker trait for all Condition like strucs
+pub trait ConditionTrait {}
 
 struct TimelineQueries {
     queries: Vec<TimelineQuery>,
 }
 
 pub struct TimelineQuery {
-    pub condition: Option<Condition>,
+    pub condition: Option<TimelineCondition>,
     pub table_name: String,
-    pub displayed: Displayed,
+    pub displayed: TimelineDisplayed,
     // TODO: add order
 }
 
 impl Default for TimelineQuery {
     fn default() -> Self {
         Self {
-            displayed: Displayed::default(),
+            displayed: TimelineDisplayed::default(),
             condition: None,
-            table_name: String::from("timeline_elem"),
+            table_name: "timeline_elem".to_string(),
         }
     }
 }
 
-// TODO: this querry and impl Query for RegistrationQuery are identical,
+// TODO: this query and impl Query for RegistrationQuery are identical,
 // genaralize them somehow
 impl Query for TimelineQuery {
-    fn to_sql(&self) -> String {
-        let displayed = self.displayed.to_sql();
-        let mut query = format!("SELECT {} FROM {}", displayed, self.table_name);
+    type STATEMENT = String;
+    type PARAM = String;
 
+    fn params(&self) -> Vec<String> {
+        let mut thing = vec![];
         match &self.condition {
-            Some(condition) => query.push_str(&format!(" {}", condition.to_sql())),
+            Some(v) => {
+                if let Some(wallet_id) = &v.wallet_id {
+                    thing.push(wallet_id.to_string());
+                }
+
+                if let Some(date) = &v.date {
+                    if let Some(lt) = date.lt {
+                        thing.push(format!("{}", lt));
+                    }
+
+                    if let Some(gt) = date.gt {
+                        thing.push(format!("{}", gt));
+                    }
+                }
+            }
             None => {}
         }
-        query
+        thing
+    }
+
+    fn statement(&self) -> String {
+        let mut statement = String::from("SELECT ");
+
+        if self.displayed.len() == 0 {
+            statement.push_str("* ");
+        } else {
+            for (index, displayed) in self.displayed.iter().enumerate() {
+                if index == 0 {
+                    statement.push_str(&format!("{},", displayed.column_name()));
+                } else {
+                    statement.push_str(&format!(" {},", displayed.column_name()));
+                }
+            }
+            statement = statement.trim_end_matches(|c| c == ',').to_owned();
+        }
+
+        statement.push_str(&format!(" FROM {} ", self.table_name));
+
+        let mut index = 1;
+
+        if let Some(v) = &self.condition {
+            if !v.all_none() {
+                statement.push_str("WHERE ");
+                // naive approach
+                if let Some(_) = &v.wallet_id {
+                    statement.push_str(&format!("wallet_id = ${} AND ", index));
+                    index += 1;
+                }
+
+                if let Some(date) = &v.date {
+                    if let Some(_) = date.lt {
+                        statement.push_str(&format!("date < ${} AND ", index));
+                        index += 1;
+                    }
+
+                    if let Some(_) = date.gt {
+                        statement.push_str(&format!("date > ${} AND", index));
+                        index += 1;
+                    }
+                }
+
+                if let Some(network) = &v.network {
+                    statement.push_str(&format!("network = '{}' ", network));
+                    index += 1;
+                }
+
+                statement = statement
+                    .trim_end_matches(|c| c == ' ' || c == ',' || c == 'A' || c == 'N' || c == 'D')
+                    .to_owned();
+            }
+        }
+
+        statement
     }
 }
 
@@ -601,7 +707,7 @@ impl TimelineQuery {
     ) -> anyhow::Result<()> {
         for record in rec.iter_mut() {
             let mut timeline_query = TimelineQuery::default();
-            let mut condition = Condition::default();
+            let mut condition = TimelineCondition::default();
 
             if let Some(network) = &record.network {
                 condition = condition.network(&network);
@@ -612,10 +718,13 @@ impl TimelineQuery {
             }
 
             if let Some(wallet_id) = &record.wallet_id {
-                condition = condition.condition(&SearchInfo::AccountId32(wallet_id.clone()));
+                if let Ok(wallet_id) = AccountId32::from_str(&wallet_id.clone()) {
+                    condition = condition.wallet_id(wallet_id);
+                }
             };
 
-            let selected = Displayed::default().wallet_id().event().date();
+            let selected = TimelineDisplayed::default().wallet_id().event().date();
+
             let mut timeline = timeline_query
                 .selected(selected)
                 .condition(condition)
@@ -633,8 +742,8 @@ impl TimelineQuery {
 
     pub async fn exec(&self) -> anyhow::Result<Vec<TimelineRecord>> {
         let mut pog_connection = PostgresConnection::default().await?;
-        info!(query=?self.to_sql(), "Timelines search query");
-        pog_connection.search_timeline_records(self.to_sql()).await
+        info!("Timeline search query");
+        pog_connection.search_timeline_records(&self).await
     }
 
     pub fn derive_timeline_queries(
@@ -643,17 +752,17 @@ impl TimelineQuery {
         let mut res = vec![];
         for record in rec.iter() {
             let mut timeline_query = TimelineQuery::default();
-            let mut condition = Condition::default();
+            let mut condition = TimelineCondition::default();
             if let Some(network) = &record.network {
                 condition = condition.network(&network);
             };
 
             if let Some(wallet_id) = &record.wallet_id {
                 // FIXME
-                condition = condition.wallet_id(&AccountId32::from_str(&wallet_id).unwrap());
+                condition = condition.wallet_id(AccountId32::from_str(&wallet_id).unwrap());
             };
 
-            let selected = Displayed::default().wallet_id().event().date();
+            let selected = TimelineDisplayed::default().wallet_id().event().date();
             timeline_query = timeline_query.condition(condition).selected(selected);
             res.push((record.to_owned(), timeline_query));
         }
@@ -662,8 +771,8 @@ impl TimelineQuery {
 }
 
 pub struct RegistrationQuery {
-    pub displayed: Displayed,
-    pub condition: Option<Condition>,
+    pub displayed: RegistrationDisplayed,
+    pub condition: Option<RegistrationCondition>,
     pub table_name: String,
     pub limit: Option<Limit>,
 }
@@ -671,7 +780,7 @@ pub struct RegistrationQuery {
 impl Default for RegistrationQuery {
     fn default() -> Self {
         Self {
-            displayed: Displayed::default(),
+            displayed: RegistrationDisplayed::default(),
             condition: None,
             limit: None,
             table_name: String::from("registration"),
@@ -680,15 +789,79 @@ impl Default for RegistrationQuery {
 }
 
 impl Query for RegistrationQuery {
-    fn to_sql(&self) -> String {
-        let displayed = self.displayed.to_sql();
-        let mut query = format!("SELECT {} FROM {}", displayed, self.table_name);
+    type STATEMENT = String;
+
+    type PARAM = String;
+
+    fn statement(&self) -> Self::STATEMENT {
+        let mut statement = String::from("SELECT ");
+
+        if self.displayed.len() == 0 {
+            statement.push_str("*");
+        } else {
+            for (index, displayed) in self.displayed.iter().enumerate() {
+                if index == 0 {
+                    statement.push_str(&format!("{},", displayed.table_field_name()));
+                } else {
+                    statement.push_str(&format!(" {},", displayed.table_field_name()));
+                }
+            }
+            statement = statement.trim_end_matches(|c| c == ',').to_owned();
+        }
+
+        statement.push_str(" FROM registration ");
+        let mut index_pointer = 1;
 
         match &self.condition {
-            Some(condition) => query.push_str(&format!(" {}", condition.to_sql())),
+            Some(v) => {
+                if !v.filters.is_empty() || v.network.is_some() {
+                    statement.push_str("WHERE ");
+                }
+
+                for (index, filter) in v.filters.iter().enumerate() {
+                    if filter.strict {
+                        statement.push_str(&format!(
+                            "{} = ${}",
+                            filter.field.table_column_name(),
+                            index + 1
+                        ));
+                    } else {
+                        statement.push_str(&format!(
+                            "{} LIKE ${}",
+                            filter.field.table_column_name(),
+                            index + 1
+                        ));
+                    }
+                    index_pointer += 1;
+                    statement.push_str(" AND ");
+                }
+
+                if let Some(network) = &v.network {
+                    statement.push_str(&format!("network = '{}'", network));
+                }
+
+                statement = statement
+                    .trim_end_matches(|c| c == ' ' || c == ',' || c == 'A' || c == 'N' || c == 'D')
+                    .to_owned();
+            }
             None => {}
-        };
-        query
+        }
+
+        if let Some(result_size) = self.displayed.result_size {
+            statement.push_str(&format!(" LIMIT {}", result_size));
+        }
+        statement
+    }
+
+    fn params(&self) -> Vec<Self::PARAM> {
+        let mut params = vec![];
+        if let Some(condition) = &self.condition {
+            for filter in condition.filters.iter() {
+                params.push(format!("{}", filter.field.inner()));
+            }
+        }
+
+        params
     }
 }
 
@@ -696,18 +869,16 @@ impl RegistrationQuery {
     /// Executes the [RegistrationQuery]
     pub async fn exec(&self) -> anyhow::Result<Vec<RegistrationRecord>> {
         let mut pog_connection = PostgresConnection::default().await?;
-        info!(query=?self.to_sql(), "Registration search query");
-        pog_connection
-            .search_registration_records(self.to_sql())
-            .await
+        info!("Registration search query");
+        pog_connection.search_registration_records(self).await
     }
 
-    pub fn selected(mut self, displayed: Displayed) -> Self {
+    pub fn selected(mut self, displayed: RegistrationDisplayed) -> Self {
         self.displayed = displayed;
         self
     }
 
-    pub fn condition(mut self, condition: Condition) -> Self {
+    pub fn condition(mut self, condition: RegistrationCondition) -> Self {
         self.condition = Some(condition);
         self
     }
@@ -729,44 +900,13 @@ pub struct SearchResult {
     pub result: Vec<RegistrationRecord>,
 }
 
-#[derive(Default)]
-/// General search query. Should be constructed from a SearchRequest
-pub struct SimpleSearchQuery {
-    pub table_name: String,
-    pub displayed: Displayed,
-    pub condition: Option<Condition>,
-    pub limit: Option<Limit>,
-}
-
-impl SimpleSearchQuery {
-    pub fn selected(mut self, displayed: Displayed) -> Self {
-        self.displayed = displayed;
-        self
-    }
-
-    pub fn condition(mut self, condition: Condition) -> Self {
-        self.condition = Some(condition);
-        self
-    }
-
-    pub fn limit(mut self, limit: Option<Limit>) -> Self {
-        self.limit = limit;
-        self
-    }
-
-    pub fn table_name(mut self, dbname: String) -> Self {
-        self.table_name = dbname;
-        self
-    }
-}
-
 impl TimelineQuery {
-    pub fn selected(mut self, displayed: Displayed) -> Self {
+    pub fn selected(mut self, displayed: TimelineDisplayed) -> Self {
         self.displayed = displayed;
         self
     }
 
-    pub fn condition(mut self, condition: Condition) -> Self {
+    pub fn condition(mut self, condition: TimelineCondition) -> Self {
         self.condition = Some(condition);
         self
     }
@@ -774,78 +914,6 @@ impl TimelineQuery {
     pub fn table_name(mut self, dbname: String) -> Self {
         self.table_name = dbname;
         self
-    }
-}
-
-impl SimpleSearchQuery {
-    // pub fn timeline(mut self, timeline: TimelineQuery) -> Self {
-    //     self.timeline = Some(timeline);
-    //     self
-    // }
-    // pub fn registration(mut self, registration: RegistrationQuery) -> Self {
-    //     self.registration = Some(registration);
-    //     self
-    // }
-    // pub fn limit(mut self, limit: Option<Limit>) -> Self {
-    //     self.registration.as_mut().map(|v| v.limit = limit.clone());
-    //     self.timeline.as_mut().map(|v| v.limit = limit);
-    //     self
-    // }
-}
-
-impl Query for SimpleSearchQuery {
-    fn to_sql(&self) -> String {
-        let mut query = format!("SELECT {}", self.displayed.to_sql());
-        if let Some(cond) = &self.condition {
-            query.push_str(&cond.to_sql());
-        };
-
-        if let Some(limit) = &self.limit {
-            query.push_str(&limit.to_sql());
-        };
-        query
-    }
-}
-
-impl SimpleSearchQuery {
-    pub async fn exec(&self) -> anyhow::Result<Vec<RegistrationRecord>> {
-        // if self.displayed.contains(&DisplayedInfo::Timeline) {
-        //     // phase 1
-        //     // phase 2
-        //     // phase 3
-        // } else {
-        //     // phase 2
-        // }
-        // let mut pog_connection = PostgresConnection::default().await?;
-        // info!(query=?self.to_sql(), "search query");
-        // pog_connection.search(self.to_sql()).await
-        // match &self.timeline {
-        //     Some(query) => {
-        //         info!(query=?query.to_sql(), "SEARCH QUERY");
-        //         let res = pog_connection.search(query.to_sql()).await?;
-        //     }
-        //     None => {}
-        // };
-        //
-        // match &self.registration {
-        //     Some(query) => {
-        //         info!(query=?query.to_sql(), "SEARCH QUERY");
-        //         let res = pog_connection.search(query.to_sql()).await?;
-        //     }
-        //     None => {}
-        // }
-        todo!()
-    }
-}
-
-#[derive(Debug)]
-enum JoinType {
-    INNER,
-}
-
-impl Display for JoinType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
     }
 }
 
@@ -863,234 +931,176 @@ impl Display for Order {
 
 #[derive(Default, Debug, Clone)]
 pub struct Limit {
-    querry: usize,
-}
-
-impl Query for Limit {
-    fn to_sql(&self) -> String {
-        format!("LIMIT {}", self.querry)
-    }
+    size: usize,
 }
 
 impl Limit {
-    pub fn new(querry: usize) -> Self {
-        Self { querry }
+    pub fn new(size: usize) -> Self {
+        Self { size }
     }
 }
 
 #[derive(Default, Debug)]
-pub struct Condition {
-    querry: String,
-    prefix: Option<String>,
+pub struct RegistrationCondition {
+    filters: Vec<FieldsFilter>,
+    network: Option<Network>,
 }
 
-// TODO: this api allows for .and().and() or .or().or() or even .account().account() which should
-// not happen, my thoughts is that this should be wrapped with a builder
-impl Condition {
-    pub fn and(mut self) -> Self {
-        self.querry.push_str("AND ");
-        self
-    }
-
-    pub fn or(mut self) -> Self {
-        self.querry.push_str("OR ");
-        self
-    }
-
-    pub fn like_condition(mut self, account: &SearchInfo) -> Self {
-        let query = match account {
-            SearchInfo::AccountId32(info) => format!("wallet_id LIKE '%{}%' ", info),
-            SearchInfo::Twitter(account) => format!("twitter LIKE '%{}%' ", account),
-            SearchInfo::Discord(account) => format!("discord LIKE '%{}%' ", account),
-            SearchInfo::Matrix(account) => format!("matrix LIKE '%{}%' ", account),
-            SearchInfo::Display(account) => format!("display LIKE '%{}%' ", account),
-            SearchInfo::Legal(account) => format!("legal LIKE '%{}%' ", account),
-            SearchInfo::Web(account) => format!("web LIKE '%{}%' ", account),
-            SearchInfo::Email(account) => format!("email LIKE '%{}%' ", account),
-            SearchInfo::Github(account) => format!("github LIKE '%{}%' ", account),
-            SearchInfo::PGPFingerprint(bytes) => {
-                format!("pgp_fingerprint LIKE '%{}%' ", hex::encode(bytes))
-            }
-        };
-        self.querry.push_str(&query);
-        self
-    }
-
-    pub fn condition(mut self, info: &SearchInfo) -> Self {
-        let query = match info {
-            SearchInfo::AccountId32(info) => format!("wallet_id='{}' ", info),
-            SearchInfo::Twitter(account) => format!("twitter='{}' ", account),
-            SearchInfo::Discord(account) => format!("discord='{}' ", account),
-            SearchInfo::Matrix(account) => format!("matrix='{}' ", account),
-            SearchInfo::Display(account) => format!("display='{}' ", account),
-            SearchInfo::Legal(account) => format!("legal='{}' ", account),
-            SearchInfo::Web(account) => format!("web='{}' ", account),
-            SearchInfo::Email(account) => format!("email='{}' ", account),
-            SearchInfo::Github(account) => format!("github='{}' ", account),
-            SearchInfo::PGPFingerprint(bytes) => {
-                format!(" pgp_fingerprint='{}' ", hex::encode(bytes))
-            }
-        };
-        self.querry.push_str(&query);
-        self
-    }
-
-    pub fn network(mut self, network: &Network) -> Self {
-        self.querry.push_str(&format!("network='{}' ", network));
-        self.and()
-    }
-
-    pub fn wallet_id(mut self, wallet_id: &AccountId32) -> Self {
-        self.querry.push_str(&wallet_id.to_string());
-        self
-    }
-
-    pub fn wallet_id_str(mut self, wallet_id: &String) -> Self {
-        self.querry.push_str(&wallet_id);
-        self
-    }
-
-    pub fn filter(mut self, filter: &FieldsFilter) -> Self {
-        if filter.strict {
-            self = self.condition(&filter.field).and();
-        } else {
-            self = self.like_condition(&filter.field).and();
+impl From<&IncomingSearchRequest> for RegistrationCondition {
+    fn from(value: &IncomingSearchRequest) -> Self {
+        let mut condition = Self::default();
+        for filter in value.filters.fields.iter() {
+            condition = condition.filter(filter);
         }
+
+        if let Some(network) = &value.network {
+            condition = condition.network(&network);
+        }
+        condition
+    }
+}
+
+impl RegistrationCondition {
+    pub fn filter(mut self, filter: &FieldsFilter) -> RegistrationCondition {
+        self.filters.push(filter.to_owned());
         self
     }
 
-    pub fn gt_date(mut self, gt: Option<chrono::NaiveDate>) -> Self {
-        if let Some(time) = gt {
-            self.querry.push_str(&format!("date > '{}'", time));
-        }
-        self
-    }
-
-    pub fn lt_date(mut self, lt: Option<chrono::NaiveDate>) -> Self {
-        if let Some(time) = lt {
-            self.querry.push_str(&format!("date < '{}'", time));
-        }
-        self
-    }
-
-    pub fn date(mut self, time: &TimeFilter) -> Self {
-        if time.gt.is_some() {
-            self = self.gt_date(time.gt).and()
-        };
-        if time.lt.is_some() {
-            self = self.lt_date(time.lt).and();
-        }
+    pub fn network(mut self, network: &Network) -> RegistrationCondition {
+        self.network = Some(network.to_owned());
         self
     }
 }
 
-impl FromStr for Condition {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self {
-            querry: s.to_owned(),
-            prefix: None,
-        })
-    }
+#[derive(Default, Debug)]
+pub struct TimelineCondition {
+    date: Option<TimeFilter>,
+    network: Option<Network>,
+    wallet_id: Option<AccountId32>,
 }
 
-impl Query for Condition {
-    fn to_sql(&self) -> String {
-        if self.querry.is_empty() {
-            return String::new();
-        } else {
-            format!(
-                "WHERE {}",
-                self.querry.trim_end_matches(|c| c == ' '
-                    || c == ','
-                    || c == 'A'
-                    || c == 'N'
-                    || c == 'D')
-            )
+impl ConditionTrait for TimelineCondition {}
+
+impl TimelineCondition {
+    fn all_none(&self) -> bool {
+        if self.date.is_some() {
+            return false;
         }
+
+        if self.network.is_some() {
+            return false;
+        }
+
+        if self.wallet_id.is_some() {
+            return false;
+        }
+
+        return true;
+    }
+
+    fn network(mut self, network: &Network) -> TimelineCondition {
+        self.network = Some(network.to_owned());
+        self
+    }
+
+    fn date(mut self, time: &TimeFilter) -> TimelineCondition {
+        self.date = Some(time.to_owned());
+        self
+    }
+
+    fn wallet_id(mut self, wallet_id: AccountId32) -> TimelineCondition {
+        self.wallet_id = Some(wallet_id);
+        self
     }
 }
 
 #[derive(Default)]
-pub struct Displayed {
-    querry: String,
+pub struct TimelineDisplayed {
+    displayed: Vec<DisplayedTimelineInfo>,
+}
+
+impl TimelineDisplayed {
+    fn len(&self) -> usize {
+        self.displayed.len()
+    }
+
+    fn iter(&self) -> Iter<'_, DisplayedTimelineInfo> {
+        self.displayed.iter()
+    }
+
+    fn wallet_id(mut self) -> Self {
+        self.displayed.push(DisplayedTimelineInfo::WalletID);
+        self
+    }
+
+    fn date(mut self) -> Self {
+        self.displayed.push(DisplayedTimelineInfo::Date);
+        self
+    }
+
+    fn event(mut self) -> Self {
+        self.displayed.push(DisplayedTimelineInfo::Event);
+        self
+    }
+}
+
+#[derive(Default)]
+pub struct RegistrationDisplayed {
+    displayed: Vec<DisplayedRegistrationInfo>,
+    result_size: Option<usize>,
+}
+
+impl From<&IncomingSearchRequest> for RegistrationDisplayed {
+    fn from(value: &IncomingSearchRequest) -> Self {
+        let mut displayed = RegistrationDisplayed::default();
+
+        for output in value.outputs.iter() {
+            let thing: Result<DisplayedRegistrationInfo, anyhow::Error> = output.try_into();
+            if let Ok(output) = output.try_into() {
+                displayed.push(output);
+            }
+        }
+
+        if let Some(result_size) = value.filters.result_size {
+            displayed = displayed.result_size(result_size);
+        }
+        displayed
+    }
+}
+
+impl RegistrationDisplayed {
+    pub fn iter(&self) -> Iter<'_, DisplayedRegistrationInfo> {
+        self.displayed.iter()
+    }
+
+    pub fn push(&mut self, displayed: DisplayedRegistrationInfo) {
+        self.displayed.push(displayed);
+    }
+
+    pub fn new(displayed: Vec<DisplayedRegistrationInfo>) -> Self {
+        Self {
+            displayed,
+            result_size: None,
+        }
+    }
+
+    pub fn displayed_info(self, output: &DisplayedInfo) -> RegistrationDisplayed {
+        todo!()
+        // self
+    }
+
+    fn len(&self) -> usize {
+        self.displayed.len()
+    }
+
+    pub fn result_size(mut self, result_size: usize) -> RegistrationDisplayed {
+        self.result_size = Some(result_size);
+        self
+    }
 }
 
 trait DisplayValidator {
     fn validate<T>(&self, t: T) -> Option<T>;
-}
-
-impl Displayed {
-    pub fn displayed_info(mut self, displayed_info: &DisplayedInfo) -> Self {
-        match displayed_info {
-            DisplayedInfo::WalletID => self.querry.push_str("wallet_id, "),
-            DisplayedInfo::Discord => self.querry.push_str("discord, "),
-            DisplayedInfo::Display => self.querry.push_str("display, "),
-            DisplayedInfo::Email => self.querry.push_str("email, "),
-            DisplayedInfo::Matrix => self.querry.push_str("matrix, "),
-            DisplayedInfo::Twitter => self.querry.push_str("twitter, "),
-            DisplayedInfo::Github => self.querry.push_str("github, "),
-            DisplayedInfo::Legal => self.querry.push_str("legal, "),
-            DisplayedInfo::Web => self.querry.push_str("web, "),
-            DisplayedInfo::PGPFingerprint => self.querry.push_str("pgp_fingerprint, "),
-            DisplayedInfo::Timeline => {
-                info!("Ignoring field [DisplayedInfo::Timeline]...");
-                // check [Self::date] and [Self::event]
-            }
-        }
-
-        self
-    }
-
-    pub fn wallet_id(mut self) -> Self {
-        self.querry.push_str("wallet_id, ");
-        self
-    }
-
-    pub fn account(mut self, account: AccountType) -> Self {
-        let query = match account {
-            AccountType::Twitter => format!("twitter, "),
-            AccountType::Discord => format!("discord, "),
-            AccountType::Matrix => format!("matrix, "),
-            AccountType::Display => format!("display_name, "),
-            AccountType::Legal => format!("legal, "),
-            AccountType::Web => format!("web, "),
-            AccountType::Email => format!("email, "),
-            AccountType::Github => format!("github, "),
-            AccountType::PGPFingerprint => format!("pgp_fingerprint, "),
-        };
-
-        self.querry.push_str(&query);
-        self
-    }
-
-    pub fn event(mut self) -> Self {
-        self.querry.push_str("event, ");
-        self
-    }
-
-    pub fn date(mut self) -> Self {
-        self.querry.push_str("date, ");
-        self
-    }
-
-    pub fn custom(mut self, custom: &str) -> Self {
-        self.querry.push_str(custom);
-        self
-    }
-}
-
-impl Query for Displayed {
-    fn to_sql(&self) -> String {
-        if self.querry.is_empty() {
-            return "*".to_string();
-        } else {
-            self.querry
-                .trim_end_matches(|c| c == ' ' || c == ',')
-                .to_string()
-        }
-    }
 }
 
 #[derive(Default)]
@@ -1117,61 +1127,163 @@ impl InsertFields {
 }
 
 #[derive(Default)]
-/// STILL A WIP
-struct InsertQuery {
-    table_name: String,
-    fields: InsertFields,
-    values: InsertValues,
-}
-
-impl InsertQuery {
-    fn fields(mut self, fields: InsertFields) -> Self {
-        self.fields = fields;
-        self
-    }
-
-    fn values(mut self, values: InsertValues) -> Self {
-        self.values = values;
-        self
-    }
-
-    fn table_name(mut self, table_name: String) -> Self {
-        self.table_name = table_name;
-        self
-    }
-}
-
-#[derive(Default)]
-struct DeleteQuery {
-    condition: Option<Condition>, // or Query in general
+pub struct DeleteQuery<T>
+where
+    T: Default + ConditionTrait,
+{
+    condition: Option<T>,
     table_name: String,
 }
 
-impl DeleteQuery {
+impl<T: Default + ConditionTrait> DeleteQuery<T> {
     pub fn table_name(mut self, table_name: String) -> Self {
         self.table_name = table_name;
         self
     }
 
-    pub fn condition(mut self, condition: Condition) -> Self {
+    pub fn condition(mut self, condition: T) -> Self {
         self.condition = Some(condition);
         self
     }
 }
 
-impl Query for DeleteQuery {
-    fn to_sql(&self) -> String {
-        let mut query = format!("DELETE FROM {}", self.table_name);
-        if let Some(cond) = &self.condition {
-            query.push_str(&format!(" {}", cond.to_sql()));
-        };
-        query
+impl Query for DeleteQuery<TimelineCondition> {
+    type STATEMENT = String;
+
+    type PARAM = String;
+
+    fn statement(&self) -> Self::STATEMENT {
+        let mut statement = format!("DELETE * FROM {} ", self.table_name);
+        let mut index = 1;
+
+        if let Some(v) = &self.condition {
+            if !v.all_none() {
+                statement.push_str("WHERE ");
+                if let Some(_) = &v.wallet_id {
+                    statement.push_str(&format!("wallet_id = ${} AND ", index));
+                    index += 1;
+                }
+
+                if let Some(date) = &v.date {
+                    if let Some(_) = date.lt {
+                        statement.push_str(&format!("date < ${} AND ", index));
+                        index += 1;
+                    }
+
+                    if let Some(_) = date.gt {
+                        statement.push_str(&format!("date > ${}", index));
+                        index += 1;
+                    }
+                }
+
+                if let Some(network) = &v.network {
+                    statement.push_str(&format!("network = '{}'", index));
+                    index += 1;
+                }
+
+                statement = statement
+                    .trim_end_matches(|c| c == ' ' || c == ',' || c == 'A' || c == 'N' || c == 'D')
+                    .to_owned();
+            }
+        }
+
+        statement
+    }
+
+    fn params(&self) -> Vec<Self::PARAM> {
+        let mut params = vec![];
+        if let Some(v) = &self.condition {
+            if !v.all_none() {
+                if let Some(wallet_id) = &v.wallet_id {
+                    params.push(format!("{}", wallet_id));
+                }
+
+                if let Some(network) = &v.network {
+                    params.push(format!("{}", network));
+                }
+
+                if let Some(date) = &v.date {
+                    if let Some(lt) = date.lt {
+                        params.push(format!("{}", lt));
+                    }
+
+                    if let Some(gt) = date.gt {
+                        params.push(format!("{}", gt));
+                    }
+                }
+            }
+        }
+        params
     }
 }
 
 impl Query for String {
-    fn to_sql(&self) -> String {
+    type STATEMENT = String;
+
+    type PARAM = String;
+
+    fn statement(&self) -> Self::STATEMENT {
         self.clone()
+    }
+
+    fn params(&self) -> Vec<Self::PARAM> {
+        vec![self.clone()]
+    }
+}
+
+pub enum DisplayedTimelineInfo {
+    WalletID,
+    Event,
+    Date,
+    Network,
+}
+
+impl DisplayedTimelineInfo {
+    fn column_name(&self) -> &str {
+        match self {
+            DisplayedTimelineInfo::WalletID => "wallet_id",
+            DisplayedTimelineInfo::Event => "event",
+            DisplayedTimelineInfo::Date => "date",
+            DisplayedTimelineInfo::Network => "network",
+        }
+    }
+}
+
+pub enum DisplayedRegistrationInfo {
+    WalletID,
+    Discord,
+    Display,
+    Email,
+    Matrix,
+    Twitter,
+    Github,
+    Legal,
+    Web,
+    PGPFingerprint,
+    Network,
+}
+
+impl DisplayedRegistrationInfo {
+    fn table_field_name(&self) -> &'_ str {
+        match self {
+            DisplayedRegistrationInfo::WalletID => "wallet_id",
+            DisplayedRegistrationInfo::Discord => "discord",
+            DisplayedRegistrationInfo::Display => "display_name",
+            DisplayedRegistrationInfo::Email => "email",
+            DisplayedRegistrationInfo::Matrix => "matrix",
+            DisplayedRegistrationInfo::Twitter => "twitter",
+            DisplayedRegistrationInfo::Github => "github",
+            DisplayedRegistrationInfo::Legal => "legal",
+            DisplayedRegistrationInfo::Web => "web",
+            DisplayedRegistrationInfo::PGPFingerprint => "pgp_fingerprint",
+            DisplayedRegistrationInfo::Network => "network",
+        }
+    }
+}
+
+impl Display for DisplayedRegistrationInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!()
     }
 }
 
@@ -1189,6 +1301,51 @@ pub enum DisplayedInfo {
     Web,
     PGPFingerprint,
     Timeline,
+    // Network,
+}
+
+impl TryInto<DisplayedRegistrationInfo> for DisplayedInfo {
+    type Error = anyhow::Error;
+
+    fn try_into(self) -> Result<DisplayedRegistrationInfo, Self::Error> {
+        match self {
+            DisplayedInfo::WalletID => Ok(DisplayedRegistrationInfo::WalletID),
+            DisplayedInfo::Discord => Ok(DisplayedRegistrationInfo::Discord),
+            DisplayedInfo::Display => Ok(DisplayedRegistrationInfo::Display),
+            DisplayedInfo::Email => Ok(DisplayedRegistrationInfo::Email),
+            DisplayedInfo::Matrix => Ok(DisplayedRegistrationInfo::Matrix),
+            DisplayedInfo::Twitter => Ok(DisplayedRegistrationInfo::Twitter),
+            DisplayedInfo::Github => Ok(DisplayedRegistrationInfo::Github),
+            DisplayedInfo::Legal => Ok(DisplayedRegistrationInfo::Legal),
+            DisplayedInfo::Web => Ok(DisplayedRegistrationInfo::Web),
+            DisplayedInfo::PGPFingerprint => Ok(DisplayedRegistrationInfo::PGPFingerprint),
+            DisplayedInfo::Timeline => Err(anyhow!(
+                "Can't convert `DisplayedInfo::Timeline` to `DisplayedRegistrationInfo`"
+            )),
+        }
+    }
+}
+
+impl TryInto<DisplayedRegistrationInfo> for &DisplayedInfo {
+    type Error = anyhow::Error;
+
+    fn try_into(self) -> Result<DisplayedRegistrationInfo, Self::Error> {
+        match self {
+            DisplayedInfo::WalletID => Ok(DisplayedRegistrationInfo::WalletID),
+            DisplayedInfo::Discord => Ok(DisplayedRegistrationInfo::Discord),
+            DisplayedInfo::Display => Ok(DisplayedRegistrationInfo::Display),
+            DisplayedInfo::Email => Ok(DisplayedRegistrationInfo::Email),
+            DisplayedInfo::Matrix => Ok(DisplayedRegistrationInfo::Matrix),
+            DisplayedInfo::Twitter => Ok(DisplayedRegistrationInfo::Twitter),
+            DisplayedInfo::Github => Ok(DisplayedRegistrationInfo::Github),
+            DisplayedInfo::Legal => Ok(DisplayedRegistrationInfo::Legal),
+            DisplayedInfo::Web => Ok(DisplayedRegistrationInfo::Web),
+            DisplayedInfo::PGPFingerprint => Ok(DisplayedRegistrationInfo::PGPFingerprint),
+            DisplayedInfo::Timeline => Err(anyhow!(
+                "cannot convert `DisplayedInfo::Timeline` to `DisplayedRegistrationInfo`"
+            )),
+        }
+    }
 }
 
 impl DisplayedInfo {
@@ -1247,6 +1404,38 @@ pub enum SearchInfo {
     Email(String),
     Github(String),
     PGPFingerprint([u8; 20]),
+}
+
+impl SearchInfo {
+    pub fn table_column_name(&self) -> &'_ str {
+        match self {
+            SearchInfo::AccountId32(_) => "wallet_id",
+            SearchInfo::Twitter(_) => "twitter",
+            SearchInfo::Discord(_) => "discord",
+            SearchInfo::Matrix(_) => "matrix",
+            SearchInfo::Display(_) => "display",
+            SearchInfo::Legal(_) => "legal",
+            SearchInfo::Web(_) => "web",
+            SearchInfo::Email(_) => "email",
+            SearchInfo::Github(_) => "github",
+            SearchInfo::PGPFingerprint(_) => "pgp_fingerprint",
+        }
+    }
+
+    pub fn inner(&self) -> String {
+        match self {
+            SearchInfo::AccountId32(inner)
+            | SearchInfo::Twitter(inner)
+            | SearchInfo::Discord(inner)
+            | SearchInfo::Matrix(inner)
+            | SearchInfo::Display(inner)
+            | SearchInfo::Legal(inner)
+            | SearchInfo::Web(inner)
+            | SearchInfo::Email(inner)
+            | SearchInfo::Github(inner) => inner.to_owned(),
+            SearchInfo::PGPFingerprint(inner) => hex::encode(inner),
+        }
+    }
 }
 
 #[derive(Debug, Clone, ToSql, Serialize, Deserialize)]
@@ -1339,131 +1528,6 @@ mod test {
     use super::*;
 
     #[test]
-    fn search_query_test() {
-        let condition = Condition::default()
-            .condition(&SearchInfo::Matrix("matrix_acc".to_string()))
-            .and()
-            .condition(&SearchInfo::Twitter("troll".to_string()))
-            .or()
-            .condition(&SearchInfo::Matrix("anon".to_string()))
-            .and()
-            .condition(&SearchInfo::Web("example.com".to_string()));
-
-        let query = SimpleSearchQuery::default().table_name("registration".to_string());
-
-        assert_eq!(query.to_sql(), "SELECT * FROM registration");
-
-        let displayed = Displayed::default()
-            .wallet_id()
-            .account(AccountType::Email)
-            .account(AccountType::Discord);
-
-        let query = SimpleSearchQuery::default()
-            .table_name("registration".to_string())
-            .selected(displayed);
-
-        assert_eq!(
-            query.to_sql(),
-            "SELECT wallet_id, email, discord FROM registration"
-        );
-
-        let query = SimpleSearchQuery::default()
-            .table_name("registration".to_string())
-            .condition(condition);
-
-        assert_eq!(
-            query.to_sql(),
-            "SELECT * FROM registration WHERE matrix='matrix_acc' AND twitter='troll' OR matrix='anon' AND web='example.com'"
-        );
-
-        let condition = Condition::default().condition(&SearchInfo::Twitter("HIO".to_string()));
-
-        let displayed = Displayed::default()
-            .wallet_id()
-            .account(AccountType::Email)
-            .account(AccountType::Discord);
-
-        SimpleSearchQuery::default()
-            .table_name("timeline_elem".to_string())
-            .limit(Some(Limit::new(4)))
-            .selected(displayed)
-            .condition(condition);
-    }
-
-    #[test]
-    fn delete_query_test() {
-        let table_name = "registration".to_string();
-        let condition = Condition::default()
-            .condition(&SearchInfo::Matrix("matrix_acc".to_string()))
-            .and()
-            .condition(&SearchInfo::Twitter("troll".to_string()))
-            .or()
-            .condition(&SearchInfo::Matrix("anon".to_string()))
-            .and()
-            .condition(&SearchInfo::Web("example.com".to_string()));
-
-        let delete_query = DeleteQuery::default()
-            .table_name(table_name)
-            .condition(condition);
-        assert_eq!(
-            delete_query.to_sql(),
-            "DELETE FROM registration WHERE matrix='matrix_acc' AND twitter='troll' OR matrix='anon' AND web='example.com'"
-            );
-
-        let delete_query = DeleteQuery::default().table_name("registration".to_string());
-        assert_eq!(delete_query.to_sql(), "DELETE FROM registration");
-    }
-
-    #[test]
-    fn query_condition() {
-        let condition = Condition::default()
-            .condition(&SearchInfo::Matrix("matrix_acc".to_string()))
-            .and()
-            .condition(&SearchInfo::Twitter("troll".to_string()))
-            .or()
-            .condition(&SearchInfo::Matrix("anon".to_string()))
-            .and()
-            .condition(&SearchInfo::Web("example.com".to_string()))
-            .and();
-
-        assert_eq!(
-            condition.to_sql(),
-            "WHERE matrix='matrix_acc' AND twitter='troll' OR matrix='anon' AND web='example.com'"
-        );
-
-        let condition = Condition::default()
-            .like_condition(&SearchInfo::Matrix("matrix_acc".to_string()))
-            .and()
-            .like_condition(&SearchInfo::Twitter("troll".to_string()))
-            .or()
-            .like_condition(&SearchInfo::Matrix("anon".to_string()))
-            .and()
-            .like_condition(&SearchInfo::Web("example.com".to_string()))
-            .and();
-
-        assert_eq!(
-            condition.to_sql(),
-            "WHERE matrix LIKE '%matrix_acc%' AND twitter LIKE '%troll%' OR matrix LIKE '%anon%' AND web LIKE '%example.com%'"
-        );
-
-        let condition = Condition::default();
-
-        assert_eq!(condition.to_sql(), String::new());
-
-        let condition = Condition::default()
-            .network(&Network::Paseo)
-            .or()
-            .network(&Network::Polkadot)
-            .and()
-            .condition(&SearchInfo::Twitter("troll".to_string()));
-
-        assert_eq!(
-            condition.to_sql(),
-            "WHERE network='Paseo' OR network='Polkadot' AND twitter='troll'"
-        );
-    }
-
-    #[test]
     fn from_search_request() {
         let network: Option<Network> = Some(Network::Rococo);
         let outputs: Vec<DisplayedInfo> = vec![DisplayedInfo::WalletID, DisplayedInfo::Display];
@@ -1477,11 +1541,16 @@ mod test {
         );
 
         let search_req = IncomingSearchRequest::new(network, outputs.clone(), filters.clone());
-        let search_query: SimpleSearchQuery = search_req.into();
+
+        let mut displayed = RegistrationDisplayed::from(&search_req);
+        let mut condition = RegistrationCondition::from(&search_req);
+        let reg_query = RegistrationQuery::default()
+            .selected(displayed)
+            .condition(condition);
 
         assert_eq!(
-            search_query.to_sql(),
-            "SELECT wallet_id, display_name FROM registration WHERE network='Rococo' AND display LIKE '%Travis Hernandez%' AND discord='Travis Hernandez' LIMIT 2"
+            reg_query.statement(),
+            "SELECT wallet_id, display_name FROM registration WHERE display LIKE $1 AND discord = $2 AND network = $3 LIMIT 2"
         );
         //  ------------------------------------------------------------------------------
         let network: Option<Network> = None;
@@ -1497,57 +1566,118 @@ mod test {
         let search_req =
             IncomingSearchRequest::new(network.clone(), outputs.clone(), filters.clone());
 
-        let search_query: SimpleSearchQuery = search_req.into();
+        let mut displayed = RegistrationDisplayed::from(&search_req);
+        let mut condition = RegistrationCondition::from(&search_req);
+        let reg_query = RegistrationQuery::default()
+            .selected(displayed)
+            .condition(condition);
 
         assert_eq!(
-            search_query.to_sql(),
-            "SELECT wallet_id, display_name FROM registration WHERE display='Travis Hernandez' LIMIT 2"
+            reg_query.statement(),
+            "SELECT wallet_id, display_name FROM registration WHERE display = $1 LIMIT 2"
         );
         //  ------------------------------------------------------------------------------
         let outputs: Vec<DisplayedInfo> = vec![];
         let search_req =
             IncomingSearchRequest::new(network.clone(), outputs.clone(), filters.clone());
 
-        let search_query: SimpleSearchQuery = search_req.into();
+        let mut displayed = RegistrationDisplayed::from(&search_req);
+        let mut condition = RegistrationCondition::from(&search_req);
+        let reg_query = RegistrationQuery::default()
+            .selected(displayed)
+            .condition(condition);
 
         assert_eq!(
-            search_query.to_sql(),
-            "SELECT * FROM registration WHERE display='Travis Hernandez' LIMIT 2"
+            reg_query.statement(),
+            "SELECT * FROM registration WHERE display = $1 LIMIT 2"
         );
         //  ------------------------------------------------------------------------------
         let filters: Filter = Filter::default();
         let search_req =
             IncomingSearchRequest::new(network.clone(), outputs.clone(), filters.clone());
 
-        let search_query: SimpleSearchQuery = search_req.into();
+        let mut displayed = RegistrationDisplayed::from(&search_req);
+        let mut condition = RegistrationCondition::from(&search_req);
+        let reg_query = RegistrationQuery::default()
+            .selected(displayed)
+            .condition(condition);
 
-        assert_eq!(search_query.to_sql(), "SELECT * FROM registration");
+        assert_eq!(reg_query.statement(), "SELECT * FROM registration");
+    }
+
+    #[test]
+    fn search_registration_records() {
+        let selected = RegistrationDisplayed::new(vec![
+            DisplayedRegistrationInfo::WalletID,
+            DisplayedRegistrationInfo::Discord,
+        ]);
+
+        let mut condition = RegistrationCondition::default()
+            .network(&Network::Paseo)
+            .filter(&FieldsFilter::new(
+                SearchInfo::Email("thing@example.com".to_string()),
+                false,
+            ));
+        let query = RegistrationQuery::default()
+            .selected(selected)
+            .condition(condition);
+
+        assert_eq!(
+            "SELECT wallet_id, discord FROM registration WHERE email LIKE $1 AND network = $2",
+            query.statement()
+        );
+        assert_eq!(
+            vec!["thing@example.com".to_string(), "paseo".to_string(),],
+            query.params()
+        );
     }
 
     #[test]
     fn search_by_date() {
-        let mut timeline_query = TimelineQuery::default();
-        let selected = Displayed::default().wallet_id().event().date();
+        let selected = TimelineDisplayed::default().wallet_id().event().date();
+
         let date = NaiveDate::from_ymd_opt(2015, 6, 3).unwrap();
         let time_filter = TimeFilter {
             gt: Some(date),
             lt: None,
-            // eq: None,
         };
-        let mut condition = Condition::default()
-            .date(&time_filter)
-            .and()
-            .network(&Network::Paseo);
 
-        let mut sql = timeline_query
+        let mut condition = TimelineCondition::default().network(&Network::Paseo);
+
+        let mut timeline_query = TimelineQuery::default()
             .selected(selected)
-            .condition(condition)
-            .to_sql();
-        assert_eq!(sql, "SELECT wallet_id, event, date FROM timeline_elem WHERE date > '2015-06-03' AND network='paseo'");
+            .condition(condition);
+
+        let statement = timeline_query.statement();
+        let params = timeline_query.params();
+        assert_eq!(
+            statement,
+            "SELECT wallet_id, event, date FROM timeline_elem WHERE network = $1"
+        );
+        assert_eq!(params, vec!["paseo".to_string()]);
     }
 
     #[test]
-    fn insert_query_test() {
-        // InsertQuery
+    fn delete_query() {
+        let mut condition = TimelineCondition::default()
+            .network(&Network::Paseo)
+            .wallet_id(
+                AccountId32::from_str("5HmLjPdzJQHopPiyz3fF4M4fW3M5EV19sPZUqWRhwA91NPzT").unwrap(),
+            );
+        let table_name = String::from("registration");
+
+        let delete_query = DeleteQuery::default()
+            .condition(condition)
+            .table_name(table_name);
+
+        assert_eq!(
+            "DELETE * FROM registration WHERE wallet_id = $1 AND network = $2",
+            delete_query.statement()
+        );
+
+        assert_eq!(
+            vec!["5HmLjPdzJQHopPiyz3fF4M4fW3M5EV19sPZUqWRhwA91NPzT", "paseo"],
+            delete_query.params()
+        )
     }
 }
