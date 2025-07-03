@@ -9,6 +9,8 @@ WORKDIR /usr/src/w3registrar
 COPY . .
 RUN cargo clean
 RUN cargo update -p tracing-attributes --precise 0.1.28
+RUN cargo install subxt-cli
+RUN ./scripts/metadata.sh   # Refresh metadata on build
 RUN cargo install --path ./ --locked
 
 FROM rust:latest
