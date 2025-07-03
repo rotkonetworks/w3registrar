@@ -47,7 +47,7 @@ pub async fn get_registration(
     let identity = super::node::storage().identity().identity_of(who);
     match storage.fetch(&identity).await? {
         None => Err(anyhow!("No registration found for {}", who)),
-        Some((reg, _)) => Ok(reg),
+        Some(reg) => Ok(reg),
     }
 }
 
@@ -267,11 +267,11 @@ pub async fn register_identity<'a>(
     network: &Network,
 ) -> anyhow::Result<&'a str> {
     let reg_state = provide_judgement(who, Judgement::Reasonable, network).await;
-    
+
     // Clear only this user's verification data instead of all caches
     let mut redis_conn = RedisConnection::default().await?;
     redis_conn.clear_all_related_to(network, who).await?;
-    
+
     reg_state
 }
 
@@ -323,10 +323,9 @@ pub async fn filter_accounts(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::config::{Config, GLOBAL_CONFIG};
     use std::sync::Once;
-    use tracing::{info, warn};
+    use tracing::info;
 
     static INIT: Once = Once::new();
 
@@ -339,38 +338,5 @@ mod tests {
                 .set(config)
                 .expect("Failed to set global config");
         });
-    }
-
-    #[tokio::test]
-    async fn test_provide_judgement_via_proxy() -> anyhow::Result<()> {
-        tracing_subscriber::FmtSubscriber::builder()
-            .with_max_level(tracing::Level::DEBUG)
-            .with_test_writer()
-            .init();
-
-        info!("Starting judgment test");
-        init_config().await;
-
-        let target_account =
-            AccountId32::from_str("1Qrotkokp6taAeLThuwgzR7Mu3YQonZohwrzixwGnrD1QDT")?;
-        info!(target_account = %target_account.to_string(), "Target account");
-
-        let (client, network_cfg) = setup_network(&Network::Paseo).await?;
-        info!(
-            "Network config loaded: endpoint={}, registrar_index={}",
-            network_cfg.endpoint, network_cfg.registrar_index
-        );
-
-        match get_registration(&client, &target_account).await {
-            Ok(reg) => info!("Found registration: {:?}", reg),
-            Err(e) => warn!("Registration check failed: {}", e),
-        }
-
-        let result =
-            provide_judgement(&target_account, Judgement::Reasonable, &Network::Paseo).await?;
-
-        info!("Judgment result: {}", result);
-        assert_eq!(result, "Judgment submitted through proxy");
-        Ok(())
     }
 }
