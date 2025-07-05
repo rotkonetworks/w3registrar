@@ -67,6 +67,7 @@ services:
     volumes:
       - ${CONFIG_PATH:-./config.toml}:/etc/w3registrar/config.toml:ro
       - ${KEYFILE:-./keyfile}:/etc/w3registrar/keyfile:ro
+      - ${SSL_CERT:-./ssl_cert.pem}:/etc/w3registrar/ssl_cert.pem:ro
     environment:
       - CONFIG_PATH=/etc/w3registrar/config.toml
       - RUST_LOG=info
