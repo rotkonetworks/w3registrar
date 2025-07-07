@@ -9,3 +9,5 @@ TODO*
 .keyfile.polkadot
 .keyfile.paseo
 config.production.toml
+config.staging.toml
+config.development.toml
