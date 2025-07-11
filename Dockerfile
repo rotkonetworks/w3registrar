@@ -9,7 +9,7 @@ WORKDIR /usr/src/w3registrar
 COPY . .
 RUN cargo clean
 RUN cargo install subxt-cli
-RUN ./scripts/metadata.sh
+RUN mkdir ./metadata &&./scripts/metadata.sh
 RUN cargo update -p tracing-attributes --precise 0.1.28
 RUN cargo install --path ./ --locked
 
