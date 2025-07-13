@@ -300,7 +300,7 @@ impl Matrix {
             let network = Network::from_str(parts[2])?;
 
             if let Ok(account_id) = AccountId32::from_str(parts[3]) {
-                if let Ok(()) = <Matrix as Adapter>::handle_content(
+                match <Matrix as Adapter>::handle_content(
                     &text_content.body,
                     &mut redis_connection,
                     &network,
@@ -309,8 +309,24 @@ impl Matrix {
                 )
                 .await
                 {
-                    break;
+                    Ok(()) => {
+                        break;
+                    }
+                    Err(e) => {
+                        error!(error=?e, "Errorr");
+                    }
                 }
+                // if let Ok(()) = <Matrix as Adapter>::handle_content(
+                //     &text_content.body,
+                //     &mut redis_connection,
+                //     &network,
+                //     &account_id,
+                //     &account,
+                // )
+                // .await
+                // {
+                //     break;
+                // }
             }
         }
         Ok(())
