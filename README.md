@@ -33,6 +33,10 @@ are confirmed.
 git clone https://github.com/rotkonetworks/w3registrar.git
 cd w3registrar
 
+# Set up development environment
+cargo install subxt-cli
+./scripts/metadata.sh
+
 # Nix-based build environment (recommended):
 nix-shell
 cargo build --release
