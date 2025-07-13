@@ -47,7 +47,7 @@ pub async fn get_registration(
     let identity = super::node::storage().identity().identity_of(who);
     match storage.fetch(&identity).await? {
         None => Err(anyhow!("No registration found for {}", who)),
-        Some((reg, _)) => Ok(reg),
+        Some(reg) => Ok(reg),
     }
 }
 

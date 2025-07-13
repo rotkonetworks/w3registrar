@@ -20,13 +20,15 @@ jobs:
       REDIS_PORT: 26379
       POSTGRES_PORT: 35432
       POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-      W3REG_HTTP_PORT: 28080
-      W3REG_WS_PORT: 28081
+      # NOTE: edit ports directly on config file
+      # W3REG_HTTP_PORT: 28080
+      # W3REG_WS_PORT: 28081
       CONFIG_PATH: ./config.docker.toml
       KEYFILE_POLKADOT: ${{ secrets.KEYFILE_POLKADOT }}
       KEYFILE_KUSAMA: ${{ secrets.KEYFILE_KUSAMA }}
       KEYFILE_ROCOCO: ${{ secrets.KEYFILE_ROCOCO }}
       KEYFILE_PASEO: ${{ secrets.KEYFILE_PASEO }}
+      SSL_CERT: ${{ secrets.SSL_CERT }}
 
     steps:
       - name: Checkout repository
@@ -58,10 +60,24 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Create Required files
+        env:
+          AGE_PRIVATE_KEY: ${{ secrets.AGE_PRIVATE_KEY }}
         run: |
-          echo "${{ secrets.CONFIG_API_IN_DOCKER }}" | base64 -d > config.docker.toml
+          #install age
+          sudo apt-get update
+          sudo apt-get install -y age
+
+          printf '%s' "$AGE_PRIVATE_KEY" > age-key.txt
+          age --decrypt -i ./age-key.txt --output config.docker.toml configs/config.staging.age
+          shred -u age-key.txt
+
           ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} "mkdir -p ${{ env.DEPLOY_PATH }}/keyfile 2>/dev/null || true"
           scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} config.docker.toml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}
+
+          # deploy ssl certificate
+          echo "${{ secrets.SSL_CERT }}" | base64 -d > /tmp/ssl_cert.pem
+          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} /tmp/ssl_cert.pem ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/ssl_cert.pem
+          rm /tmp/ssl_cert.pem
 
           # Loop through potential network keyfiles
           for network in polkadot kusama rococo paseo; do
@@ -93,8 +109,6 @@ jobs:
             echo "REDIS_PORT=${{ env.REDIS_PORT }}" >> .env
             echo "POSTGRES_PORT=${{ env.POSTGRES_PORT }}" >> .env
             echo "POSTGRES_PASSWORD=${{ env.POSTGRES_PASSWORD }}" >> .env
-            echo "W3REG_HTTP_PORT=${{ env.W3REG_HTTP_PORT }}" >> .env
-            echo "W3REG_WS_PORT=${{ env.W3REG_WS_PORT }}" >> .env
             echo "CONFIG_PATH=${{ env.CONFIG_PATH }}" >> .env
             docker load -i ${{ env.DEPLOY_PATH }}/w3registrar.tar
             docker compose -f ./docker-compose.yaml up -d

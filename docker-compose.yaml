@@ -57,16 +57,18 @@ services:
     #     condition: service_healthy
     #   postgres:
     #     condition: service_healthy
-    ports:
-      - "${W3REG_HTTP_PORT:-18080}:8080" # http
-      - "${W3REG_WS_PORT:-18081}:8081" # websocket
-      #NOTE: needed so it can connect to neon remote postgres
+    # NOTE: ports doesnt needed for network_mode=host, define ports directly on config.toml
+    # ports:
+    #   - "${W3REG_HTTP_PORT:-18080}:8080" # http
+    #   - "${W3REG_WS_PORT:-18081}:8081" # websocket
+    #NOTE: needed so it can connect to neon remote postgres
     network_mode: "host"
     # networks:
     #   - w3r_network
     volumes:
       - ${CONFIG_PATH:-./config.toml}:/etc/w3registrar/config.toml:ro
       - ${KEYFILE:-./keyfile}:/etc/w3registrar/keyfile:ro
+      - ${SSL_CERT:-./ssl_cert.pem}:/etc/w3registrar/ssl_cert.pem:ro
     environment:
       - CONFIG_PATH=/etc/w3registrar/config.toml
       - RUST_LOG=info

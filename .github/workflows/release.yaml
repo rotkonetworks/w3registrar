@@ -38,6 +38,8 @@ jobs:
       - name: Build binary
         run: |
           cargo update -p tracing-attributes --precise 0.1.28
+          cargo install subxt-cli
+          ./scripts/metadata.sh
           cargo build --verbose --release --target ${{ matrix.platform.target }}
 
       - name: Prepare binary
