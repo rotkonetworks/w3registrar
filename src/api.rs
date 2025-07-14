@@ -9,9 +9,6 @@
 // 4.5) Use skip()/skip_all for sensitive info (passwords)
 // 5) Log error as they happen and pass then upward if feasible
 // 6) Refrain from using .unwrap and use anyhow::Result whenever is possible/feasible
-//
-// TODO: clear data related to registration if it fails at some point
-// TODO: reduce the usage [Clone] :)
 use anyhow::anyhow;
 use anyhow::Result;
 use axum::extract::Query;
@@ -52,6 +49,9 @@ use tracing::Span;
 use tracing::{debug, error, info};
 use tungstenite::Error;
 
+use crate::indexer::index_identities_on_chain;
+use crate::node::Block;
+use crate::postgres::IndexerState;
 use crate::{
     adapter::{
         github::{Github, GithubRedirectStepTwoParams},
@@ -1688,7 +1688,9 @@ impl NodeListener {
                     match item {
                         Ok(block) => {
                             if let Ok(events) = block.events().await {
-                                self_clone.process_block_events(events, &network_name).await;
+                                self_clone
+                                    .process_block_events(events, &block, &network_name)
+                                    .await;
                             }
                         }
                         Err(e) => {
@@ -1710,6 +1712,7 @@ impl NodeListener {
     async fn process_block_events(
         &mut self,
         events: subxt::events::Events<SubstrateConfig>,
+        block: &Block,
         network: &Network,
     ) {
         for event_result in events.iter() {
@@ -1748,10 +1751,13 @@ impl NodeListener {
                     let pog_config = cfg.postgres.clone();
                     let mut pog_connection = PostgresConnection::new(&pog_config).await.unwrap();
                     if let Some(record) = RegistrationRecord::from_judgement(&jud).await.unwrap() {
+                        info!(who = ?jud.target.to_string(), "Jugdement saved to DB");
                         info!("Writing registration record to dB after");
-                        let _ = pog_connection.write(&record).await;
+                        pog_connection
+                            .save_registration(&record, &block.hash(), &(block.number() as i64))
+                            .await
+                            .unwrap();
                     }
-                    info!(who = ?jud.target.to_string(), "Jugdement saved to DB");
                 }
             }
         }
@@ -2413,5 +2419,25 @@ pub async fn spawn_http_serv() -> anyhow::Result<()> {
         .await
         .unwrap();
     axum::serve(listener, app).await.unwrap();
+    Ok(())
+}
+
+pub async fn spawn_identity_indexer() -> anyhow::Result<()> {
+    let pog_connection = PostgresConnection::default().await?;
+    let cfg = GLOBAL_CONFIG
+        .get()
+        .expect("GLOBAL_CONFIG is not initialized");
+    for network in cfg.registrar.supported_networks().iter() {
+        match pog_connection.get_indexer_state(network).await {
+            Ok(state) => {
+                index_identities_on_chain(state).await?;
+            }
+            Err(e) => {
+                error!("ERROR: {:?}", e);
+                index_identities_on_chain(IndexerState::init(network.to_owned())).await?;
+            }
+        }
+    }
+
     Ok(())
 }
