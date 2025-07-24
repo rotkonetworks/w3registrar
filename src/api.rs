@@ -49,9 +49,6 @@ use tracing::Span;
 use tracing::{debug, error, info};
 use tungstenite::Error;
 
-use crate::indexer::index_identities_on_chain;
-use crate::node::Block;
-use crate::postgres::IndexerState;
 use crate::{
     adapter::{
         github::{Github, GithubRedirectStepTwoParams},
@@ -59,15 +56,16 @@ use crate::{
         Adapter,
     },
     config::{RedisConfig, RegistrarConfig, GLOBAL_CONFIG},
+    indexer::Indexer,
     node::{
-        self, filter_accounts,
+        self, filter_accounts, get_judgement,
         identity::events::{JudgementGiven, JudgementRequested, JudgementUnrequested},
         substrate::runtime_types::{
             pallet_identity::types::Registration,
             pallet_identity::types::{Data as IdentityData, Judgement},
             people_paseo_runtime::people::IdentityInfo,
         },
-        Client as NodeClient,
+        Block, Client as NodeClient,
     },
     postgres::{
         DisplayedInfo, PostgresConnection, RegistrationCondition, RegistrationDisplayed,
@@ -1746,17 +1744,34 @@ impl NodeListener {
                         }
                     }
                 } else if let Ok(Some(jud)) = event.as_event::<JudgementGiven>() {
-                    // TODO: handle unwrap(s)?
-                    let cfg = GLOBAL_CONFIG.get().unwrap();
-                    let pog_config = cfg.postgres.clone();
-                    let mut pog_connection = PostgresConnection::new(&pog_config).await.unwrap();
-                    if let Some(record) = RegistrationRecord::from_judgement(&jud).await.unwrap() {
-                        info!(who = ?jud.target.to_string(), "Jugdement saved to DB");
-                        info!("Writing registration record to dB after");
-                        pog_connection
-                            .save_registration(&record, &block.hash(), &(block.number() as i64))
-                            .await
-                            .unwrap();
+                    // check if judgement is reasonable
+                    if let Ok(Some(judgement)) = get_judgement(&jud.target, network).await {
+                        if matches!(judgement, Judgement::Reasonable) {
+                            // construct a record
+                            let cfg = GLOBAL_CONFIG.get().unwrap();
+                            let pog_config = cfg.postgres.clone();
+                            let mut pog_connection =
+                                PostgresConnection::new(&pog_config).await.unwrap();
+                            if let Some(record) =
+                                RegistrationRecord::from_judgement(&jud).await.unwrap()
+                            {
+                                info!(who = ?jud.target.to_string(), "Jugdement saved to DB");
+                                info!("Writing registration record to dB after");
+                                // write the record
+                                pog_connection.save_registration(&record).await.unwrap();
+                                let block_index = block.number();
+                                let block_hash = block.hash();
+                                // mark block
+                                pog_connection
+                                    .update_indexer_state(
+                                        &network,
+                                        &block_hash,
+                                        &(block_index as i64),
+                                    )
+                                    .await
+                                    .unwrap();
+                            }
+                        }
                     }
                 }
             }
@@ -2422,22 +2437,7 @@ pub async fn spawn_http_serv() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[instrument(name = "identity_indexer")]
 pub async fn spawn_identity_indexer() -> anyhow::Result<()> {
-    let pog_connection = PostgresConnection::default().await?;
-    let cfg = GLOBAL_CONFIG
-        .get()
-        .expect("GLOBAL_CONFIG is not initialized");
-    for network in cfg.registrar.supported_networks().iter() {
-        match pog_connection.get_indexer_state(network).await {
-            Ok(state) => {
-                index_identities_on_chain(state).await?;
-            }
-            Err(e) => {
-                error!("ERROR: {:?}", e);
-                index_identities_on_chain(IndexerState::init(network.to_owned())).await?;
-            }
-        }
-    }
-
-    Ok(())
+    Indexer::new().await?.index().await
 }

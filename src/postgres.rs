@@ -14,7 +14,8 @@ use std::ops::Deref;
 use std::slice::Iter;
 use std::{str::FromStr, time::Duration};
 use subxt::ext::codec::Encode;
-use subxt::utils::AccountId32;
+use subxt::storage::{DefaultAddress, StorageKeyValuePair};
+use subxt::utils::{AccountId32, Yes};
 use tokio_postgres::types::FromSql;
 use tokio_postgres::{Client, GenericClient, NoTls, SimpleQueryMessage, Statement, ToStatement};
 use tracing::instrument;
@@ -101,7 +102,7 @@ $$;";
             github          TEXT,
             legal           TEXT,
             web             TEXT,
-            pgp_fingerprint VARCHAR (20),
+            pgp_fingerprint VARCHAR(40),
             PRIMARY KEY     (wallet_id, network)
         )";
 
@@ -233,26 +234,19 @@ $$;";
         Ok(())
     }
 
-    pub async fn save_registration(
-        &mut self,
-        record: &RegistrationRecord,
-        block_hash: &H256,
-        block_number: &i64,
-    ) -> anyhow::Result<()> {
+    pub async fn save_registration(&mut self, record: &RegistrationRecord) -> anyhow::Result<()> {
         info!(who = ?record.wallet_id(), "Writing record");
-        // TODO: write this programatically so we don't end with the NULL junk
         let insert_reg_record =
-            "INSERT INTO registration(wallet_id, network, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
+            format!("INSERT INTO registration(wallet_id, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint, network)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '{}')", record.network());
         info!(query=?insert_reg_record,"QUERY");
         info!(record = ?record);
 
         self.client
             .execute(
-                insert_reg_record,
+                &insert_reg_record,
                 &[
                     &record.wallet_id(),
-                    &record.network(),
                     &record.discord(),
                     &record.twitter(),
                     &record.matrix(),
@@ -524,6 +518,40 @@ impl RegistrationRecord {
             pgp_fingerprint,
             timeline: None,
         }
+    }
+
+    pub async fn from_storage_pairs(
+        pairs: &StorageKeyValuePair<
+            DefaultAddress<(), Registration<u128, IdentityInfo>, (), (), Yes>,
+        >,
+        network: &Network,
+    ) -> anyhow::Result<Option<Self>> {
+        let key_bytes = &pairs.key_bytes;
+        let account_bytes: [u8; 32] = key_bytes[key_bytes.len() - 32..]
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Invalid key length for AccountId32"))?;
+
+        let account_id = AccountId32::from(account_bytes);
+
+        let pgp_fingerprint = match pairs.value.info.pgp_fingerprint {
+            Some(bytes) => Some(hex::encode(bytes)),
+            None => None,
+        };
+
+        Ok(Some(Self {
+            network: Some(network.to_owned()),
+            wallet_id: Some(account_id.to_string()),
+            discord: identity_data_tostring(&pairs.value.info.discord),
+            twitter: identity_data_tostring(&pairs.value.info.twitter),
+            matrix: identity_data_tostring(&pairs.value.info.matrix),
+            email: identity_data_tostring(&pairs.value.info.email),
+            display_name: identity_data_tostring(&pairs.value.info.display),
+            github: identity_data_tostring(&pairs.value.info.github),
+            legal: identity_data_tostring(&pairs.value.info.legal),
+            web: identity_data_tostring(&pairs.value.info.web),
+            pgp_fingerprint,
+            timeline: None,
+        }))
     }
 
     // TODO: return None if judgement is not set correctly
