@@ -1,15 +1,10 @@
-use jsonrpsee::{core::client::ClientT, ws_client::WsClientBuilder};
-use sp_core::H256;
 use tracing::{error, info, info_span, instrument, Span};
 
 use crate::{
     api::Network,
     config::GLOBAL_CONFIG,
-    node::{
-        get_judgement, identity::events::JudgementGiven,
-        runtime_types::pallet_identity::types::Judgement, Client as NodeClient,
-    },
-    postgres::{IndexerState, PostgresConnection, RegistrationRecord},
+    node::Client as NodeClient,
+    postgres::{PostgresConnection, RegistrationQuery, RegistrationRecord},
 };
 
 #[derive(Clone)]
@@ -47,7 +42,7 @@ impl Indexer {
                     || state.last_block_hash.ne(&block_hash)
                 {
                     info!(start_block_index=?block_index, end_block_index=?state.last_block_index, "Filling missing blocks");
-                    self.index_remaining_identities(state).await?;
+                    self.index_remaining_identities(&network).await?;
                 }
             }
             Err(e) => {
@@ -61,77 +56,62 @@ impl Indexer {
         Ok(())
     }
 
+    /// Indexes the missing identities found on chain but missing in db
     #[instrument(skip_all, parent = &self.span)]
-    async fn index_remaining_identities(&self, state: IndexerState) -> anyhow::Result<()> {
+    async fn index_remaining_identities(&self, network: &Network) -> anyhow::Result<()> {
         let cfg = GLOBAL_CONFIG
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
 
         let network_cfg = cfg
             .registrar
-            .get_network(&state.network)
-            .ok_or_else(|| anyhow::anyhow!("Network {} not configured", state.network))
-            .unwrap();
+            .get_network(&network)
+            .ok_or_else(|| anyhow::anyhow!("Network {} not configured", network))?;
 
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
 
-        let current_block_index: i64 = client.blocks().at_latest().await?.number() as i64;
-
-        let ws_client = WsClientBuilder::default()
-            .build(&network_cfg.endpoint)
-            .await
-            .unwrap();
-
         let mut pog_connection = PostgresConnection::default().await?;
 
-        for block_index in state.last_block_index..current_block_index {
-            let block_hash: H256 = ws_client
-                .request::<Option<H256>, _>("chain_getBlockHash", [block_index])
-                .await
-                .unwrap()
-                .unwrap();
+        let mut iter = client
+            .storage()
+            .at_latest()
+            .await?
+            .iter(super::node::storage().identity().identity_of_iter())
+            .await?;
 
-            match client.blocks().at(block_hash).await {
-                Ok(block) => {
-                    if block_index % 100 == 0 {
-                        info!(hash=?block_hash.to_string(), number=?block_index,"Block");
-                    }
+        let mut chain_registrations = vec![];
+        let query = RegistrationQuery::default();
+        let db_registrations = pog_connection.search_registration_records(&query).await?;
 
-                    // TODO: deal with ever ending nesting...
-                    if let Ok(events) = block.events().await {
-                        for event in events.iter() {
-                            if let Ok(event) = event {
-                                if let Ok(Some(jud)) = event.as_event::<JudgementGiven>() {
-                                    if let Ok(Some(judgement)) =
-                                        get_judgement(&jud.target, &state.network).await
-                                    {
-                                        if matches!(judgement, Judgement::Reasonable) {
-                                            if let Some(record) =
-                                                RegistrationRecord::from_judgement(&jud)
-                                                    .await
-                                                    .unwrap()
-                                            {
-                                                pog_connection
-                                                    .save_registration(&record)
-                                                    .await
-                                                    .unwrap();
-                                                info!(registrar_index=?jud.registrar_index, wallet_id=?jud.target,"`JudgementGiven` Event");
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    println!("Failed to get block #{}: {}", block_hash, e);
-                }
+        while let Some(Ok(identity)) = &iter.next().await {
+            if let Some(record) =
+                RegistrationRecord::from_storage_pairs(&identity, &network).await?
+            {
+                chain_registrations.push(record);
             }
         }
+
+        let filtered: Vec<&RegistrationRecord> = chain_registrations
+            .iter()
+            .zip(db_registrations.iter())
+            .filter(|(a, b)| a.wallet_id() != b.wallet_id())
+            .filter_map(|(a, b)| {
+                if a.wallet_id() != b.wallet_id() {
+                    Some(a)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for record in filtered {
+            pog_connection.save_registration(&record).await?;
+        }
+
         Ok(())
     }
 
+    /// Gets all on-chain identities untill now and saves them to db
     #[instrument(skip_all, parent = &self.span)]
     async fn index_identities_from_start(&self, network: &Network) -> anyhow::Result<()> {
         let cfg = GLOBAL_CONFIG
@@ -141,8 +121,7 @@ impl Indexer {
         let network_cfg = cfg
             .registrar
             .get_network(&network)
-            .ok_or_else(|| anyhow::anyhow!("Network {} not configured", network))
-            .unwrap();
+            .ok_or_else(|| anyhow::anyhow!("Network {} not configured", network))?;
 
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
 
@@ -161,9 +140,8 @@ impl Indexer {
         // TODO: buffer every 50 or so request and then execute that at a one go, instead of
         // running one request at a time?
         while let Some(Ok(identity)) = &iter.next().await {
-            if let Some(record) = RegistrationRecord::from_storage_pairs(&identity, &network)
-                .await
-                .unwrap()
+            if let Some(record) =
+                RegistrationRecord::from_storage_pairs(&identity, &network).await?
             {
                 pog_connection.save_registration(&record).await?;
             }
