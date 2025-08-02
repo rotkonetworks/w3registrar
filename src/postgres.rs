@@ -1470,8 +1470,11 @@ pub enum TimelineEvent {
     #[serde(alias = "legal")]
     Legal,
     #[postgres(name = "web")]
-    #[serde(alias = "legal")]
+    #[serde(alias = "web")]
     Web,
+    #[postgres(name = "image")]
+    #[serde(alias = "image")]
+    Image,
     #[postgres(name = "pgp_fingerprint")]
     #[serde(alias = "pgp_fingerprint")]
     PGPFingerprint,
@@ -1502,6 +1505,7 @@ impl<'a> FromSql<'a> for TimelineEvent {
 impl From<&AccountType> for TimelineEvent {
     fn from(value: &AccountType) -> Self {
         match value {
+            AccountType::Image => Self::Image,
             AccountType::Discord => Self::Discord,
             AccountType::Display => Self::Display,
             AccountType::Email => Self::Email,

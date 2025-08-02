@@ -163,6 +163,7 @@ pub enum Account {
     Email(String),
     Github(String),
     PGPFingerprint([u8; 20]),
+    Image(String),
 }
 
 impl Display for Account {
@@ -176,6 +177,7 @@ impl Display for Account {
             Account::Web(name) => write!(f, "web|{name}"),
             Account::Email(name) => write!(f, "email|{name}"),
             Account::Github(name) => write!(f, "github|{name}"),
+            Account::Image(name) => write!(f, "image|{}", name),
             Account::PGPFingerprint(name) => write!(f, "pgp_fingerprint|{}", hex::encode(name)),
         }
     }
@@ -201,6 +203,8 @@ pub enum AccountType {
     Legal,
     #[serde(alias = "web", alias = "WEB")]
     Web,
+    #[serde(alias = "image", alias = "IMAGE")]
+    Image,
     #[serde(alias = "pgp_fingerprint", alias = "PGP_FINGERPRINT")]
     PGPFingerprint,
 }
@@ -236,6 +240,7 @@ impl fmt::Display for AccountType {
             Self::Legal => write!(f, "legal"),
             Self::Web => write!(f, "web"),
             Self::PGPFingerprint => write!(f, "pgp_fingerprint"),
+            Self::Image => write!(f, "image"),
         }
     }
 }
@@ -244,7 +249,7 @@ impl Account {
     pub fn determine(&self) -> ValidationMode {
         match self {
             // Direct: verified directly without user action
-            Account::Display(_) => ValidationMode::Direct,
+            Account::Display(_) | Account::Image(_) => ValidationMode::Direct,
             // Inbound: receive challenge/callback via websocket
             Account::Github(_) | Account::PGPFingerprint(_) => ValidationMode::Inbound,
             // Outbound: send challenge via websocket
@@ -295,6 +300,7 @@ impl Account {
             Self::Legal(_) => AccountType::Legal,
             Self::Web(_) => AccountType::Web,
             Self::PGPFingerprint(_) => AccountType::PGPFingerprint,
+            Self::Image(_) => AccountType::Image,
         }
     }
 
@@ -307,6 +313,7 @@ impl Account {
             | Self::Email(v)
             | Self::Legal(v)
             | Self::Github(v)
+            | Self::Image(v)
             | Self::Web(v) => v.to_owned(),
             Self::PGPFingerprint(v) => hex::encode(v),
         }
@@ -322,6 +329,7 @@ impl Account {
             AccountType::Github => Self::Github(value),
             AccountType::Legal => Self::Legal(value),
             AccountType::Web => Self::Web(value),
+            AccountType::Image => Self::Image(value),
             AccountType::PGPFingerprint => {
                 if let Ok(bytes) = hex::decode(&value) {
                     if bytes.len() == 20 {
@@ -356,6 +364,7 @@ impl Account {
         add_if_some(&value.github, Account::Github);
         add_if_some(&value.legal, Account::Legal);
         add_if_some(&value.web, Account::Web);
+        add_if_some(&value.image, Account::Image);
 
         if let Some(fingerprint) = value.pgp_fingerprint {
             accounts.push(Account::PGPFingerprint(fingerprint));
@@ -1061,6 +1070,8 @@ impl SocketListener {
                     identity_data_tostring(&registration.info.github),
                     github_acc,
                 ),
+                Account::Legal(_) => todo!(),
+                Account::Image(image) => (identity_data_tostring(&registration.info.image), image),
                 Account::PGPFingerprint(fingerprint) => (
                     Some(hex::encode(
                         registration
@@ -1070,7 +1081,6 @@ impl SocketListener {
                     )),
                     &hex::encode(fingerprint),
                 ),
-                _ => todo!(),
             };
 
             let stored_acc = stored_acc.ok_or_else(|| {
@@ -1841,6 +1851,7 @@ pub struct VerificationFields {
     pub legal: bool,
     pub web: bool,
     pub pgp_fingerprint: bool,
+    pub image: bool,
 }
 
 async fn handle_redis_message(redis_cfg: &RedisConfig, msg: &redis::Msg) -> anyhow::Result<()> {
@@ -2096,6 +2107,7 @@ impl RedisConnection {
                     AccountType::Legal => fields.legal = true,
                     AccountType::Web => fields.web = true,
                     AccountType::PGPFingerprint => fields.pgp_fingerprint = true,
+                    AccountType::Image => fields.image = true,
                 }
             }
         }

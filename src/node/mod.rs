@@ -267,15 +267,21 @@ pub async fn register_identity<'a>(
     network: &Network,
 ) -> anyhow::Result<&'a str> {
     let reg_state = provide_judgement(who, Judgement::Reasonable, network).await;
-    
+
     // Clear only this user's verification data instead of all caches
     let mut redis_conn = RedisConnection::default().await?;
     redis_conn.clear_all_related_to(network, who).await?;
-    
+
     reg_state
 }
 
 /// Filter accounts based on supported fields and provide appropriate judgment
+///
+/// # Returns
+///
+/// - [HashMap] of the account type and registration state if all accounts are supported
+/// - Empty [HashMap] with Erroneous judgment as a side effect if **one or more** account is
+/// **NOT** supported.
 pub async fn filter_accounts(
     info: &IdentityInfo,
     who: &AccountId32,
