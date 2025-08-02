@@ -236,9 +236,21 @@ $$;";
 
     pub async fn save_registration(&mut self, record: &RegistrationRecord) -> anyhow::Result<()> {
         info!(who = ?record.wallet_id(), "Writing record");
-        let insert_reg_record =
-            format!("INSERT INTO registration(wallet_id, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint, network)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '{}')", record.network());
+        let insert_reg_record = format!("
+            INSERT INTO registration(wallet_id, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint, network)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '{}') 
+            ON CONFLICT (wallet_id, network) DO UPDATE SET 
+                discord = EXCLUDED.discord,
+                twitter = EXCLUDED.twitter,
+                matrix = EXCLUDED.matrix,
+                email = EXCLUDED.email,
+                display_name = EXCLUDED.display_name,
+                github = EXCLUDED.github,
+                legal = EXCLUDED.legal,
+                web = EXCLUDED.web,
+                pgp_fingerprint = EXCLUDED.pgp_fingerprint",
+            record.network());
+
         info!(query=?insert_reg_record,"QUERY");
         info!(record = ?record);
 
