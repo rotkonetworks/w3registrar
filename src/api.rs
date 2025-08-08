@@ -1404,6 +1404,9 @@ impl SocketListener {
         account: AccountId32,
         response: serde_json::Value,
     ) -> anyhow::Result<()> {
+        // to avoid collisions with futures::StreamExt
+        use tokio_stream::StreamExt;
+
         let redis_cfg = self.redis_cfg.clone();
         info!(account_id = %account.to_string(), "Starting Redis listener task!");
 
@@ -1431,8 +1434,15 @@ impl SocketListener {
             // TODO: make this kill iteslf when an completed state is true, since we don't want
             // to listen for events forever!
             debug!("Starting message processing loop");
-            let mut stream = redis_conn.pubsub_stream().await;
-            while let Some(msg) = stream.next().await {
+            let mut stream =
+                redis_conn
+                    .pubsub_stream()
+                    .await
+                    .timeout_repeating(tokio::time::interval(Duration::from_secs(
+                        redis_cfg.listener_timeout,
+                    )));
+
+            while let Some(Ok(msg)) = tokio_stream::StreamExt::next(&mut stream).await {
                 debug!("Redis event received: {:?}", msg);
 
                 // process message, continue on error
@@ -1440,7 +1450,7 @@ impl SocketListener {
                     Ok(result) => result,
                     Err(e) => {
                         error!(error = %e, "Failed to process Redis message {:?}", msg);
-                        continue;
+                        break;
                     }
                 };
 
