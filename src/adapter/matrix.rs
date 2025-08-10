@@ -27,7 +27,8 @@ use subxt::utils::AccountId32;
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, instrument, warn};
 
-use crate::api::{Account, RedisConnection};
+use crate::api::Account;
+use crate::redis::RedisConnection;
 use crate::GLOBAL_CONFIG;
 use crate::{adapter::Adapter, api::Network, node::register_identity};
 
@@ -278,9 +279,7 @@ impl Matrix {
         text_content: &TextMessageEventContent,
     ) -> anyhow::Result<()> {
         info!(sender=?acc,body=?text_content.body,"Received matrix message");
-        let cfg = GLOBAL_CONFIG.get().unwrap();
-        let redis_cfg = cfg.redis.clone();
-        let mut redis_connection = RedisConnection::get_connection(&redis_cfg).await?;
+        let mut redis_connection = RedisConnection::get_connection().await?;
         let query = format!("{acc}|*");
         info!(query=?query, "Search query");
 

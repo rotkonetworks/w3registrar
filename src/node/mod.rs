@@ -19,7 +19,7 @@ use subxt::SubstrateConfig;
 use tracing::{error, info, warn};
 
 use super::api::Account;
-use super::api::RedisConnection;
+use super::redis::RedisConnection;
 use substrate::identity::calls::types::provide_judgement::Identity;
 use substrate::runtime_types::pallet_identity::types::Judgement;
 use substrate::runtime_types::pallet_identity::types::Registration;
@@ -267,11 +267,11 @@ pub async fn register_identity<'a>(
     network: &Network,
 ) -> anyhow::Result<&'a str> {
     let reg_state = provide_judgement(who, Judgement::Reasonable, network).await;
-    
+
     // Clear only this user's verification data instead of all caches
     let mut redis_conn = RedisConnection::default().await?;
     redis_conn.clear_all_related_to(network, who).await?;
-    
+
     reg_state
 }
 

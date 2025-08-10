@@ -129,6 +129,7 @@ pub struct RedisConfig {
     pub host: String,
     pub port: u16,
     pub listener_timeout: u64,
+    pub max_open_clients: u64,
     pub username: Option<String>,
     pub password: Option<String>,
 }
@@ -139,6 +140,7 @@ impl Default for RedisConfig {
             host: "127.0.0.1".to_string(),
             port: 6379,
             listener_timeout: 3500,
+            max_open_clients: 100,
             username: None,
             password: None,
         }

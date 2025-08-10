@@ -2,14 +2,13 @@
 ///
 use crate::{
     adapter::Adapter,
-    api::RedisConnection,
     config::GLOBAL_CONFIG,
+    redis::RedisConnection,
     token::{AuthToken, Token},
 };
+use anyhow::anyhow;
 use reqwest::{header::ACCEPT, Client};
 use serde::Deserialize;
-use anyhow::anyhow;
-use redis::AsyncCommands;
 
 /// Used to interact with the github api
 #[derive(Clone, Debug)]
@@ -29,9 +28,10 @@ impl Github {
         let gh_config = cfg.adapter.github.clone();
         let base_url = gh_config.gh_url;
         let client_id = gh_config.client_id;
-        
+
         // get the redirect URI or return an error if not configured
-        let redirect_uri = gh_config.redirect_url
+        let redirect_uri = gh_config
+            .redirect_url
             .ok_or_else(|| anyhow::anyhow!("GitHub redirect URL not configured"))?;
 
         // build the URL with the required parameters
@@ -43,7 +43,8 @@ impl Github {
                 ("state", state), // this corresponds to a registration request (challenge)
                                   // https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps
             ],
-        ).map_err(|e| anyhow::anyhow!("Failed to construct URL: {}", e))
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to construct URL: {}", e))
     }
 
     /// Validates that the state parameter is a valid, stored, single-use token
@@ -56,22 +57,20 @@ impl Github {
         if state.len() != 8 {
             return Err(anyhow!("Invalid state parameter length"));
         }
-        
+
         let mut redis_conn = RedisConnection::default().await?;
         let key = format!("oauth_state:{}", state);
-        
+
         // Check if state exists in Redis
-        let exists: bool = redis_conn.conn.exists(&key).await
-            .map_err(|e| anyhow!("Failed to check state in Redis: {}", e))?;
-        
+        let exists: bool = redis_conn.exists(&key).await?;
+
         if !exists {
             return Err(anyhow!("Invalid or expired state parameter"));
         }
-        
+
         // Remove state to prevent replay attacks (single-use)
-        let _: () = redis_conn.conn.del(&key).await
-            .map_err(|e| anyhow!("Failed to remove state from Redis: {}", e))?;
-        
+        let _: () = redis_conn.del(&key).await?;
+
         Ok(())
     }
 
@@ -93,11 +92,11 @@ impl Github {
 
         // Generate cryptographically secure state token
         let state_token = Token::generate().await.show();
-        
+
         // Store state in Redis with 10-minute expiration
         if let Ok(mut redis_conn) = RedisConnection::default().await {
             let key = format!("oauth_state:{}", state_token);
-            let _: Result<(), _> = redis_conn.conn.set_ex(&key, "valid", 600).await;
+            let _: Result<(), _> = redis_conn.set_ex(&key, "valid", 600).await;
         }
 
         let url = url::Url::parse_with_params(

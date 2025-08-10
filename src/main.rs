@@ -5,6 +5,7 @@ mod node;
 mod postgres;
 mod runner;
 mod token;
+mod redis;
 
 use anyhow::{Context as _, Result};
 use api::spawn_http_serv;
@@ -15,7 +16,8 @@ use tracing_subscriber::EnvFilter;
 
 use crate::{
     adapter::{dns::watch_dns, mail::watch_mailserver, matrix},
-    api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv, RedisConnection},
+    api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv},
+    redis::RedisConnection,
     config::{Config, GLOBAL_CONFIG},
 };
 
@@ -93,7 +95,7 @@ async fn main() -> Result<()> {
         Config::set_global_config().context("failed to load and set global configuration")?;
 
     // init redis conn pool
-    RedisConnection::initialize_pool(&config.redis)?;
+    RedisConnection::initialize_pool(&config.redis).await?;
 
     // init postgress table
     PostgresConnection::new(&config.postgres)

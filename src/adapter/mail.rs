@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use crate::{
     adapter::Adapter,
-    api::{Account, Network, RedisConnection},
+    api::{Account, Network},
     config::RedisConfig,
+    redis::RedisConnection,
 };
 use imap::Session;
 use native_tls::{TlsConnector, TlsStream};
@@ -29,9 +30,9 @@ impl Mail {
         Self { body, sender }
     }
 
-    async fn process_email(&self, redis_cfg: &RedisConfig) -> anyhow::Result<()> {
+    async fn process_email(&self) -> anyhow::Result<()> {
         let account = Account::Email(self.sender.clone());
-        let mut redis_connection = RedisConnection::get_connection(redis_cfg).await?;
+        let mut redis_connection = RedisConnection::get_connection().await?;
 
         let search_query = format!("{account}|*");
         let accounts = redis_connection.search(&search_query).await?;
@@ -78,7 +79,6 @@ impl Mail {
 
 struct MailListener {
     session: Session<TlsStream<TcpStream>>,
-    redis_cfg: RedisConfig,
     mailbox: String,
     checking_frequency: u64,
 }
@@ -132,14 +132,13 @@ impl MailListener {
     }
 
     fn new() -> Option<Self> {
-        let (session, redis_cfg, mailbox) = Self::connect()?;
+        let (session, _, mailbox) = Self::connect()?;
         let cfg = GLOBAL_CONFIG.get()?;
         let checking_frequency = cfg.adapter.email.checking_frequency.unwrap_or(500);
 
         Some(Self {
             checking_frequency,
             session,
-            redis_cfg,
             mailbox,
         })
     }
@@ -159,8 +158,7 @@ impl MailListener {
     // }
 
     async fn flag_mail_as_seen(&mut self, id: u32) -> anyhow::Result<()> {
-        self.session
-            .uid_store(format!("{id}"), "+FLAGS (\\SEEN)")?;
+        self.session.uid_store(format!("{id}"), "+FLAGS (\\SEEN)")?;
         self.session.expunge()?;
         Ok(())
     }
@@ -215,7 +213,7 @@ impl MailListener {
                 e
             )
         })?;
-      
+
         // TODO: make this duration configurable
         loop {
             info!("Starting idle session");
@@ -272,7 +270,7 @@ impl MailListener {
                 };
                 info!("Mail: {:#?}", mail);
 
-                mail.process_email(&self.redis_cfg).await.map_err(|e| {
+                mail.process_email().await.map_err(|e| {
                     anyhow!(
                         "{}:{} Unable to process mail with ID {id}, Reason: {}",
                         file!(),
