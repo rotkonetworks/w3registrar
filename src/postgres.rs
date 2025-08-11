@@ -1413,7 +1413,7 @@ impl SearchInfo {
             SearchInfo::Twitter(_) => "twitter",
             SearchInfo::Discord(_) => "discord",
             SearchInfo::Matrix(_) => "matrix",
-            SearchInfo::Display(_) => "display",
+            SearchInfo::Display(_) => "display_name",
             SearchInfo::Legal(_) => "legal",
             SearchInfo::Web(_) => "web",
             SearchInfo::Email(_) => "email",
