@@ -415,8 +415,7 @@ impl TimelineRecord {}
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct RegistrationRecord {
     // NOTE: should network and wallet_id bet Option?
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wallet_id: Option<String>,
+    pub wallet_id: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     network: Option<Network>,
@@ -464,7 +463,7 @@ impl RegistrationRecord {
         };
         Self {
             network,
-            wallet_id: Some(acc.to_string()),
+            wallet_id: acc.to_string(),
             discord: identity_data_tostring(&registration.info.discord),
             twitter: identity_data_tostring(&registration.info.twitter),
             matrix: identity_data_tostring(&registration.info.matrix),
@@ -499,7 +498,7 @@ impl RegistrationRecord {
     }
 
     pub fn wallet_id(&self) -> String {
-        self.wallet_id.to_owned().unwrap_or("NULL".to_string())
+        self.wallet_id.to_owned()
     }
 
     pub fn discord(&self) -> String {
@@ -557,6 +556,7 @@ impl From<&tokio_postgres::Row> for RegistrationRecord {
         for info in displayed_info {
             match info {
                 DisplayedInfo::WalletID => record.wallet_id = value.get("wallet_id"),
+                DisplayedInfo::Network => record.wallet_id = value.get("network"),
                 DisplayedInfo::Discord => record.discord = value.get("discord"),
                 DisplayedInfo::Display => record.display_name = value.get("display"),
                 DisplayedInfo::Email => record.email = value.get("email"),
@@ -717,11 +717,9 @@ impl TimelineQuery {
                 condition = condition.date(&time);
             }
 
-            if let Some(wallet_id) = &record.wallet_id {
-                if let Ok(wallet_id) = AccountId32::from_str(&wallet_id.clone()) {
-                    condition = condition.wallet_id(wallet_id);
-                }
-            };
+            if let Ok(wallet_id) = AccountId32::from_str(&record.wallet_id.clone()) {
+                condition = condition.wallet_id(wallet_id);
+            }
 
             let selected = TimelineDisplayed::default().wallet_id().event().date();
 
@@ -753,14 +751,12 @@ impl TimelineQuery {
         for record in rec.iter() {
             let mut timeline_query = TimelineQuery::default();
             let mut condition = TimelineCondition::default();
+
             if let Some(network) = &record.network {
                 condition = condition.network(&network);
             };
 
-            if let Some(wallet_id) = &record.wallet_id {
-                // FIXME
-                condition = condition.wallet_id(AccountId32::from_str(&wallet_id).unwrap());
-            };
+            condition = condition.wallet_id(AccountId32::from_str(&record.wallet_id).unwrap());
 
             let selected = TimelineDisplayed::default().wallet_id().event().date();
             timeline_query = timeline_query.condition(condition).selected(selected);
@@ -1301,7 +1297,7 @@ pub enum DisplayedInfo {
     Web,
     PGPFingerprint,
     Timeline,
-    // Network,
+    Network,
 }
 
 impl TryInto<DisplayedRegistrationInfo> for DisplayedInfo {
@@ -1310,6 +1306,7 @@ impl TryInto<DisplayedRegistrationInfo> for DisplayedInfo {
     fn try_into(self) -> Result<DisplayedRegistrationInfo, Self::Error> {
         match self {
             DisplayedInfo::WalletID => Ok(DisplayedRegistrationInfo::WalletID),
+            DisplayedInfo::Network => Ok(DisplayedRegistrationInfo::Network),
             DisplayedInfo::Discord => Ok(DisplayedRegistrationInfo::Discord),
             DisplayedInfo::Display => Ok(DisplayedRegistrationInfo::Display),
             DisplayedInfo::Email => Ok(DisplayedRegistrationInfo::Email),
@@ -1332,6 +1329,7 @@ impl TryInto<DisplayedRegistrationInfo> for &DisplayedInfo {
     fn try_into(self) -> Result<DisplayedRegistrationInfo, Self::Error> {
         match self {
             DisplayedInfo::WalletID => Ok(DisplayedRegistrationInfo::WalletID),
+            DisplayedInfo::Network => Ok(DisplayedRegistrationInfo::Network),
             DisplayedInfo::Discord => Ok(DisplayedRegistrationInfo::Discord),
             DisplayedInfo::Display => Ok(DisplayedRegistrationInfo::Display),
             DisplayedInfo::Email => Ok(DisplayedRegistrationInfo::Email),
@@ -1374,6 +1372,7 @@ impl FromStr for DisplayedInfo {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "wallet_id" | "WalletID" | "Wallet_ID" | "walletId" => return Ok(Self::WalletID),
+            "Network" | "network" | "Network" => return Ok(Self::Network),
             "Discord" | "discord" => return Ok(Self::Discord),
             "Display" | "display" => return Ok(Self::Display),
             "Email" | "email" => return Ok(Self::Email),
