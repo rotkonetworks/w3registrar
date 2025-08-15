@@ -827,7 +827,8 @@ impl Query for RegistrationQuery {
                         ));
                     } else {
                         statement.push_str(&format!(
-                            "{} LIKE ${}",
+                            "{} ILIKE ${}", // Postgres uses ILIKE for case-insensitive matching, 
+                            //  LIKE is case-sensitive.
                             filter.field.table_column_name(),
                             index + 1
                         ));
