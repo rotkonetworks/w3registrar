@@ -955,7 +955,8 @@ impl Query for RegistrationQuery {
                         ));
                     } else {
                         statement.push_str(&format!(
-                            "{} LIKE ${}",
+                            "{} ILIKE ${}", // Postgres uses ILIKE for case-insensitive matching, 
+                            //  LIKE is case-sensitive.
                             filter.field.table_column_name(),
                             index + 1
                         ));
@@ -985,7 +986,11 @@ impl Query for RegistrationQuery {
         let mut params = vec![];
         if let Some(condition) = &self.condition {
             for filter in condition.filters.iter() {
-                params.push(format!("{}", filter.field.inner()));
+                params.push(format!("{}", if filter.strict {
+                    filter.field.inner()    // exact match, e.g. display_name = 'Jow'
+                } else {
+                    format!("%{}%", filter.field.inner())   // e.g. display_name ILIKE '%Jow%'
+                }));
             }
         }
 

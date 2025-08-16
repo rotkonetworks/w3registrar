@@ -70,16 +70,21 @@ def generate_registration(conn,networks, config):
     cursor = conn.cursor()
 
     for _ in range(args.__dict__.get("registrations_size")):
-        discord = fake.user_name()
-        twitter = fake.user_name()
-        display = fake.name()
-        network = random.choice(networks)
-        wallet_id = base58.b58encode(os.urandom(32)).decode()
-
         mnemonic = Keypair.generate_mnemonic()
         keypair = Keypair.create_from_mnemonic(mnemonic)
+        network = random.choice(networks)
+        
         wallet_id = keypair.ss58_address
+        discord = fake.user_name()
+        twitter = fake.user_name()
+        matrix = f'@{fake.user_name()}:matrix.org'
         email = fake.email()
+        display = fake.name()
+        github = fake.user_name()
+        legal = display
+        web = fake.domain_name()
+        #pgp_fingerprint = ''.join(random.choices('0123456789ABCDEF', k=40))
+        
         print(f"{bcolors.OKBLUE}wallet_id: {wallet_id}{bcolors.ENDC}")
         print(f"{bcolors.OKBLUE}email: {email}{bcolors.ENDC}")
         print(f"{bcolors.OKBLUE}discord: {discord}{bcolors.ENDC}")
@@ -87,11 +92,14 @@ def generate_registration(conn,networks, config):
         print(f"{bcolors.OKBLUE}display: {display}{bcolors.ENDC}")
         print(f"{bcolors.OKBLUE}network: {network}{bcolors.ENDC}")
         print(f"{bcolors.WARNING}=============================={bcolors.ENDC}")
+
+        row = (wallet_id, network, discord, twitter, matrix, email, display, github, legal, web)
         cursor.execute(
-            '''
-        INSERT INTO registration (wallet_id, network, discord, twitter, email, display_name)
-                VALUES (%s, %s, %s, %s, %s, %s);''',
-            (wallet_id, network, discord, twitter, email, display))
+            '''INSERT INTO registration (wallet_id, network, discord, twitter, matrix, email, display_name, github, legal, web)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ;''',
+            row
+        )
 
     print(f"{bcolors.HEADER}COMITTING ....{bcolors.ENDC}")
     conn.commit()
