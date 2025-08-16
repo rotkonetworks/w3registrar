@@ -9,9 +9,6 @@
 // 4.5) Use skip()/skip_all for sensitive info (passwords)
 // 5) Log error as they happen and pass then upward if feasible
 // 6) Refrain from using .unwrap and use anyhow::Result whenever is possible/feasible
-//
-// TODO: clear data related to registration if it fails at some point
-// TODO: reduce the usage [Clone] :)
 use anyhow::anyhow;
 use anyhow::Result;
 use axum::extract::Query;
@@ -59,15 +56,16 @@ use crate::{
         Adapter,
     },
     config::{RedisConfig, RegistrarConfig, GLOBAL_CONFIG},
+    indexer::Indexer,
     node::{
-        self, filter_accounts,
+        self, filter_accounts, get_judgement,
         identity::events::{JudgementGiven, JudgementRequested, JudgementUnrequested},
         substrate::runtime_types::{
             pallet_identity::types::Registration,
             pallet_identity::types::{Data as IdentityData, Judgement},
             people_paseo_runtime::people::IdentityInfo,
         },
-        Client as NodeClient,
+        Block, Client as NodeClient,
     },
     postgres::{
         DisplayedInfo, PostgresConnection, RegistrationCondition, RegistrationDisplayed,
@@ -1688,7 +1686,9 @@ impl NodeListener {
                     match item {
                         Ok(block) => {
                             if let Ok(events) = block.events().await {
-                                self_clone.process_block_events(events, &network_name).await;
+                                self_clone
+                                    .process_block_events(events, &block, &network_name)
+                                    .await;
                             }
                         }
                         Err(e) => {
@@ -1710,6 +1710,7 @@ impl NodeListener {
     async fn process_block_events(
         &mut self,
         events: subxt::events::Events<SubstrateConfig>,
+        block: &Block,
         network: &Network,
     ) {
         for event_result in events.iter() {
@@ -1743,15 +1744,35 @@ impl NodeListener {
                         }
                     }
                 } else if let Ok(Some(jud)) = event.as_event::<JudgementGiven>() {
-                    // TODO: handle unwrap(s)?
-                    let cfg = GLOBAL_CONFIG.get().unwrap();
-                    let pog_config = cfg.postgres.clone();
-                    let mut pog_connection = PostgresConnection::new(&pog_config).await.unwrap();
-                    if let Some(record) = RegistrationRecord::from_judgement(&jud).await.unwrap() {
-                        info!("Writing registration record to dB after");
-                        let _ = pog_connection.write(&record).await;
+                    // check if judgement is reasonable
+                    if let Ok(Some(judgement)) = get_judgement(&jud.target, network).await {
+                        if matches!(judgement, Judgement::Reasonable) {
+                            // construct a record
+                            let cfg = GLOBAL_CONFIG.get().unwrap();
+                            let pog_config = cfg.postgres.clone();
+                            let mut pog_connection =
+                                PostgresConnection::new(&pog_config).await.unwrap();
+                            if let Some(record) =
+                                RegistrationRecord::from_judgement(&jud).await.unwrap()
+                            {
+                                info!(who = ?jud.target.to_string(), "Jugdement saved to DB");
+                                info!("Writing registration record to dB after");
+                                // write the record
+                                pog_connection.save_registration(&record).await.unwrap();
+                                let block_index = block.number();
+                                let block_hash = block.hash();
+                                // mark block
+                                pog_connection
+                                    .update_indexer_state(
+                                        &network,
+                                        &block_hash,
+                                        &(block_index as i64),
+                                    )
+                                    .await
+                                    .unwrap();
+                            }
+                        }
                     }
-                    info!(who = ?jud.target.to_string(), "Jugdement saved to DB");
                 }
             }
         }
@@ -2414,4 +2435,9 @@ pub async fn spawn_http_serv() -> anyhow::Result<()> {
         .unwrap();
     axum::serve(listener, app).await.unwrap();
     Ok(())
+}
+
+#[instrument(name = "identity_indexer")]
+pub async fn spawn_identity_indexer() -> anyhow::Result<()> {
+    Indexer::new().await?.index().await
 }
