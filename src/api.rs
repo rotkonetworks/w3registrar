@@ -21,6 +21,7 @@ use futures::Stream;
 use futures::StreamExt;
 use futures_util::SinkExt;
 use once_cell::sync::OnceCell;
+use postgres_types::FromSql;
 use postgres_types::ToSql;
 use redis::aio::ConnectionManager;
 use redis::aio::PubSub;
@@ -455,6 +456,26 @@ impl Display for Network {
 impl Default for Network {
     fn default() -> Self {
         Self::Rococo // hmmm?
+    }
+}
+
+impl<'a> FromSql<'a> for Network {
+    fn from_sql(
+        _ty: &postgres_types::Type,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        let s = std::str::from_utf8(raw)?;
+        match s {
+            "paseo" => Ok(Network::Paseo),
+            "polkadot" => Ok(Network::Polkadot),
+            "kusama" => Ok(Network::Kusama),
+            "rococo" => Ok(Network::Rococo),
+            _ => Err(format!("Unrecognized value for Network enum: {}", s).into()),
+        }
+    }
+
+    fn accepts(ty: &postgres_types::Type) -> bool {
+        ty.name().eq_ignore_ascii_case("network")
     }
 }
 
