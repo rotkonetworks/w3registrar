@@ -290,6 +290,12 @@ pub async fn register_identity<'a>(
 }
 
 /// Filter accounts based on supported fields and provide appropriate judgment
+///
+/// # Returns
+///
+/// - [HashMap] of the account type and registration state if all accounts are supported
+/// - Empty [HashMap] with Erroneous judgment as a side effect if **one or more** account is
+/// **NOT** supported.
 pub async fn filter_accounts(
     info: &IdentityInfo,
     who: &AccountId32,
