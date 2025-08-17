@@ -551,7 +551,7 @@ impl RegistrationRecord {
 
         Ok(Some(Self {
             network: Some(network.to_owned()),
-            wallet_id: Some(account_id.to_string()),
+            wallet_id: account_id.to_string().to_owned(),
             discord: identity_data_tostring(&pairs.value.info.discord),
             twitter: identity_data_tostring(&pairs.value.info.twitter),
             matrix: identity_data_tostring(&pairs.value.info.matrix),
