@@ -76,7 +76,7 @@ impl Runner {
     }
 
     pub async fn run(self) {
-        let _  =self.span.enter();
+        let _ = self.span.enter();
         info!("running {} tasks", self.tasks.len());
 
         match tokio::signal::ctrl_c().await {

@@ -7,9 +7,10 @@ use subxt::utils::AccountId32;
 use tracing::error;
 use tracing::info;
 
-use crate::api::Network;
-use crate::api::{Account, RedisConnection};
 use super::Adapter;
+use crate::api::Account;
+use crate::api::Network;
+use crate::redis::RedisConnection;
 
 pub struct PGPHelper {
     signature: Vec<u8>,

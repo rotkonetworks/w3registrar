@@ -9,6 +9,10 @@
 // 4.5) Use skip()/skip_all for sensitive info (passwords)
 // 5) Log error as they happen and pass then upward if feasible
 // 6) Refrain from using .unwrap and use anyhow::Result whenever is possible/feasible
+//
+// TODO: clear data related to registration if it fails at some point
+// TODO: reduce the usage [Clone] :)
+use crate::redis::RedisConnection;
 use anyhow::anyhow;
 use anyhow::Result;
 use axum::extract::Query;
@@ -21,7 +25,6 @@ use futures::Stream;
 use futures::StreamExt;
 use futures_util::SinkExt;
 use once_cell::sync::OnceCell;
-use postgres_types::FromSql;
 use postgres_types::ToSql;
 use redis::aio::ConnectionManager;
 use redis::aio::PubSub;
@@ -57,16 +60,15 @@ use crate::{
         Adapter,
     },
     config::{RedisConfig, RegistrarConfig, GLOBAL_CONFIG},
-    indexer::Indexer,
     node::{
-        self, filter_accounts, get_judgement,
+        self, filter_accounts,
         identity::events::{JudgementGiven, JudgementRequested, JudgementUnrequested},
         substrate::runtime_types::{
             pallet_identity::types::Registration,
             pallet_identity::types::{Data as IdentityData, Judgement},
             people_paseo_runtime::people::IdentityInfo,
         },
-        Block, Client as NodeClient,
+        Client as NodeClient,
     },
     postgres::{
         DisplayedInfo, PostgresConnection, RegistrationCondition, RegistrationDisplayed,
@@ -162,7 +164,6 @@ pub enum Account {
     Email(String),
     Github(String),
     PGPFingerprint([u8; 20]),
-    Image(String),
 }
 
 impl Display for Account {
@@ -176,7 +177,6 @@ impl Display for Account {
             Account::Web(name) => write!(f, "web|{name}"),
             Account::Email(name) => write!(f, "email|{name}"),
             Account::Github(name) => write!(f, "github|{name}"),
-            Account::Image(name) => write!(f, "image|{}", name),
             Account::PGPFingerprint(name) => write!(f, "pgp_fingerprint|{}", hex::encode(name)),
         }
     }
@@ -202,8 +202,6 @@ pub enum AccountType {
     Legal,
     #[serde(alias = "web", alias = "WEB")]
     Web,
-    #[serde(alias = "image", alias = "IMAGE")]
-    Image,
     #[serde(alias = "pgp_fingerprint", alias = "PGP_FINGERPRINT")]
     PGPFingerprint,
 }
@@ -239,7 +237,6 @@ impl fmt::Display for AccountType {
             Self::Legal => write!(f, "legal"),
             Self::Web => write!(f, "web"),
             Self::PGPFingerprint => write!(f, "pgp_fingerprint"),
-            Self::Image => write!(f, "image"),
         }
     }
 }
@@ -248,7 +245,7 @@ impl Account {
     pub fn determine(&self) -> ValidationMode {
         match self {
             // Direct: verified directly without user action
-            Account::Display(_) | Account::Image(_) => ValidationMode::Direct,
+            Account::Display(_) => ValidationMode::Direct,
             // Inbound: receive challenge/callback via websocket
             Account::Github(_) | Account::PGPFingerprint(_) => ValidationMode::Inbound,
             // Outbound: send challenge via websocket
@@ -299,7 +296,6 @@ impl Account {
             Self::Legal(_) => AccountType::Legal,
             Self::Web(_) => AccountType::Web,
             Self::PGPFingerprint(_) => AccountType::PGPFingerprint,
-            Self::Image(_) => AccountType::Image,
         }
     }
 
@@ -312,7 +308,6 @@ impl Account {
             | Self::Email(v)
             | Self::Legal(v)
             | Self::Github(v)
-            | Self::Image(v)
             | Self::Web(v) => v.to_owned(),
             Self::PGPFingerprint(v) => hex::encode(v),
         }
@@ -328,7 +323,6 @@ impl Account {
             AccountType::Github => Self::Github(value),
             AccountType::Legal => Self::Legal(value),
             AccountType::Web => Self::Web(value),
-            AccountType::Image => Self::Image(value),
             AccountType::PGPFingerprint => {
                 if let Ok(bytes) = hex::decode(&value) {
                     if bytes.len() == 20 {
@@ -363,7 +357,6 @@ impl Account {
         add_if_some(&value.github, Account::Github);
         add_if_some(&value.legal, Account::Legal);
         add_if_some(&value.web, Account::Web);
-        add_if_some(&value.image, Account::Image);
 
         if let Some(fingerprint) = value.pgp_fingerprint {
             accounts.push(Account::PGPFingerprint(fingerprint));
@@ -456,26 +449,6 @@ impl Display for Network {
 impl Default for Network {
     fn default() -> Self {
         Self::Rococo // hmmm?
-    }
-}
-
-impl<'a> FromSql<'a> for Network {
-    fn from_sql(
-        _ty: &postgres_types::Type,
-        raw: &'a [u8],
-    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
-        let s = std::str::from_utf8(raw)?;
-        match s {
-            "paseo" => Ok(Network::Paseo),
-            "polkadot" => Ok(Network::Polkadot),
-            "kusama" => Ok(Network::Kusama),
-            "rococo" => Ok(Network::Rococo),
-            _ => Err(format!("Unrecognized value for Network enum: {}", s).into()),
-        }
-    }
-
-    fn accepts(ty: &postgres_types::Type) -> bool {
-        ty.name().eq_ignore_ascii_case("network")
     }
 }
 
@@ -1089,8 +1062,6 @@ impl SocketListener {
                     identity_data_tostring(&registration.info.github),
                     github_acc,
                 ),
-                Account::Legal(_) => todo!(),
-                Account::Image(image) => (identity_data_tostring(&registration.info.image), image),
                 Account::PGPFingerprint(fingerprint) => (
                     Some(hex::encode(
                         registration
@@ -1100,6 +1071,7 @@ impl SocketListener {
                     )),
                     &hex::encode(fingerprint),
                 ),
+                _ => todo!(),
             };
 
             let stored_acc = stored_acc.ok_or_else(|| {
@@ -1717,9 +1689,7 @@ impl NodeListener {
                     match item {
                         Ok(block) => {
                             if let Ok(events) = block.events().await {
-                                self_clone
-                                    .process_block_events(events, &block, &network_name)
-                                    .await;
+                                self_clone.process_block_events(events, &network_name).await;
                             }
                         }
                         Err(e) => {
@@ -1741,7 +1711,6 @@ impl NodeListener {
     async fn process_block_events(
         &mut self,
         events: subxt::events::Events<SubstrateConfig>,
-        block: &Block,
         network: &Network,
     ) {
         for event_result in events.iter() {
@@ -1775,35 +1744,15 @@ impl NodeListener {
                         }
                     }
                 } else if let Ok(Some(jud)) = event.as_event::<JudgementGiven>() {
-                    // check if judgement is reasonable
-                    if let Ok(Some(judgement)) = get_judgement(&jud.target, network).await {
-                        if matches!(judgement, Judgement::Reasonable) {
-                            // construct a record
-                            let cfg = GLOBAL_CONFIG.get().unwrap();
-                            let pog_config = cfg.postgres.clone();
-                            let mut pog_connection =
-                                PostgresConnection::new(&pog_config).await.unwrap();
-                            if let Some(record) =
-                                RegistrationRecord::from_judgement(&jud).await.unwrap()
-                            {
-                                info!(who = ?jud.target.to_string(), "Jugdement saved to DB");
-                                info!("Writing registration record to dB after");
-                                // write the record
-                                pog_connection.save_registration(&record).await.unwrap();
-                                let block_index = block.number();
-                                let block_hash = block.hash();
-                                // mark block
-                                pog_connection
-                                    .update_indexer_state(
-                                        &network,
-                                        &block_hash,
-                                        &(block_index as i64),
-                                    )
-                                    .await
-                                    .unwrap();
-                            }
-                        }
+                    // TODO: handle unwrap(s)?
+                    let cfg = GLOBAL_CONFIG.get().unwrap();
+                    let pog_config = cfg.postgres.clone();
+                    let mut pog_connection = PostgresConnection::new(&pog_config).await.unwrap();
+                    if let Some(record) = RegistrationRecord::from_judgement(&jud).await.unwrap() {
+                        info!("Writing registration record to dB after");
+                        let _ = pog_connection.write(&record).await;
                     }
+                    info!(who = ?jud.target.to_string(), "Jugdement saved to DB");
                 }
             }
         }
@@ -1893,7 +1842,6 @@ pub struct VerificationFields {
     pub legal: bool,
     pub web: bool,
     pub pgp_fingerprint: bool,
-    pub image: bool,
 }
 
 async fn handle_redis_message(redis_cfg: &RedisConfig, msg: &redis::Msg) -> anyhow::Result<()> {
@@ -1984,386 +1932,6 @@ impl RedisSubscriber {
 pub async fn spawn_redis_subscriber() -> anyhow::Result<()> {
     let redis_cfg = GLOBAL_CONFIG.get().unwrap().redis.clone();
     RedisSubscriber::new(redis_cfg).listen().await
-}
-
-pub struct RedisConnection {
-    pub span: Span,
-    pub conn: ConnectionManager,
-    pub pubsub: PubSub,
-}
-
-impl RedisConnection {
-    #[instrument(skip_all, parent = None)]
-    pub async fn default() -> anyhow::Result<Self> {
-        Self::get_connection(&GLOBAL_CONFIG.get().unwrap().redis).await
-    }
-
-    /// Clears all caches
-    #[instrument(skip_all, parent = &self.span)]
-    pub async fn flushall(&mut self) -> anyhow::Result<()> {
-        redis::cmd("FLUSHALL")
-            .arg("ASYNC")
-            .exec_async(&mut self.conn)
-            .await?;
-        Ok(())
-    }
-
-    // TODO: replace all occurance of .get_connection() to .default()
-    #[instrument(skip_all, parent = None)]
-    pub fn initialize_pool(addr: &RedisConfig) -> anyhow::Result<()> {
-        info!("Initializing Redis client");
-
-        let client = redis::Client::open(addr.url()?).map_err(|e| {
-            error!(error = %e, "Failed to open Redis client");
-            anyhow!("Cannot open Redis client: {}", e)
-        })?;
-
-        REDIS_CLIENT
-            .set(Arc::new(client))
-            .map_err(|_| anyhow!("Redis client already initialized"))?;
-
-        info!("Redis client initialized successfully");
-        Ok(())
-    }
-
-    #[instrument(skip_all, name = "redis_connection", parent = None)]
-    pub async fn get_connection(_config: &RedisConfig) -> anyhow::Result<Self> {
-        let span = tracing::Span::current();
-        info!("Getting redis connection");
-        let client = REDIS_CLIENT
-            .get()
-            .ok_or_else(|| anyhow!("Redis client not initialized"))?;
-
-        let mut conn = client.get_connection_manager().await.map_err(|e| {
-            error!(error = %e, "Failed to establish Redis connection");
-            anyhow!("Cannot establish Redis connection: {}", e)
-        })?;
-
-        Self::enable_keyspace_notifications(&mut conn).await?;
-        let pubsub = client.get_async_pubsub().await?;
-
-        info!("Redis connection successfully established");
-        Ok(Self { conn, pubsub, span })
-    }
-
-    #[instrument(skip_all, parent = &self.span)]
-    pub async fn subscribe(&mut self, channel: &str) -> RedisResult<()> {
-        info!(channel = %channel, "Subscribing to pubsub channel");
-        self.pubsub.psubscribe(channel).await
-    }
-
-    #[instrument(skip_all, parent = &self.span)]
-    pub async fn pubsub_stream(&mut self) -> impl Stream<Item = Msg> + '_ {
-        info!("Getting PubSub stream");
-        self.pubsub.on_message()
-    }
-
-    #[instrument(skip_all, name = "keyspace_notification", parent = None)]
-    async fn enable_keyspace_notifications(conn: &mut ConnectionManager) -> anyhow::Result<()> {
-        info!("Enabling keyspace notification");
-
-        match conn
-            .send_packed_command(
-                redis::cmd("CONFIG")
-                    .arg("SET")
-                    .arg("notify-keyspace-events")
-                    .arg("KEA"),
-            )
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(e) => Err(anyhow!("Cannot set notify-keyspace-events: {}", e)),
-        }
-    }
-
-    /// Search through the redis for keys that are similar to the `pattern`
-    #[instrument(skip_all, parent = &self.span)]
-    pub async fn search(&mut self, pattern: &str) -> anyhow::Result<Vec<String>> {
-        info!(pattern, "Searching");
-        Ok(self
-            .conn
-            .scan_match::<&str, String>(pattern)
-            .await?
-            .collect::<Vec<String>>()
-            .await)
-    }
-
-    /// Get all pending challenges of `wallet_id` as a [Vec<Vec<String>>]
-    /// Returns pairs of [account_type, challenge_token]
-    #[instrument(skip_all, parent = &self.span)]
-    async fn get_challenges(
-        &mut self,
-        network: &Network,
-        account_id: &AccountId32,
-    ) -> anyhow::Result<Vec<Vec<(AccountType, String)>>> {
-        info!(account_id = ?account_id.to_string(), network = ?network, "Getting challenges");
-        let state = match self.get_verification_state(network, account_id).await? {
-            Some(s) => s,
-            None => return Ok(Vec::new()),
-        };
-
-        info!(account_id = ?account_id.to_string(), network = ?network, "Filtering pending challenges");
-        let pending = state
-            .challenges
-            .iter()
-            .filter(|(_, challenge)| !challenge.done)
-            .filter_map(|(acc_type, challenge)| {
-                challenge
-                    .token
-                    .as_ref()
-                    .map(|token| vec![(acc_type.clone(), token.clone())])
-            })
-            .collect();
-
-        Ok(pending)
-    }
-
-    /// constructing [VerificationFields] object from the registration done of all the accounts
-    /// under `wallet_id`
-    #[instrument(skip_all, parent = &self.span)]
-    pub async fn extract_info(
-        &mut self,
-        network: &Network,
-        account_id: &AccountId32,
-    ) -> anyhow::Result<VerificationFields> {
-        info!(
-            account_id = ?account_id.to_string(), network = ?network,
-            "Extracting verification fields",
-        );
-        let state = match self.get_verification_state(network, account_id).await? {
-            Some(s) => s,
-            None => return Ok(VerificationFields::default()),
-        };
-
-        let mut fields = VerificationFields::default();
-
-        for (acc_type, challenge) in &state.challenges {
-            if challenge.done {
-                match acc_type {
-                    AccountType::Discord => fields.discord = true,
-                    AccountType::Display => fields.display_name = true,
-                    AccountType::Email => fields.email = true,
-                    AccountType::Matrix => fields.matrix = true,
-                    AccountType::Twitter => fields.twitter = true,
-                    AccountType::Github => fields.github = true,
-                    AccountType::Legal => fields.legal = true,
-                    AccountType::Web => fields.web = true,
-                    AccountType::PGPFingerprint => fields.pgp_fingerprint = true,
-                    AccountType::Image => fields.image = true,
-                }
-            }
-        }
-
-        Ok(fields)
-    }
-
-    #[instrument(skip_all, parent = &self.span)]
-    pub async fn clear_all_related_to(
-        &mut self,
-        network: &Network,
-        who: &AccountId32,
-    ) -> anyhow::Result<()> {
-        let mut pipe = redis::pipe();
-        pipe.cmd("DEL").arg(format!("{who}|{network}"));
-
-        let accounts = self.search(&format!("*|{network}|{who}")).await?;
-        for account in accounts {
-            pipe.cmd("DEL").arg(account);
-        }
-
-        pipe.exec_async(&mut self.conn).await?;
-        Ok(())
-    }
-
-    pub async fn save_account(
-        &mut self,
-        network: &Network,
-        account_id: &AccountId32,
-        state: &AccountVerification,
-        accounts: &HashMap<Account, bool>,
-    ) -> anyhow::Result<()> {
-        info!(state = ?state, "Saving account state");
-        let mut pipe = redis::pipe();
-        for account in accounts.keys() {
-            let key = format!("{account}|{network}|{account_id}");
-            let pipe = pipe.cmd("SET").arg(&key);
-            if let Some(challenge_info) = state.challenges.get(&account.account_type()) {
-                pipe.arg(&serde_json::to_string(&challenge_info)?);
-            }
-        }
-        pipe.exec_async(&mut self.conn).await?;
-        Ok(())
-    }
-
-    #[instrument(skip_all, parent = &self.span)]
-    pub async fn save_state(
-        &mut self,
-        network: &Network,
-        account_id: &AccountId32,
-        state: &AccountVerification,
-    ) -> anyhow::Result<()> {
-        let key = format!("{account_id}|{network}");
-        info!(state = ?state, "Saving account state");
-        let value = serde_json::to_string(&state)?;
-
-        redis::pipe()
-            .cmd("SET")
-            .arg(&key)
-            .arg(value)
-            .exec_async(&mut self.conn)
-            .await?;
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    pub async fn update_verification_state(
-        &mut self,
-        network: &Network,
-        account_id: &AccountId32,
-        state: &AccountVerification,
-    ) -> anyhow::Result<()> {
-        self.save_state(network, account_id, state).await?;
-        let mut pipe = redis::pipe();
-
-        for (acc_type, info) in state.challenges.iter() {
-            let acc_key = Account::from_type_and_value(acc_type.to_owned(), info.name.to_string());
-            let key = format!("{acc_key}|{network}|{account_id}");
-            pipe.cmd("SET")
-                .arg(&key)
-                .arg(&serde_json::to_string(&info)?);
-        }
-
-        pipe.exec_async(&mut self.conn).await?;
-        Ok(())
-    }
-
-    // #[instrument(skip_all, parent = &self.span)]
-    // NOTE: don't instrument this
-    #[instrument(skip_all, parent = &self.span)]
-    pub async fn init_verification_state(
-        &mut self,
-        network: &Network,
-        account_id: &AccountId32,
-        state: &AccountVerification,
-        accounts: &HashMap<Account, bool>,
-    ) -> anyhow::Result<()> {
-        self.save_state(network, account_id, state).await?;
-        self.save_account(network, account_id, state, accounts)
-            .await?;
-
-        Ok(())
-    }
-
-    #[instrument(skip_all, parent = &self.span, name = "verification_state")]
-    pub async fn get_verification_state(
-        &mut self,
-        network: &Network,
-        account_id: &AccountId32,
-    ) -> anyhow::Result<Option<AccountVerification>> {
-        let key = format!("{account_id}|{network}");
-        info!(account_id = ?account_id.to_string(), network = ?network, "Getting verification state");
-        let value: Option<String> = self.conn.get(&key).await?;
-
-        match value {
-            Some(json) => Ok(Some(serde_json::from_str(&json)?)),
-            None => Ok(None),
-        }
-    }
-
-    #[instrument(skip_all, parent = &self.span)]
-    pub async fn update_challenge_status(
-        &mut self,
-        network: &Network,
-        account_id: &AccountId32,
-        account_type: &AccountType,
-    ) -> anyhow::Result<bool> {
-        info!(
-            network = ?network,
-            account_id = ?account_id.to_string(),
-            account_type = ?account_type,
-            "Updating challenge state"
-        );
-        if let Some(mut state) = self.get_verification_state(network, account_id).await? {
-            state.mark_challenge_done(account_type)?;
-            self.update_verification_state(network, account_id, &state)
-                .await?;
-            return Ok(true);
-        }
-        return Ok(false);
-    }
-
-    #[instrument(skip_all, parent = &self.span)]
-    async fn build_account_state_message(
-        &mut self,
-        network: &Network,
-        account_id: &AccountId32,
-        hash: Option<String>, // optional for state updates
-    ) -> anyhow::Result<serde_json::Value> {
-        let fields = self.extract_info(network, account_id).await?;
-        let pending_challenges = self.get_challenges(network, account_id).await?;
-
-        Ok(serde_json::json!({
-            "type": "JsonResult",
-            "payload": {
-                "type": "ok",
-                "message": {
-                    "AccountState": {
-                        "account": account_id.to_string(),
-                        "network": network,
-                        "hashed_info": hash,
-                        "verification_state": {
-                            "fields": fields
-                        },
-                        "pending_challenges": pending_challenges
-                    }
-                }
-            }
-        }))
-    }
-
-    #[instrument(skip_all)]
-    pub async fn process_state_change(
-        redis_cfg: &RedisConfig,
-        msg: &redis::Msg,
-    ) -> anyhow::Result<Option<(AccountId32, serde_json::Value)>> {
-        let mut conn = RedisConnection::get_connection(redis_cfg).await?;
-        let payload: String = msg.get_payload()?;
-        let channel = msg.get_channel_name();
-
-        info!(payload = ?payload, channel = ?channel, "Processing Redis message");
-
-        // early returns for unsupported operations
-        if !matches!(payload.as_str(), "set" | "del") {
-            info!(payload = ?payload, "Ignoring Redis operation");
-            return Ok(None);
-        }
-
-        // extract key from channel name
-        let key = match channel.strip_prefix("__keyspace@0__:") {
-            Some(k) => k,
-            None => return Ok(None),
-        };
-
-        // parse network and account ID
-        let (account_id, network) = match key.split_once('|') {
-            Some(parts) => parts,
-            None => return Ok(None),
-        };
-
-        let network = Network::from_str(network)?;
-
-        let id = match AccountId32::from_str(account_id) {
-            Ok(id) => id,
-            Err(_) => return Ok(None),
-        };
-
-        let account_state = conn
-            .build_account_state_message(&network, &id, None)
-            .await?;
-
-        Ok(Some((id, account_state)))
-    }
 }
 
 fn log_error_and_return(log: String) -> String {
@@ -2468,9 +2036,4 @@ pub async fn spawn_http_serv() -> anyhow::Result<()> {
         .unwrap();
     axum::serve(listener, app).await.unwrap();
     Ok(())
-}
-
-#[instrument(name = "identity_indexer")]
-pub async fn spawn_identity_indexer() -> anyhow::Result<()> {
-    Indexer::new().await?.index().await
 }

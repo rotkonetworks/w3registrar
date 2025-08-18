@@ -5,10 +5,11 @@ mod node;
 mod postgres;
 mod runner;
 mod token;
+mod redis;
 mod indexer;
 
 use anyhow::{Context as _, Result};
-use api::{spawn_http_serv, spawn_identity_indexer};
+use api::spawn_http_serv;
 use postgres::PostgresConnection;
 use std::panic;
 use tracing::{error, info, instrument};
@@ -112,7 +113,6 @@ async fn main() -> Result<()> {
     runner.spawn(spawn_node_listener, None).await;
     runner.spawn(spawn_ws_serv, None).await;
     runner.spawn(spawn_http_serv, None).await;
-    runner.spawn(spawn_identity_indexer, None).await;
 
     // check and start singleton services
     let (needs_email, needs_matrix_bot, needs_web) = check_required_services(&config).await;

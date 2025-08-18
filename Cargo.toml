@@ -46,7 +46,7 @@ tokio-postgres = { version = "0.7.13", features = ["with-chrono-0_4"] }
 postgres-openssl = "0.5.1"
 openssl = "0.10.73"
 postgres-types = { version = "0.2.9", features = ["derive"] }
-jsonrpsee = { version = "0.24.9", features = ["client", "ws-client"] }
+mobc = "0.9.0"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

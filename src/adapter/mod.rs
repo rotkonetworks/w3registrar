@@ -3,9 +3,10 @@ use subxt::utils::AccountId32;
 use tracing::info;
 
 use crate::{
-    api::{Account, Network, RedisConnection},
+    api::{Account, Network},
     node::register_identity,
     postgres::PostgresConnection,
+    redis::RedisConnection,
 };
 
 pub mod dns;

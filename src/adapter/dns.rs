@@ -1,14 +1,15 @@
 use crate::{
     adapter::Adapter,
-    api::{Account, Network, RedisConnection},
-    config::GLOBAL_CONFIG,
+    api::{Account, Network},
+    redis::RedisConnection,
 };
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use once_cell::sync::OnceCell;
 use std::str::FromStr;
 use std::sync::Arc;
 use subxt::utils::AccountId32;
-use tokio::time::{sleep, Duration};
+use tokio::time::Duration;
+use tokio_stream::StreamExt;
 use tracing::{error, info, instrument};
 use trust_dns_resolver::{
     config::{ResolverConfig, ResolverOpts},
@@ -146,19 +147,44 @@ impl DnsChallenge {
 
 #[instrument()]
 pub async fn watch_dns() -> anyhow::Result<()> {
-    // NOTE: is this ok?
-    loop {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
-        let mut redis_conn = RedisConnection::get_connection(&cfg.redis).await?;
+    let mut redis_conn = RedisConnection::get_connection().await?;
 
-        if let Err(e) = process_challenges(&mut redis_conn).await {
-            error!("DNS challenge processing error: {}", e);
+    let channel = format!("__keyspace@0__:web|*",);
+
+    if let Err(e) = redis_conn.subscribe(&channel).await {
+        error!("Unable to subscribe to {} because {:?}", channel, e);
+        return Err(anyhow!("adf"));
+    };
+
+    // TODO: make this kill iteslf when an completed state is true, since we don't want
+    // to listen for events forever!
+    let mut stream = redis_conn.pubsub_stream().await;
+
+    while let Some(msg) = stream.next().await {
+        let payload: String = msg.get_payload()?;
+        let channel = msg.get_channel_name();
+
+        if !matches!(payload.as_str(), "set") {
+            continue;
         }
 
-        sleep(DNS_CHECK_INTERVAL).await;
+        let key = match channel.strip_prefix("__keyspace@0__:") {
+            Some(k) => k,
+            None => continue,
+        };
+
+        let mut redis_conn = RedisConnection::get_connection().await?;
+
+        let challenge_keys = redis_conn.search(key).await?;
+        for challenge_key in &challenge_keys {
+            if let Err(e) = process_single_challenge(challenge_key, &mut redis_conn).await {
+                error!(challenge = %challenge_key, error = %e, "Challenge processing failed");
+            }
+        }
     }
+
+    Ok(())
+
 }
 
 #[instrument(skip_all)]
@@ -192,10 +218,7 @@ pub async fn _verify_dns_challenge(
     network: &Network,
     account_id: &AccountId32,
 ) -> Result<()> {
-    let cfg = GLOBAL_CONFIG
-        .get()
-        .expect("GLOBAL_CONFIG is not initialized");
-    let mut redis_conn = RedisConnection::get_connection(&cfg.redis).await?;
+    let mut redis_conn = RedisConnection::get_connection().await?;
 
     let clean_domain = domain
         .trim()

@@ -25,6 +25,8 @@ port = 8080
 [redis]
 host = "0.0.0.0"
 port = 6379
+listener_timeout = 3500 # how long should we wait for a given stream of events
+max_open_clients = 100 # maximum open clients
 # leave them empty if you don't have an account
 # username = "asdf"
 # password = "abc"

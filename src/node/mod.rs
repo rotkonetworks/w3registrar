@@ -19,7 +19,7 @@ use subxt::SubstrateConfig;
 use tracing::{error, info, warn};
 
 use super::api::Account;
-use super::api::RedisConnection;
+use super::redis::RedisConnection;
 use substrate::identity::calls::types::provide_judgement::Identity;
 use substrate::runtime_types::pallet_identity::types::Judgement;
 use substrate::runtime_types::pallet_identity::types::Registration;
