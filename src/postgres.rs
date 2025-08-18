@@ -1635,7 +1635,14 @@ impl<'a> FromSql<'a> for TimelineEvent {
 impl From<&AccountType> for TimelineEvent {
     fn from(value: &AccountType) -> Self {
         match value {
-            AccountType::Image => Self::Image,
+            /*
+            Produced error:
+            no variant or associated item named `Image` found for enum `AccountType` in the current scope
+            variant or associated item not found in `AccountType`rustcClick for full compiler diagnostic
+
+            I won't be enabling it yet, cause it'll require it everywhere else. It's a deep rabbit hole...
+             */
+            //AccountType::Image => Self::Image,
             AccountType::Discord => Self::Discord,
             AccountType::Display => Self::Display,
             AccountType::Email => Self::Email,
