@@ -2,17 +2,22 @@
 // TODO: add table name for the queries?
 
 use anyhow::anyhow;
+use hex::ToHex;
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
 use postgres_types::{to_sql_checked, Kind, ToSql, Type};
 use serde::{Deserialize, Serialize};
+use sp_core::H256;
 use std::any::Any;
 use std::fmt::{format, Display};
+use std::ops::Deref;
 use std::slice::Iter;
 use std::{str::FromStr, time::Duration};
-use subxt::utils::AccountId32;
+use subxt::ext::codec::Encode;
+use subxt::storage::{DefaultAddress, StorageKeyValuePair};
+use subxt::utils::{AccountId32, Yes};
 use tokio_postgres::types::FromSql;
-use tokio_postgres::{Client, GenericClient, NoTls, Statement, ToStatement};
+use tokio_postgres::{Client, GenericClient, NoTls, SimpleQueryMessage, Statement, ToStatement};
 use tracing::instrument;
 use tracing::{error, info, info_span, Span};
 
@@ -97,7 +102,7 @@ $$;";
             github          TEXT,
             legal           TEXT,
             web             TEXT,
-            pgp_fingerprint VARCHAR (20),
+            pgp_fingerprint VARCHAR(40),
             PRIMARY KEY     (wallet_id, network)
         )";
 
@@ -122,7 +127,21 @@ $$;";
 
         self.client.simple_query(create_timeline_elem).await?;
 
-        info!("Table `registration` created");
+        info!("Table `timeline_elem` created");
+
+        let create_indexer_state = "CREATE TABLE IF NOT EXISTS indexer_state (
+            network          NETWORK PRIMARY KEY,
+            last_block_index BIGINT NOT NULL DEFAULT 0,
+            last_block_hash  VARCHAR(66) NOT NULL,
+            updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );";
+
+        info!("QUERY");
+        info!("{create_indexer_state}");
+
+        self.client.simple_query(create_indexer_state).await?;
+
+        info!("Table `indexer_state` created");
 
         Ok(())
     }
@@ -215,21 +234,31 @@ $$;";
         Ok(())
     }
 
-    pub async fn write(&mut self, record: &RegistrationRecord) -> anyhow::Result<()> {
+    pub async fn save_registration(&mut self, record: &RegistrationRecord) -> anyhow::Result<()> {
         info!(who = ?record.wallet_id(), "Writing record");
-        // TODO: write this programatically so we don't end with the NULL junk
-        let insert_reg_record =
-            "INSERT INTO registration(wallet_id, network, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
+        let insert_reg_record = format!("
+            INSERT INTO registration(wallet_id, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint, network)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '{}') 
+            ON CONFLICT (wallet_id, network) DO UPDATE SET 
+                discord = EXCLUDED.discord,
+                twitter = EXCLUDED.twitter,
+                matrix = EXCLUDED.matrix,
+                email = EXCLUDED.email,
+                display_name = EXCLUDED.display_name,
+                github = EXCLUDED.github,
+                legal = EXCLUDED.legal,
+                web = EXCLUDED.web,
+                pgp_fingerprint = EXCLUDED.pgp_fingerprint",
+            record.network());
+
         info!(query=?insert_reg_record,"QUERY");
         info!(record = ?record);
 
         self.client
             .execute(
-                insert_reg_record,
+                &insert_reg_record,
                 &[
                     &record.wallet_id(),
-                    &record.network(),
                     &record.discord(),
                     &record.twitter(),
                     &record.matrix(),
@@ -243,6 +272,23 @@ $$;";
             )
             .await?;
         info!("Record written successfully");
+
+        Ok(())
+    }
+
+    pub async fn update_indexer_state(
+        &self,
+        network: &Network,
+        hash: &H256,
+        index: &i64,
+    ) -> anyhow::Result<()> {
+        // FIXME: update time should be also be changed
+
+        let query = format!("INSERT INTO indexer_state (network, last_block_hash, last_block_index) VALUES ('{}',$1, $2) ON CONFLICT (network) DO UPDATE SET last_block_hash = EXCLUDED.last_block_hash, last_block_index = EXCLUDED.last_block_index ; ", network);
+
+        let values: &[&(dyn ToSql + Sync)] = &[&hex::encode(hash.as_bytes()), &index];
+
+        self.client.query(&query, values).await?;
 
         Ok(())
     }
@@ -383,6 +429,14 @@ $$;";
         let pog_config = cfg.postgres.clone();
         PostgresConnection::new(&pog_config).await
     }
+
+    pub async fn get_indexer_state(&self, network: &Network) -> anyhow::Result<IndexerState> {
+        let query = format!("SELECT network::text, last_block_index, last_block_hash, updated_at FROM indexer_state WHERE network='{}'", network);
+        let postgres_connection = PostgresConnection::default().await?;
+        Ok(IndexerState::try_from(
+            &self.client.query_one(&query, &[]).await?,
+        )?)
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -415,8 +469,7 @@ impl TimelineRecord {}
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct RegistrationRecord {
     // NOTE: should network and wallet_id bet Option?
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wallet_id: Option<String>,
+    pub wallet_id: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     network: Option<Network>,
@@ -464,7 +517,7 @@ impl RegistrationRecord {
         };
         Self {
             network,
-            wallet_id: Some(acc.to_string()),
+            wallet_id: acc.to_string(),
             discord: identity_data_tostring(&registration.info.discord),
             twitter: identity_data_tostring(&registration.info.twitter),
             matrix: identity_data_tostring(&registration.info.matrix),
@@ -476,6 +529,40 @@ impl RegistrationRecord {
             pgp_fingerprint,
             timeline: None,
         }
+    }
+
+    pub async fn from_storage_pairs(
+        pairs: &StorageKeyValuePair<
+            DefaultAddress<(), Registration<u128, IdentityInfo>, (), (), Yes>,
+        >,
+        network: &Network,
+    ) -> anyhow::Result<Option<Self>> {
+        let key_bytes = &pairs.key_bytes;
+        let account_bytes: [u8; 32] = key_bytes[key_bytes.len() - 32..]
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Invalid key length for AccountId32"))?;
+
+        let account_id = AccountId32::from(account_bytes);
+
+        let pgp_fingerprint = match pairs.value.info.pgp_fingerprint {
+            Some(bytes) => Some(hex::encode(bytes)),
+            None => None,
+        };
+
+        Ok(Some(Self {
+            network: Some(network.to_owned()),
+            wallet_id: account_id.to_string().to_owned(),
+            discord: identity_data_tostring(&pairs.value.info.discord),
+            twitter: identity_data_tostring(&pairs.value.info.twitter),
+            matrix: identity_data_tostring(&pairs.value.info.matrix),
+            email: identity_data_tostring(&pairs.value.info.email),
+            display_name: identity_data_tostring(&pairs.value.info.display),
+            github: identity_data_tostring(&pairs.value.info.github),
+            legal: identity_data_tostring(&pairs.value.info.legal),
+            web: identity_data_tostring(&pairs.value.info.web),
+            pgp_fingerprint,
+            timeline: None,
+        }))
     }
 
     // TODO: return None if judgement is not set correctly
@@ -499,7 +586,7 @@ impl RegistrationRecord {
     }
 
     pub fn wallet_id(&self) -> String {
-        self.wallet_id.to_owned().unwrap_or("NULL".to_string())
+        self.wallet_id.to_owned()
     }
 
     pub fn discord(&self) -> String {
@@ -557,8 +644,9 @@ impl From<&tokio_postgres::Row> for RegistrationRecord {
         for info in displayed_info {
             match info {
                 DisplayedInfo::WalletID => record.wallet_id = value.get("wallet_id"),
+                DisplayedInfo::Network => record.wallet_id = value.get("network"),
                 DisplayedInfo::Discord => record.discord = value.get("discord"),
-                DisplayedInfo::Display => record.display_name = value.get("display"),
+                DisplayedInfo::Display => record.display_name = value.get("display_name"),
                 DisplayedInfo::Email => record.email = value.get("email"),
                 DisplayedInfo::Matrix => record.matrix = value.get("matrix"),
                 DisplayedInfo::Twitter => record.twitter = value.get("twitter"),
@@ -578,7 +666,51 @@ impl From<&tokio_postgres::Row> for RegistrationRecord {
     }
 }
 
-/// Trait all queries MUST implement
+#[derive(Serialize, Deserialize)]
+pub struct IndexerState {
+    pub network: Network,
+    pub last_block_index: i64,
+    pub last_block_hash: H256,
+    pub updated_at: chrono::NaiveDateTime,
+}
+
+impl IndexerState {
+    pub fn init(network: Network) -> Self {
+        Self {
+            network,
+            last_block_index: 0,
+            last_block_hash: H256::default(),
+            updated_at: chrono::NaiveDateTime::default(),
+        }
+    }
+}
+
+impl TryFrom<&tokio_postgres::Row> for IndexerState {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &tokio_postgres::Row) -> Result<Self, Self::Error> {
+        if value.is_empty() {
+            error!("Rows are empty");
+            return Err(anyhow!("Row is empty"));
+        }
+
+        let network: String = value.get("network");
+        let last_block_hash: String = value.get("last_block_hash");
+        let last_block_hash = H256::from_str(&last_block_hash)?;
+        let last_block_index: i64 = value.get("last_block_index");
+        let updated_at: chrono::NaiveDateTime = value.get("updated_at");
+        info!(network=?network, last_block_index=?last_block_index, last_block_hash=?last_block_hash, last_update=?updated_at, "Indexing");
+        let network = Network::from_str(&network)?;
+
+        Ok(Self {
+            network,
+            last_block_index,
+            last_block_hash,
+            updated_at,
+        })
+    }
+}
+
 pub trait Query {
     type STATEMENT: ?Sized + ToStatement;
     type PARAM: ToSql + Sync;
@@ -717,11 +849,9 @@ impl TimelineQuery {
                 condition = condition.date(&time);
             }
 
-            if let Some(wallet_id) = &record.wallet_id {
-                if let Ok(wallet_id) = AccountId32::from_str(&wallet_id.clone()) {
-                    condition = condition.wallet_id(wallet_id);
-                }
-            };
+            if let Ok(wallet_id) = AccountId32::from_str(&record.wallet_id.clone()) {
+                condition = condition.wallet_id(wallet_id);
+            }
 
             let selected = TimelineDisplayed::default().wallet_id().event().date();
 
@@ -753,14 +883,12 @@ impl TimelineQuery {
         for record in rec.iter() {
             let mut timeline_query = TimelineQuery::default();
             let mut condition = TimelineCondition::default();
+
             if let Some(network) = &record.network {
                 condition = condition.network(&network);
             };
 
-            if let Some(wallet_id) = &record.wallet_id {
-                // FIXME
-                condition = condition.wallet_id(AccountId32::from_str(&wallet_id).unwrap());
-            };
+            condition = condition.wallet_id(AccountId32::from_str(&record.wallet_id).unwrap());
 
             let selected = TimelineDisplayed::default().wallet_id().event().date();
             timeline_query = timeline_query.condition(condition).selected(selected);
@@ -827,7 +955,8 @@ impl Query for RegistrationQuery {
                         ));
                     } else {
                         statement.push_str(&format!(
-                            "{} LIKE ${}",
+                            "{} ILIKE ${}", // Postgres uses ILIKE for case-insensitive matching, 
+                            //  LIKE is case-sensitive.
                             filter.field.table_column_name(),
                             index + 1
                         ));
@@ -857,7 +986,11 @@ impl Query for RegistrationQuery {
         let mut params = vec![];
         if let Some(condition) = &self.condition {
             for filter in condition.filters.iter() {
-                params.push(format!("{}", filter.field.inner()));
+                params.push(format!("{}", if filter.strict {
+                    filter.field.inner()    // exact match, e.g. display_name = 'Jow'
+                } else {
+                    format!("%{}%", filter.field.inner())   // e.g. display_name ILIKE '%Jow%'
+                }));
             }
         }
 
@@ -1281,12 +1414,6 @@ impl DisplayedRegistrationInfo {
     }
 }
 
-impl Display for DisplayedRegistrationInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
-    }
-}
-
 // TODO: add network for the displayed info
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Copy, Hash)]
 pub enum DisplayedInfo {
@@ -1301,7 +1428,7 @@ pub enum DisplayedInfo {
     Web,
     PGPFingerprint,
     Timeline,
-    // Network,
+    Network,
 }
 
 impl TryInto<DisplayedRegistrationInfo> for DisplayedInfo {
@@ -1310,6 +1437,7 @@ impl TryInto<DisplayedRegistrationInfo> for DisplayedInfo {
     fn try_into(self) -> Result<DisplayedRegistrationInfo, Self::Error> {
         match self {
             DisplayedInfo::WalletID => Ok(DisplayedRegistrationInfo::WalletID),
+            DisplayedInfo::Network => Ok(DisplayedRegistrationInfo::Network),
             DisplayedInfo::Discord => Ok(DisplayedRegistrationInfo::Discord),
             DisplayedInfo::Display => Ok(DisplayedRegistrationInfo::Display),
             DisplayedInfo::Email => Ok(DisplayedRegistrationInfo::Email),
@@ -1332,6 +1460,7 @@ impl TryInto<DisplayedRegistrationInfo> for &DisplayedInfo {
     fn try_into(self) -> Result<DisplayedRegistrationInfo, Self::Error> {
         match self {
             DisplayedInfo::WalletID => Ok(DisplayedRegistrationInfo::WalletID),
+            DisplayedInfo::Network => Ok(DisplayedRegistrationInfo::Network),
             DisplayedInfo::Discord => Ok(DisplayedRegistrationInfo::Discord),
             DisplayedInfo::Display => Ok(DisplayedRegistrationInfo::Display),
             DisplayedInfo::Email => Ok(DisplayedRegistrationInfo::Email),
@@ -1374,6 +1503,7 @@ impl FromStr for DisplayedInfo {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "wallet_id" | "WalletID" | "Wallet_ID" | "walletId" => return Ok(Self::WalletID),
+            "Network" | "network" | "Network" => return Ok(Self::Network),
             "Discord" | "discord" => return Ok(Self::Discord),
             "Display" | "display" => return Ok(Self::Display),
             "Email" | "email" => return Ok(Self::Email),
@@ -1413,7 +1543,7 @@ impl SearchInfo {
             SearchInfo::Twitter(_) => "twitter",
             SearchInfo::Discord(_) => "discord",
             SearchInfo::Matrix(_) => "matrix",
-            SearchInfo::Display(_) => "display",
+            SearchInfo::Display(_) => "display_name",
             SearchInfo::Legal(_) => "legal",
             SearchInfo::Web(_) => "web",
             SearchInfo::Email(_) => "email",
@@ -1470,8 +1600,11 @@ pub enum TimelineEvent {
     #[serde(alias = "legal")]
     Legal,
     #[postgres(name = "web")]
-    #[serde(alias = "legal")]
+    #[serde(alias = "web")]
     Web,
+    #[postgres(name = "image")]
+    #[serde(alias = "image")]
+    Image,
     #[postgres(name = "pgp_fingerprint")]
     #[serde(alias = "pgp_fingerprint")]
     PGPFingerprint,
@@ -1502,6 +1635,7 @@ impl<'a> FromSql<'a> for TimelineEvent {
 impl From<&AccountType> for TimelineEvent {
     fn from(value: &AccountType) -> Self {
         match value {
+            AccountType::Image => Self::Image,
             AccountType::Discord => Self::Discord,
             AccountType::Display => Self::Display,
             AccountType::Email => Self::Email,

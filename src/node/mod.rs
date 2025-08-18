@@ -79,6 +79,20 @@ async fn setup_network(
     Ok((client, network_cfg.clone()))
 }
 
+pub async fn get_judgement<'a>(
+    who: &AccountId32,
+    network: &Network,
+) -> Result<Option<Judgement<u128>>> {
+    let (client, _) = setup_network(network).await?;
+    match get_registration(&client, who).await {
+        Ok(mut registration) => match registration.judgements.0.pop() {
+            Some((_, judgement)) => return Ok(Some(judgement)),
+            None => return Ok(None),
+        },
+        Err(_) => return Ok(None),
+    }
+}
+
 /// Handles transaction submission with retries and error handling
 pub async fn provide_judgement<'a>(
     who: &AccountId32,
@@ -276,6 +290,12 @@ pub async fn register_identity<'a>(
 }
 
 /// Filter accounts based on supported fields and provide appropriate judgment
+///
+/// # Returns
+///
+/// - [HashMap] of the account type and registration state if all accounts are supported
+/// - Empty [HashMap] with Erroneous judgment as a side effect if **one or more** account is
+/// **NOT** supported.
 pub async fn filter_accounts(
     info: &IdentityInfo,
     who: &AccountId32,
