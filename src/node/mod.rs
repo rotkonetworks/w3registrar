@@ -349,6 +349,75 @@ mod tests {
     use tracing::{info, warn};
 
     static INIT: Once = Once::new();
+    fn init_tracing() {
+        tracing_subscriber::FmtSubscriber::builder()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_test_writer()
+            .init();
+    }
+
+    #[tokio::test]
+    async fn supported_fields() {
+        init_config().await;
+        init_tracing();
+
+        let reg_index = 1;
+        let network = Network::Paseo;
+        let account =
+            AccountId32::from_str("1Qrotkokp6taAeLThuwgzR7Mu3YQonZohwrzixwGnrD1QDT").unwrap();
+        let identity = IdentityInfo {
+            legal: runtime_types::pallet_identity::types::Data::None,
+            image: runtime_types::pallet_identity::types::Data::None,
+            web: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            email: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            matrix: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            github: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            display: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            twitter: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            discord: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            pgp_fingerprint: Some([1; 20]),
+        };
+
+        let res = filter_accounts(&identity, &account, reg_index, &network).await;
+
+        assert_eq!(res.is_ok(), true);
+        assert_eq!(res.unwrap().keys().len(), 8);
+
+        let identity = IdentityInfo {
+            legal: runtime_types::pallet_identity::types::Data::Raw1([0]),
+            image: runtime_types::pallet_identity::types::Data::None,
+            web: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            email: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            matrix: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            github: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            display: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            twitter: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            discord: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            pgp_fingerprint: Some([1; 20]),
+        };
+
+        let res = filter_accounts(&identity, &account, reg_index, &network).await;
+
+        assert_eq!(res.is_ok(), false);
+
+        let identity = IdentityInfo {
+            legal: runtime_types::pallet_identity::types::Data::None,
+            image: runtime_types::pallet_identity::types::Data::Raw1([0]),
+            web: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            email: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            matrix: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            github: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            display: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            twitter: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            discord: runtime_types::pallet_identity::types::Data::Raw1([1]),
+            pgp_fingerprint: Some([1; 20]),
+        };
+
+        let res = filter_accounts(&identity, &account, reg_index, &network).await;
+
+        // NOTE: This test does not pass since we don't consider image as an variant in [Account]
+        assert_eq!(res.is_ok(), false);
+    }
 
     async fn init_config() {
         INIT.call_once(|| {
@@ -363,13 +432,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_provide_judgement_via_proxy() -> anyhow::Result<()> {
-        tracing_subscriber::FmtSubscriber::builder()
-            .with_max_level(tracing::Level::DEBUG)
-            .with_test_writer()
-            .init();
-
-        info!("Starting judgment test");
         init_config().await;
+        init_tracing();
+        info!("Starting judgment test");
 
         let target_account =
             AccountId32::from_str("1Qrotkokp6taAeLThuwgzR7Mu3YQonZohwrzixwGnrD1QDT")?;
