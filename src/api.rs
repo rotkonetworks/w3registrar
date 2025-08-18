@@ -840,7 +840,7 @@ impl SocketListener {
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
         let registration = node::get_registration(&client, &request.account).await?;
 
-        let mut conn = RedisConnection::get_connection(&self.redis_cfg).await?;
+        let mut conn = RedisConnection::get_connection().await?;
 
         // 1) attempt to load existing verification state, if any
         let existing_verification = conn
@@ -1409,7 +1409,7 @@ impl SocketListener {
         info!(account_id = %account.to_string(), "Starting Redis listener task!");
 
         tokio::spawn(async move {
-            let mut redis_conn = match RedisConnection::get_connection(&redis_cfg).await {
+            let mut redis_conn = match RedisConnection::get_connection().await {
                 Ok(conn) => conn,
                 Err(e) => {
                     error!("Failed to create Redis connection: {}", e);
@@ -1437,7 +1437,7 @@ impl SocketListener {
                 debug!("Redis event received: {:?}", msg);
 
                 // process message, continue on error
-                let result = match RedisConnection::process_state_change(&redis_cfg, &msg).await {
+                let result = match RedisConnection::process_state_change(&msg).await {
                     Ok(result) => result,
                     Err(e) => {
                         error!(error = %e, "Failed to process Redis message {:?}", msg);
@@ -1592,7 +1592,7 @@ impl NodeListener {
         // validation
         SocketListener::check_node(who.clone(), accounts.clone(), network).await?;
 
-        let mut conn = RedisConnection::get_connection(&self.redis_cfg).await?;
+        let mut conn = RedisConnection::get_connection().await?;
         conn.clear_all_related_to(network, who).await?;
 
         // filter accounts and create verification state
@@ -1750,7 +1750,7 @@ impl NodeListener {
                     let mut pog_connection = PostgresConnection::new(&pog_config).await.unwrap();
                     if let Some(record) = RegistrationRecord::from_judgement(&jud).await.unwrap() {
                         info!("Writing registration record to dB after");
-                        let _ = pog_connection.write(&record).await;
+                        let _ = pog_connection.save_registration(&record).await;
                     }
                     info!(who = ?jud.target.to_string(), "Jugdement saved to DB");
                 }
@@ -1821,7 +1821,7 @@ impl NodeListener {
             ));
         }
 
-        let mut conn = RedisConnection::get_connection(&self.redis_cfg).await?;
+        let mut conn = RedisConnection::get_connection().await?;
         conn.clear_all_related_to(network, who).await?;
 
         let pog_connection = PostgresConnection::default().await?;
@@ -1845,7 +1845,7 @@ pub struct VerificationFields {
 }
 
 async fn handle_redis_message(redis_cfg: &RedisConfig, msg: &redis::Msg) -> anyhow::Result<()> {
-    if let Ok(Some((id, value))) = RedisConnection::process_state_change(redis_cfg, msg).await {
+    if let Ok(Some((id, value))) = RedisConnection::process_state_change(msg).await {
         info!("Processed state change for {}: {:?}", id, value);
     }
     Ok(())
@@ -1864,7 +1864,7 @@ impl RedisSubscriber {
 
     #[instrument(skip_all, parent = &self.span)]
     pub async fn listen(&mut self) -> anyhow::Result<()> {
-        let mut redis_conn = RedisConnection::get_connection(&self.redis_cfg).await?;
+        let mut redis_conn = RedisConnection::get_connection().await?;
         redis_conn.subscribe("__keyspace@0__:*").await?;
         let mut stream = redis_conn.pubsub_stream().await;
         while let Some(msg) = stream.next().await {
@@ -1883,7 +1883,7 @@ impl RedisSubscriber {
         &self,
         msg: &redis::Msg,
     ) -> anyhow::Result<Option<(AccountId32, serde_json::Value)>> {
-        let mut conn = RedisConnection::get_connection(&self.redis_cfg).await?;
+        let mut conn = RedisConnection::get_connection().await?;
         let payload: String = msg.get_payload()?;
         let channel = msg.get_channel_name();
 
@@ -1960,7 +1960,7 @@ async fn github_oauth_callback(Query(params): Query<GithubRedirectStepTwoParams>
         .get()
         .expect("GLOBAL_CONFIG is not initialized");
     let redis_config = cfg.redis.clone();
-    let mut redis_connection = match RedisConnection::get_connection(&redis_config).await {
+    let mut redis_connection = match RedisConnection::get_connection().await {
         Ok(conn) => conn,
         Err(e) => {
             return log_error_and_return(format!("Error: {e}"));
