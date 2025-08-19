@@ -2049,3 +2049,83 @@ pub async fn spawn_http_serv() -> anyhow::Result<()> {
     axum::serve(listener, app).await.unwrap();
     Ok(())
 }
+
+mod unit_test {
+    use serde_json::to_string_pretty;
+
+    use crate::api::VersionedMessage;
+
+    #[tokio::test]
+    async fn se_de_ws_request() {
+        let wallet_id: String = String::from("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty");
+        let ws_msg = to_string_pretty(&serde_json::json!({
+            "version": "1.0",
+            "type": "SubscribeAccountState",
+            "payload": {
+                "network": "paseo",
+                "account": wallet_id,
+            },
+        }))
+        .unwrap();
+
+        assert_eq!(
+            true,
+            serde_json::from_str::<VersionedMessage>(&ws_msg).is_ok()
+        );
+
+        let ws_msg = to_string_pretty(&serde_json::json!({
+            "version": "1.0",
+            "type": "VerifyPGPKey",
+            "payload": {
+                "network": "paseo",
+                "account": wallet_id,
+                "pubkey": "asdf",
+                "signed_challenge": "asdf",
+            },
+        }))
+        .unwrap();
+
+        assert_eq!(
+            true,
+            serde_json::from_str::<VersionedMessage>(&ws_msg).is_ok()
+        );
+
+        let ws_msg = to_string_pretty(&serde_json::json!({
+          "version": "1.0",
+          "type": "SearchRegistration",
+          "payload": {
+              "network": "kusama",
+              "outputs": ["WalletID", "Discord", "Timeline"],
+              "filters": {
+                  "fields": [
+                      { "field": { "AccountId32": wallet_id }, "strict": false},
+                  ],
+                  "result_size": 3,
+              }
+          }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            true,
+            serde_json::from_str::<VersionedMessage>(&ws_msg).is_ok()
+        );
+
+        let ws_msg = to_string_pretty(&serde_json::json!({
+          "version": "1.0",
+          "type": "SearchRegistration",
+          "payload": {
+              "outputs": [],
+              "filters": {
+                  "fields": [],
+              }
+          }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            true,
+            serde_json::from_str::<VersionedMessage>(&ws_msg).is_ok()
+        );
+    }
+}
