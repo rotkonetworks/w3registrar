@@ -459,6 +459,26 @@ impl Default for Network {
     }
 }
 
+impl<'a> FromSql<'a> for Network {
+    fn from_sql(
+        _ty: &postgres_types::Type,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        let s = std::str::from_utf8(raw)?;
+        match s {
+            "paseo" => Ok(Network::Paseo),
+            "polkadot" => Ok(Network::Polkadot),
+            "kusama" => Ok(Network::Kusama),
+            "rococo" => Ok(Network::Rococo),
+            _ => Err(format!("Unrecognized value for Network enum: {}", s).into()),
+        }
+    }
+
+    fn accepts(ty: &postgres_types::Type) -> bool {
+        ty.name().eq_ignore_ascii_case("network")
+    }
+}
+
 impl Network {
     pub fn from_str(network: &str) -> anyhow::Result<Self> {
         match network {
