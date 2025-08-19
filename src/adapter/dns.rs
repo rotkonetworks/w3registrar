@@ -18,8 +18,6 @@ use trust_dns_resolver::{
     AsyncResolver,
 };
 
-const DNS_CHECK_INTERVAL: Duration = Duration::from_secs(30);
-
 static DNS_RESOLVER: OnceCell<Arc<AsyncResolver<TokioConnectionProvider>>> = OnceCell::new();
 
 fn get_resolver() -> Arc<AsyncResolver<TokioConnectionProvider>> {

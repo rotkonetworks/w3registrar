@@ -171,6 +171,7 @@ impl RedisConnection {
         for (acc_type, challenge) in &state.challenges {
             if challenge.done {
                 match acc_type {
+                    AccountType::Image => fields.image = true,
                     AccountType::Discord => fields.discord = true,
                     AccountType::Display => fields.display_name = true,
                     AccountType::Email => fields.email = true,

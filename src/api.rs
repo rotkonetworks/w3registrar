@@ -21,16 +21,12 @@ use chrono::{DateTime, Utc};
 use futures::channel::mpsc::{self, Sender};
 use futures::stream::SplitSink;
 use futures::stream::SplitStream;
-use futures::Stream;
 use futures::StreamExt;
 use futures_util::SinkExt;
 use once_cell::sync::OnceCell;
+use postgres_types::FromSql;
 use postgres_types::ToSql;
-use redis::aio::ConnectionManager;
-use redis::aio::PubSub;
-use redis::AsyncCommands;
 use redis::Msg;
-use redis::RedisResult;
 use redis::{self, Client as RedisClient};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -40,6 +36,7 @@ use sp_core::Encode;
 use std::fmt;
 use std::fmt::Display;
 use std::str::FromStr;
+use std::time::Duration;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use subxt::events::EventDetails;
 use subxt::utils::AccountId32;
@@ -60,15 +57,16 @@ use crate::{
         Adapter,
     },
     config::{RedisConfig, RegistrarConfig, GLOBAL_CONFIG},
+    indexer::Indexer,
     node::{
-        self, filter_accounts,
+        self, filter_accounts, get_judgement,
         identity::events::{JudgementGiven, JudgementRequested, JudgementUnrequested},
         substrate::runtime_types::{
             pallet_identity::types::Registration,
             pallet_identity::types::{Data as IdentityData, Judgement},
             people_paseo_runtime::people::IdentityInfo,
         },
-        Client as NodeClient,
+        Block, Client as NodeClient,
     },
     postgres::{
         DisplayedInfo, PostgresConnection, RegistrationCondition, RegistrationDisplayed,
@@ -164,6 +162,7 @@ pub enum Account {
     Email(String),
     Github(String),
     PGPFingerprint([u8; 20]),
+    Image(String),
 }
 
 impl Display for Account {
@@ -177,6 +176,7 @@ impl Display for Account {
             Account::Web(name) => write!(f, "web|{name}"),
             Account::Email(name) => write!(f, "email|{name}"),
             Account::Github(name) => write!(f, "github|{name}"),
+            Account::Image(name) => write!(f, "image|{}", name),
             Account::PGPFingerprint(name) => write!(f, "pgp_fingerprint|{}", hex::encode(name)),
         }
     }
@@ -202,6 +202,8 @@ pub enum AccountType {
     Legal,
     #[serde(alias = "web", alias = "WEB")]
     Web,
+    #[serde(alias = "image", alias = "IMAGE")]
+    Image,
     #[serde(alias = "pgp_fingerprint", alias = "PGP_FINGERPRINT")]
     PGPFingerprint,
 }
@@ -237,6 +239,7 @@ impl fmt::Display for AccountType {
             Self::Legal => write!(f, "legal"),
             Self::Web => write!(f, "web"),
             Self::PGPFingerprint => write!(f, "pgp_fingerprint"),
+            Self::Image => write!(f, "image"),
         }
     }
 }
@@ -245,7 +248,7 @@ impl Account {
     pub fn determine(&self) -> ValidationMode {
         match self {
             // Direct: verified directly without user action
-            Account::Display(_) => ValidationMode::Direct,
+            Account::Display(_) | Account::Image(_) => ValidationMode::Direct,
             // Inbound: receive challenge/callback via websocket
             Account::Github(_) | Account::PGPFingerprint(_) => ValidationMode::Inbound,
             // Outbound: send challenge via websocket
@@ -296,6 +299,7 @@ impl Account {
             Self::Legal(_) => AccountType::Legal,
             Self::Web(_) => AccountType::Web,
             Self::PGPFingerprint(_) => AccountType::PGPFingerprint,
+            Self::Image(_) => AccountType::Image,
         }
     }
 
@@ -308,6 +312,7 @@ impl Account {
             | Self::Email(v)
             | Self::Legal(v)
             | Self::Github(v)
+            | Self::Image(v)
             | Self::Web(v) => v.to_owned(),
             Self::PGPFingerprint(v) => hex::encode(v),
         }
@@ -323,6 +328,7 @@ impl Account {
             AccountType::Github => Self::Github(value),
             AccountType::Legal => Self::Legal(value),
             AccountType::Web => Self::Web(value),
+            AccountType::Image => Self::Image(value),
             AccountType::PGPFingerprint => {
                 if let Ok(bytes) = hex::decode(&value) {
                     if bytes.len() == 20 {
@@ -357,6 +363,7 @@ impl Account {
         add_if_some(&value.github, Account::Github);
         add_if_some(&value.legal, Account::Legal);
         add_if_some(&value.web, Account::Web);
+        add_if_some(&value.image, Account::Image);
 
         if let Some(fingerprint) = value.pgp_fingerprint {
             accounts.push(Account::PGPFingerprint(fingerprint));
@@ -449,6 +456,26 @@ impl Display for Network {
 impl Default for Network {
     fn default() -> Self {
         Self::Rococo // hmmm?
+    }
+}
+
+impl<'a> FromSql<'a> for Network {
+    fn from_sql(
+        _ty: &postgres_types::Type,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        let s = std::str::from_utf8(raw)?;
+        match s {
+            "paseo" => Ok(Network::Paseo),
+            "polkadot" => Ok(Network::Polkadot),
+            "kusama" => Ok(Network::Kusama),
+            "rococo" => Ok(Network::Rococo),
+            _ => Err(format!("Unrecognized value for Network enum: {}", s).into()),
+        }
+    }
+
+    fn accepts(ty: &postgres_types::Type) -> bool {
+        ty.name().eq_ignore_ascii_case("network")
     }
 }
 
@@ -795,7 +822,7 @@ fn string_to_account_id(s: &str) -> anyhow::Result<AccountId32> {
 }
 
 #[derive(Debug, Clone)]
-struct SocketListener {
+pub struct SocketListener {
     redis_cfg: RedisConfig,
     span: Span,
     socket_addr: SocketAddr,
@@ -1062,6 +1089,8 @@ impl SocketListener {
                     identity_data_tostring(&registration.info.github),
                     github_acc,
                 ),
+                Account::Legal(_) => todo!(),
+                Account::Image(image) => (identity_data_tostring(&registration.info.image), image),
                 Account::PGPFingerprint(fingerprint) => (
                     Some(hex::encode(
                         registration
@@ -1071,7 +1100,6 @@ impl SocketListener {
                     )),
                     &hex::encode(fingerprint),
                 ),
-                _ => todo!(),
             };
 
             let stored_acc = stored_acc.ok_or_else(|| {
@@ -1405,6 +1433,9 @@ impl SocketListener {
         account: AccountId32,
         response: serde_json::Value,
     ) -> anyhow::Result<()> {
+        // to avoid collisions with futures::StreamExt
+        use tokio_stream::StreamExt;
+
         let redis_cfg = self.redis_cfg.clone();
         info!(account_id = %account.to_string(), "Starting Redis listener task!");
 
@@ -1432,8 +1463,15 @@ impl SocketListener {
             // TODO: make this kill iteslf when an completed state is true, since we don't want
             // to listen for events forever!
             debug!("Starting message processing loop");
-            let mut stream = redis_conn.pubsub_stream().await;
-            while let Some(msg) = stream.next().await {
+            let mut stream =
+                redis_conn
+                    .pubsub_stream()
+                    .await
+                    .timeout_repeating(tokio::time::interval(Duration::from_secs(
+                        redis_cfg.listener_timeout,
+                    )));
+
+            while let Some(Ok(msg)) = tokio_stream::StreamExt::next(&mut stream).await {
                 debug!("Redis event received: {:?}", msg);
 
                 // process message, continue on error
@@ -1441,7 +1479,7 @@ impl SocketListener {
                     Ok(result) => result,
                     Err(e) => {
                         error!(error = %e, "Failed to process Redis message {:?}", msg);
-                        continue;
+                        break;
                     }
                 };
 
@@ -1689,7 +1727,9 @@ impl NodeListener {
                     match item {
                         Ok(block) => {
                             if let Ok(events) = block.events().await {
-                                self_clone.process_block_events(events, &network_name).await;
+                                self_clone
+                                    .process_block_events(events, &block, &network_name)
+                                    .await;
                             }
                         }
                         Err(e) => {
@@ -1711,6 +1751,7 @@ impl NodeListener {
     async fn process_block_events(
         &mut self,
         events: subxt::events::Events<SubstrateConfig>,
+        block: &Block,
         network: &Network,
     ) {
         for event_result in events.iter() {
@@ -1744,15 +1785,36 @@ impl NodeListener {
                         }
                     }
                 } else if let Ok(Some(jud)) = event.as_event::<JudgementGiven>() {
-                    // TODO: handle unwrap(s)?
-                    let cfg = GLOBAL_CONFIG.get().unwrap();
-                    let pog_config = cfg.postgres.clone();
-                    let mut pog_connection = PostgresConnection::new(&pog_config).await.unwrap();
-                    if let Some(record) = RegistrationRecord::from_judgement(&jud).await.unwrap() {
-                        info!("Writing registration record to dB after");
-                        let _ = pog_connection.save_registration(&record).await;
+                    // check if judgement is reasonable
+                    if let Ok(Some(judgement)) = get_judgement(&jud.target, network).await {
+                        if matches!(judgement, Judgement::Reasonable) {
+                            // construct a record
+                            let cfg = GLOBAL_CONFIG.get().unwrap();
+                            let pog_config = cfg.postgres.clone();
+                            let mut pog_connection =
+                                PostgresConnection::new(&pog_config).await.unwrap();
+                            if let Some(record) =
+                                RegistrationRecord::from_judgement(&jud).await.unwrap()
+                            {
+                                info!(who = ?jud.target.to_string(), "Jugdement saved to DB");
+                                info!("Writing registration record to dB after");
+                                // write the record
+                                pog_connection.save_registration(&record).await.unwrap();
+                                let block_index = block.number();
+                                let block_hash = block.hash();
+                                // mark block
+                                pog_connection
+                                    .update_indexer_state(
+                                        &network,
+                                        &block_hash,
+                                        &(block_index as i64),
+                                    )
+                                    .await
+                                    .unwrap();
+                            }
+                            info!(who = ?jud.target.to_string(), "Jugdement saved to DB");
+                        }
                     }
-                    info!(who = ?jud.target.to_string(), "Jugdement saved to DB");
                 }
             }
         }
@@ -1842,9 +1904,10 @@ pub struct VerificationFields {
     pub legal: bool,
     pub web: bool,
     pub pgp_fingerprint: bool,
+    pub image: bool,
 }
 
-async fn handle_redis_message(redis_cfg: &RedisConfig, msg: &redis::Msg) -> anyhow::Result<()> {
+async fn handle_redis_message(msg: &redis::Msg) -> anyhow::Result<()> {
     if let Ok(Some((id, value))) = RedisConnection::process_state_change(msg).await {
         info!("Processed state change for {}: {:?}", id, value);
     }
@@ -1956,10 +2019,6 @@ async fn github_oauth_callback(Query(params): Query<GithubRedirectStepTwoParams>
     info!(username = ?gh_username, "Github Username");
 
     // checking if url is requested
-    let cfg = GLOBAL_CONFIG
-        .get()
-        .expect("GLOBAL_CONFIG is not initialized");
-    let redis_config = cfg.redis.clone();
     let mut redis_connection = match RedisConnection::get_connection().await {
         Ok(conn) => conn,
         Err(e) => {
@@ -2038,6 +2097,7 @@ pub async fn spawn_http_serv() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 mod unit_test {
     use serde_json::to_string_pretty;
 
@@ -2116,4 +2176,9 @@ mod unit_test {
             serde_json::from_str::<VersionedMessage>(&ws_msg).is_ok()
         );
     }
+}
+
+#[instrument(name = "identity_indexer")]
+pub async fn spawn_identity_indexer() -> anyhow::Result<()> {
+    Indexer::new().await?.index().await
 }

@@ -9,7 +9,7 @@ mod redis;
 mod indexer;
 
 use anyhow::{Context as _, Result};
-use api::spawn_http_serv;
+use api::{spawn_http_serv, spawn_identity_indexer};
 use postgres::PostgresConnection;
 use std::panic;
 use tracing::{error, info, instrument};
@@ -18,9 +18,9 @@ use tracing_subscriber::EnvFilter;
 use crate::{
     adapter::{dns::watch_dns, mail::watch_mailserver, matrix},
     api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv},
+    redis::RedisConnection,
     config::{Config, GLOBAL_CONFIG},
 };
-use crate::redis::RedisConnection;
 
 #[instrument(skip_all)]
 fn setup_logging() -> Result<()> {
@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
         Config::set_global_config().context("failed to load and set global configuration")?;
 
     // init redis conn pool
-    RedisConnection::initialize_pool(&config.redis).await;
+    RedisConnection::initialize_pool(&config.redis).await?;
 
     // init postgress table
     PostgresConnection::new(&config.postgres)
@@ -114,6 +114,7 @@ async fn main() -> Result<()> {
     runner.spawn(spawn_node_listener, None).await;
     runner.spawn(spawn_ws_serv, None).await;
     runner.spawn(spawn_http_serv, None).await;
+    runner.spawn(spawn_identity_indexer, None).await;
 
     // check and start singleton services
     let (needs_email, needs_matrix_bot, needs_web) = check_required_services(&config).await;
