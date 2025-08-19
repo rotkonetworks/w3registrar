@@ -644,7 +644,20 @@ impl From<&tokio_postgres::Row> for RegistrationRecord {
         for info in displayed_info {
             match info {
                 DisplayedInfo::WalletID => record.wallet_id = value.get("wallet_id"),
-                DisplayedInfo::Network => record.wallet_id = value.get("network"),
+                DisplayedInfo::Network => record.network = {
+                    let _value = value
+                        .get::<_, Option<String>>("network");
+                    match _value {
+                        Some(network) => match network.as_str() {
+                            "paseo" => Some(Network::Paseo),
+                            "kusama" => Some(Network::Kusama),
+                            "polkadot" => Some(Network::Polkadot),
+                            "rococo" => Some(Network::Rococo),
+                            _ => None,
+                        },
+                        None => None,
+                    }
+                },
                 DisplayedInfo::Discord => record.discord = value.get("discord"),
                 DisplayedInfo::Display => record.display_name = value.get("display_name"),
                 DisplayedInfo::Email => record.email = value.get("email"),
