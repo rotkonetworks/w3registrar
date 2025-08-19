@@ -47,6 +47,8 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Create Required files
+        env:
+          AGE_PRIVATE_KEY: ${{ secrets.AGE_PRIVATE_KEY }}
         run: |
           #install age
           sudo apt-get update
