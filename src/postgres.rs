@@ -1505,7 +1505,7 @@ impl FromStr for DisplayedInfo {
             "wallet_id" | "WalletID" | "Wallet_ID" | "walletId" => return Ok(Self::WalletID),
             "Network" | "network" | "Network" => return Ok(Self::Network),
             "Discord" | "discord" => return Ok(Self::Discord),
-            "Display" | "display" => return Ok(Self::Display),
+            "Display" | "display" | "display_name" | "Display_Name" | "DisplayName" => return Ok(Self::Display),
             "Email" | "email" => return Ok(Self::Email),
             "Matrix" | "matrix" => return Ok(Self::Matrix),
             "Twitter" | "twitter" => return Ok(Self::Twitter),
