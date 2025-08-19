@@ -1100,7 +1100,6 @@ impl SocketListener {
                     )),
                     &hex::encode(fingerprint),
                 ),
-                _ => todo!(),
             };
 
             let stored_acc = stored_acc.ok_or_else(|| {
@@ -2098,6 +2097,7 @@ pub async fn spawn_http_serv() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 mod unit_test {
     use serde_json::to_string_pretty;
 
