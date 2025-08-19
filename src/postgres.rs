@@ -1514,24 +1514,18 @@ impl FromStr for DisplayedInfo {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s {
-            "wallet_id" | "WalletID" | "Wallet_ID" | "walletId" => return Ok(Self::WalletID),
-            "Network" | "network" | "Network" => return Ok(Self::Network),
-            "Discord" | "discord" => return Ok(Self::Discord),
-            // Accept multiple representations in order to show display name column.
-            // TODO should it have been done differently?
-            "Display" | "display" | "display_name" | "DisplayName" | "Display_Name" => {
-                return Ok(Self::Display)
-            }
-            "Email" | "email" => return Ok(Self::Email),
-            "Matrix" | "matrix" => return Ok(Self::Matrix),
-            "Twitter" | "twitter" => return Ok(Self::Twitter),
-            "Github" | "github" => return Ok(Self::Github),
-            "Legal" | "legal" => return Ok(Self::Legal),
-            "Web" | "web" => return Ok(Self::Web),
-            "PGPFingerprint" | "pgpfingerprint" | "pgp_fingerprint" | "PGP_Fingerprint" => {
-                return Ok(Self::PGPFingerprint)
-            }
+        match s {   // db_column => DisplayedInfo
+            "wallet_id" => return Ok(Self::WalletID),
+            "network" => return Ok(Self::Network),
+            "discord" => return Ok(Self::Discord),
+            "display_name" => return Ok(Self::Display),
+            "email" => return Ok(Self::Email),
+            "matrix"  => return Ok(Self::Matrix),
+            "twitter" => return Ok(Self::Twitter),
+            "github" => return Ok(Self::Github),
+            "legal" => return Ok(Self::Legal),
+            "web" => return Ok(Self::Web),
+            "pgp_fingerprint" => return Ok(Self::PGPFingerprint),
             // TODO: update this to include Date, Wallet ID and Event
             _ => return Err(anyhow!("Unknown type {s}")),
         }
