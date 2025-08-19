@@ -153,7 +153,7 @@ def connect_postgres(config):
 
     return conn
 
-networks = ["polkadot", "paseo", "rotoko", "kusama"]
+networks = ["polkadot", "paseo", "rococo", "kusama"]
 args = read_args()
 config = read_config(args.config)
 conn = connect_postgres(config)
