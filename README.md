@@ -4,8 +4,8 @@
 
 Lightweight Substrate registrar microservice that automates identity verification.
 It listens for `JudgementRequested` events, manages verification tokens in Redis,
-and issues final on-chain judgements once all fields (email, Matrix, Discord, etc.)
-are confirmed.
+indexes identity data in PostgreSQL, and issues final on-chain judgements once all fields 
+(email, Matrix, Discord, GitHub, PGP, etc.) are confirmed.
 
 ---
 
@@ -58,23 +58,36 @@ An example `config.toml`:
 endpoint = "wss://dev.rotko.net/people-rococo/"
 registrar_index = 0
 keystore_path = "./keyfile.rococo"
-identity_proxied = false
+registrar_account = "5CiPPseXPECbkjWCa6MnjNokrgYjMqmKndv2rSnekmSK2DjL"
 fields = ["email","matrix","twitter","discord","display_name"]
 
 [registrar.paseo]
 endpoint = "wss://people-paseo.dotters.network"
 registrar_index = 1
 keystore_path = "./keyfile.paseo"
-identity_proxied = true
-fields = ["email","matrix","twitter","discord","display_name"]
+registrar_account = "12BtBrcorHAvSeTLYo6YTq8kdiRG948vkvmxHEmSzZjwZ97u"
+fields = ["email","matrix","twitter","discord","display_name","pgp_fingerprint","github"]
+
+[http]
+host = "0.0.0.0"
+port = 3000
 
 [websocket]
-host = "127.0.0.1"
+host = "0.0.0.0"
 port = 8080
 
 [redis]
-host = "127.0.0.1"
+host = "0.0.0.0"
 port = 6379
+listener_timeout = 3500
+max_open_clients = 100
+
+[postgres]
+host = "0.0.0.0"
+port = 5432
+user = "username"
+dbname = "w3registrar"
+cert_path = "/path/to/cert.pem"
 
 [adapter.matrix]
 homeserver = "https://matrix.org"
@@ -92,6 +105,13 @@ name = "w3registrar"
 mailbox = "INBOX"
 server = "mail.rotko.net"
 port = 143
+checking_frequency = 500
+
+[adapter.github]
+client_id = "your_github_client_id"
+client_secret = "your_github_client_secret"
+gh_url = "https://github.com/login/oauth/authorize"
+redirect_url = "http://your-domain.com/oauth/callback/github"
 ```
 
 > **Tip**: You can customize each `[registrar.<network>]` section for the Substrate endpoint, registrar index, identity fields, etc.  
@@ -103,12 +123,18 @@ port = 143
 - **Substrate**:
   - Connects to the listed endpoints, listens for `JudgementRequested`, checks identity fields, and writes partial verification state to Redis.
   - If the user unrequests judgement, the state is removed.
+- **PostgreSQL**:
+  - Stores identity registration data and indexer state for efficient querying and historical tracking.
+  - The indexer component syncs on-chain identity data to the database.
 - **Redis**:
   - Persists in-flight challenges. Example key: `"<accountId>:<network>"`.
   - Publishes keyspace events used by the WebSocket server to notify clients when states change.
+- **HTTP Server**:
+  - Handles GitHub OAuth callbacks for GitHub identity verification.
+  - Runs on `host:port` from `[http]` section.
 - **WebSocket**:
   - Runs on `host:port` from `[websocket]` section.
-  - Accepts JSON messages of type `SubscribeAccountState` (to watch an account’s fields) or `VerifyIdentity` (to mark a challenge done).
+  - Accepts JSON messages of type `SubscribeAccountState` (to watch an account's fields) or `VerifyIdentity` (to mark a challenge done).
   - On changes, pushes updated state back to any subscribed clients.
 - **Email**:
   - If any `fields` contains `"email"`, w3registrar spawns one IMAP loop that watches a single mailbox.  
@@ -116,6 +142,9 @@ port = 143
 - **Matrix**:
   - If any `fields` is among `"matrix","discord","twitter"`, a single Matrix client logs in, listens for messages.  
   - If a user posts a token that matches the Redis challenge, we mark that done.
+- **GitHub**:
+  - OAuth-based verification for GitHub accounts when `"github"` field is included.
+  - Users authenticate via GitHub OAuth flow to verify ownership.
 
 Once all fields for a network are done, w3registrar calls `provide_judgement` with `Judgement::Reasonable`.
 
@@ -148,6 +177,26 @@ Once all fields for a network are done, w3registrar calls `provide_judgement` wi
   }
 }
 ```
+
+**Search** for an indexed registration:
+```jsonc
+{
+  "version": "1.0",
+  "type": "SearchRegistration",
+  "payload": {
+    "outputs": ["WalletID", "Timeline", "Discord", "Github", "Web", "Email", "Network", "Display"], // can be left empty
+    "filters": {
+        "fields": [ // can be left empty
+            { "field": { "Discord": "username" }, "strict": false},
+            { "field": { "AccountId32": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"}, "strict": true}
+        ],
+        "result_size": 3, // optional
+    }
+  }
+}
+```
+>> Possible output fields ["WalletID", "Discord", "Display", "Email", "Matrix", "Twitter", "Github", "Legal", "Web", "PGPFingerprint", "Timeline", "Network"]  
+>> Possible filter fields ["AccountId32", "Twitter", "Discord", "Matrix", "Display", "Legal", "Web", "Email", "Github", "PGPFingerprint"]  
 
 You can test with [`websocat`](https://github.com/vi/websocat) or a custom client.
 
