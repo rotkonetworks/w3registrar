@@ -1403,7 +1403,7 @@ impl SocketListener {
         let listener = match tokio::net::TcpListener::bind(self.socket_addr).await {
             Ok(l) => l,
             Err(e) => {
-                error!("Failed to bind to address: {}", e);
+                error!(address=?self.socket_addr, "Failed to bind to address: {}", e);
                 std::process::exit(1);
             }
         };
