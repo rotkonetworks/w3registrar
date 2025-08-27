@@ -2090,10 +2090,8 @@ pub async fn spawn_http_serv() -> anyhow::Result<()> {
     let app = Router::new()
         .route(redirect_url.path(), get(github_oauth_callback))
         .route("/ping", get(pong));
-    let listener = tokio::net::TcpListener::bind(&(http_config.host, http_config.port))
-        .await
-        .unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&(http_config.host, http_config.port)).await?;
+    axum::serve(listener, app).await?;
     Ok(())
 }
 
