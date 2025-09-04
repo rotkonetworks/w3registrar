@@ -1,4 +1,4 @@
-name: Deploy DAPI
+name: Deploy SAPI
 
 on:
   pull_request:

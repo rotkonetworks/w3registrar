@@ -90,4 +90,3 @@ jobs:
             podman tag $(podman images --format "{{.Repository}}:{{.Tag}}" | head -1) w3registrar:${{ env.VERSION_TAG }}
             podman compose up -d
             rm dapi-w3registrar.tar.gz
-
