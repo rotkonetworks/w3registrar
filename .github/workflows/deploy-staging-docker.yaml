@@ -41,7 +41,7 @@ jobs:
           mkdir -p distfiles
 
           printf '%s' "$AGE_PRIVATE_KEY" > age-key.txt
-          age --decrypt -i ./age-key.txt --output distfiles/${{ env.CONFIG_PATH }} configs/config.development.age
+          age --decrypt -i ./age-key.txt --output distfiles/${{ env.CONFIG_PATH }} configs/config.staging.age
           shred -u age-key.txt
 
           echo "${{ secrets.SSL_CERT }}" | base64 -d > distfiles/ssl_cert.pem
