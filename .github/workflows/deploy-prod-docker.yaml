@@ -11,7 +11,8 @@ on:
 
 env:
   PROJECT_DIR: api-w3registrar
-  VERSION_TAG: staging
+  VERSION_TAG: prod
+  STAGING_TAG: staging
   CONFIG_PATH: ./config.docker.toml
   SERVICE_NAME: api-w3registrar
   REDIS_PORT: 26379
@@ -27,11 +28,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-
-      - name: Build Docker image
-        run: |
-          docker build -t w3registrar:${{ env.VERSION_TAG }} .
-          docker save w3registrar:${{ env.VERSION_TAG }} | gzip > api-w3registrar.tar.gz
 
       - name: Create required files
         env:
@@ -63,7 +59,7 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
-          source: "api-w3registrar.tar.gz,docker-compose.yaml,distfiles/*"
+          source: "docker-compose.yaml,distfiles/*"
           target: "/home/${{ secrets.DEPLOY_USER }}/${{ env.PROJECT_DIR }}"
 
       - name: Zero-downtime deploy
@@ -74,7 +70,7 @@ jobs:
           key: ${{ secrets.DEPLOY_KEY }}
           script: |
             cd "/home/${{ secrets.DEPLOY_USER }}/${{ env.PROJECT_DIR }}"
-            
+
             cp distfiles/* .
             rm -rf distfiles/
 
@@ -84,10 +80,8 @@ jobs:
             echo "POSTGRES_PORT=${{ env.POSTGRES_PORT }}" >> .env
             echo "CONFIG_PATH=${{ env.CONFIG_PATH }}" >> .env
 
-            # Stop existing dev containers to avoid port conflicts
             podman compose down || true
-            podman stop $(podman ps --filter "name=dev" -q) 2>/dev/null || true
-            podman stop $(podman ps --filter "name=${{ env.SERVICE_NAME }}" -q) 2>/dev/null || true
-            
-            podman load -i api-w3registrar.tar.gz
-            podman tag $(podman images --format "{{.Repository}}:{{.Tag}}" | head -1) w3registrar:${{ env.VERSION
+
+            podman tag w3registrar:${{ env.STAGING_TAG }} w3registrar:${{ env.VERSION_TAG }}
+
+            podman compose -f ./docker-compose.yaml up -d

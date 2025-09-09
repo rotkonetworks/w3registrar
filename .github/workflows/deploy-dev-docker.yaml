@@ -71,7 +71,7 @@ jobs:
           key: ${{ secrets.DEPLOY_KEY }}
           script: |
             cd "/home/${{ secrets.DEPLOY_USER }}/${{ env.PROJECT_DIR }}"
-            
+
             cp distfiles/* .
             rm -rf distfiles/
 
@@ -83,9 +83,9 @@ jobs:
 
             # Stop existing dev containers to avoid port conflicts
             podman compose down || true
-            podman stop $(podman ps --filter "name=dev" -q) 2>/dev/null || true
-            podman stop $(podman ps --filter "name=${{ env.SERVICE_NAME }}" -q) 2>/dev/null || true
-            
+            # podman stop $(podman ps --filter "name=dev" -q) 2>/dev/null || true
+            # podman stop $(podman ps --filter "name=${{ env.SERVICE_NAME }}" -q) 2>/dev/null || true
+
             podman load -i dapi-w3registrar.tar.gz
             podman tag $(podman images --format "{{.Repository}}:{{.Tag}}" | head -1) w3registrar:${{ env.VERSION_TAG }}
             podman compose up -d
