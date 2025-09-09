@@ -15,8 +15,8 @@ env:
   STAGING_TAG: staging
   CONFIG_PATH: ./config.docker.toml
   SERVICE_NAME: api-w3registrar
-  REDIS_PORT: 26379
-  POSTGRES_PORT: 25432
+  REDIS_PORT: 16379
+  POSTGRES_PORT: 15432
   SSL_CERT: ${{ secrets.SSL_CERT }}
   KEYFILE_POLKADOT: ${{ secrets.KEYFILE_POLKADOT }}
   KEYFILE_KUSAMA: ${{ secrets.KEYFILE_KUSAMA }}
