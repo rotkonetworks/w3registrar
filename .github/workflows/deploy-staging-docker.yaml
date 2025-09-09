@@ -1,115 +1,92 @@
-# deploy-staging-docker.yaml (SAPI)
-name: Deploy SAPI with dockers
+name: Deploy SAPI
 
 on:
   push:
     branches:
       - main
 
+env:
+  PROJECT_DIR: sapi-w3registrar
+  VERSION_TAG: staging
+  CONFIG_PATH: ./config.docker.toml
+  SERVICE_NAME: sapi-w3registrar
+  REDIS_PORT: 26379
+  POSTGRES_PORT: 25432
+  SSL_CERT: ${{ secrets.SSL_CERT }}
+  KEYFILE_POLKADOT: ${{ secrets.KEYFILE_POLKADOT }}
+  KEYFILE_KUSAMA: ${{ secrets.KEYFILE_KUSAMA }}
+  KEYFILE_ROCOCO: ${{ secrets.KEYFILE_ROCOCO }}
+  KEYFILE_PASEO: ${{ secrets.KEYFILE_PASEO }}
+
 jobs:
-  build-and-deploy:
-    name: Build and Deploy SAPI docker
+  deploy:
     runs-on: ubuntu-latest
-    env:
-      SERVER_USER: w3reg
-      SERVER_HOST: 135.181.202.179
-      SERVER_PORT: 22
-      DEPLOY_PATH: /home/w3reg/sapi.w3reg.org
-      SERVICE_NAME: w3registrar-sapi
-      VERSION_TAG: staging
-      REDIS_PORT: 26379
-      POSTGRES_PORT: 35432
-      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-      # NOTE: edit ports directly on config file
-      # W3REG_HTTP_PORT: 28080
-      # W3REG_WS_PORT: 28081
-      CONFIG_PATH: ./config.docker.toml
-      KEYFILE_POLKADOT: ${{ secrets.KEYFILE_POLKADOT }}
-      KEYFILE_KUSAMA: ${{ secrets.KEYFILE_KUSAMA }}
-      KEYFILE_ROCOCO: ${{ secrets.KEYFILE_ROCOCO }}
-      KEYFILE_PASEO: ${{ secrets.KEYFILE_PASEO }}
-      SSL_CERT: ${{ secrets.SSL_CERT }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v3
 
       - name: Build Docker image
         run: |
           docker build -t w3registrar:${{ env.VERSION_TAG }} .
-          docker save w3registrar:${{ env.VERSION_TAG }} -o w3registrar.tar
+          docker save w3registrar:${{ env.VERSION_TAG }} | gzip > sapi-w3registrar.tar.gz
 
-      - name: Transfer Docker image to remote server
-        uses: appleboy/scp-action@v0.1.4
-        with:
-          host: ${{ env.SERVER_HOST }}
-          username: ${{ env.SERVER_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          source: "w3registrar.tar"
-          target: ${{ env.DEPLOY_PATH }}
-
-      - name: Install SSH Key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -t ed25519 ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
-
-      - name: Create Required files
+      - name: Create required files
         env:
           AGE_PRIVATE_KEY: ${{ secrets.AGE_PRIVATE_KEY }}
         run: |
-          #install age
           sudo apt-get update
           sudo apt-get install -y age
 
+          mkdir -p distfiles
+
           printf '%s' "$AGE_PRIVATE_KEY" > age-key.txt
-          age --decrypt -i ./age-key.txt --output config.docker.toml configs/config.staging.age
+          age --decrypt -i ./age-key.txt --output distfiles/${{ env.CONFIG_PATH }} configs/config.staging.age
           shred -u age-key.txt
 
-          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} "mkdir -p ${{ env.DEPLOY_PATH }}/keyfile 2>/dev/null || true"
-          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} config.docker.toml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}
+          echo "${{ secrets.SSL_CERT }}" | base64 -d > distfiles/ssl_cert.pem
 
-          # deploy ssl certificate
-          echo "${{ secrets.SSL_CERT }}" | base64 -d > /tmp/ssl_cert.pem
-          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} /tmp/ssl_cert.pem ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/ssl_cert.pem
-          rm /tmp/ssl_cert.pem
-
-          # Loop through potential network keyfiles
           for network in polkadot kusama rococo paseo; do
             key_var="KEYFILE_${network^^}"
             key_value="${!key_var}"
 
             if [ -n "$key_value" ]; then
-              echo "$key_value" > .keyfile.$network
-              scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} .keyfile.$network ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/keyfile/.keyfile.$network
+              echo "$key_value" > "distfiles/.keyfile.$network"
             fi
           done
 
-      - name: Deploy on Remote Server
-        run: |
-          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
-            set -euo pipefail
-            cd ${{ env.DEPLOY_PATH }}
-            docker compose -f ./docker-compose.yaml down || true
-            docker image rm w3registrar:${{ env.VERSION_TAG }} || true
-          EOF
+      - name: Deploy to server
+        uses: appleboy/scp-action@v0.1.5
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          source: "sapi-w3registrar.tar.gz,docker-compose.yaml,distfiles/*"
+          target: "/home/${{ secrets.DEPLOY_USER }}/${{ env.PROJECT_DIR }}"
 
-          scp -i ~/.ssh/id_ed25519 -P ${{ env.SERVER_PORT }} docker-compose.yaml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.DEPLOY_PATH }}/docker-compose.yaml
-            
-          ssh -i ~/.ssh/id_ed25519 -p ${{ env.SERVER_PORT }} ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << EOF
-            set -euo pipefail
-            cd ${{ env.DEPLOY_PATH }}
+      - name: Zero-downtime deploy
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            cd "/home/${{ secrets.DEPLOY_USER }}/${{ env.PROJECT_DIR }}"
+
+            cp distfiles/* .
+            rm -rf distfiles/
+
             echo "SERVICE_NAME=${{ env.SERVICE_NAME }}" > .env
             echo "VERSION_TAG=${{ env.VERSION_TAG }}" >> .env
             echo "REDIS_PORT=${{ env.REDIS_PORT }}" >> .env
             echo "POSTGRES_PORT=${{ env.POSTGRES_PORT }}" >> .env
-            echo "POSTGRES_PASSWORD=${{ env.POSTGRES_PASSWORD }}" >> .env
             echo "CONFIG_PATH=${{ env.CONFIG_PATH }}" >> .env
-            docker load -i ${{ env.DEPLOY_PATH }}/w3registrar.tar
-            docker compose -f ./docker-compose.yaml up -d
-          EOF
+
+            # Stop existing dev containers to avoid port conflicts
+            podman compose down || true
+            # podman stop $(podman ps --filter "name=dev" -q) 2>/dev/null || true
+            # podman stop $(podman ps --filter "name=${{ env.SERVICE_NAME }}" -q) 2>/dev/null || true
+
+            podman load -i sapi-w3registrar.tar.gz
+            podman tag $(podman images --format "{{.Repository}}:{{.Tag}}" | head -1) w3registrar:${{ env.VERSION_TAG }}
+            podman compose up -d
+            rm sapi-w3registrar.tar.gz

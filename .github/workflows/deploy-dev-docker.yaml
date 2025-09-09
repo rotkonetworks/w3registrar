@@ -8,45 +8,49 @@ on:
 
 env:
   PROJECT_DIR: dapi-w3registrar
+  VERSION_TAG: dev
+  CONFIG_PATH: ./config.docker.toml
+  SERVICE_NAME: dapi-w3registrar
+  REDIS_PORT: 36379
+  POSTGRES_PORT: 35432
+  SSL_CERT: ${{ secrets.SSL_CERT }}
+  KEYFILE_POLKADOT: ${{ secrets.KEYFILE_POLKADOT }}
+  KEYFILE_KUSAMA: ${{ secrets.KEYFILE_KUSAMA }}
+  KEYFILE_ROCOCO: ${{ secrets.KEYFILE_ROCOCO }}
+  KEYFILE_PASEO: ${{ secrets.KEYFILE_PASEO }}
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      VERSION_TAG: developement
-      CONFIG_PATH: ./config.docker.toml
     steps:
       - uses: actions/checkout@v3
 
-      - name: Build Docker image
+      - name: build Docker image
         run: |
           docker build -t w3registrar:${{ env.VERSION_TAG }} .
-          docker save w3registrar:${{ env.VERSION_TAG }} -o dapi-w3registrar.tar
+          docker save w3registrar:${{ env.VERSION_TAG }} | gzip > dapi-w3registrar.tar.gz
 
       - name: Create Required files
         env:
           AGE_PRIVATE_KEY: ${{ secrets.AGE_PRIVATE_KEY }}
         run: |
-          #install age
           sudo apt-get update
           sudo apt-get install -y age
 
-          mkdir distfiles
+          mkdir -p distfiles
 
           printf '%s' "$AGE_PRIVATE_KEY" > age-key.txt
-          age --decrypt -i ./age-key.txt --output distfiles/${{ env.CONFIG_PATH }} configs/config.staging.age
+          age --decrypt -i ./age-key.txt --output distfiles/${{ env.CONFIG_PATH }} configs/config.development.age
           shred -u age-key.txt
 
-          # deploy ssl certificate
           echo "${{ secrets.SSL_CERT }}" | base64 -d > distfiles/ssl_cert.pem
 
-          # Loop through potential network keyfiles
           for network in polkadot kusama rococo paseo; do
             key_var="KEYFILE_${network^^}"
             key_value="${!key_var}"
 
             if [ -n "$key_value" ]; then
-              echo "$key_value" > distfiles/.keyfile.$network
+              echo "$key_value" > "distfiles/.keyfile.$network"
             fi
           done
 
@@ -56,21 +60,33 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
-          source: "dapi-w3registrar.tar.gz,distfiles/*"
+          source: "dapi-w3registrar.tar.gz,docker-compose.yaml,distfiles/*"
           target: "/home/${{ secrets.DEPLOY_USER }}/${{ env.PROJECT_DIR }}"
 
-      - name: Start services
+      - name: Zero-downtime deploy
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
           script: |
-            cd /home/${{ secrets.DEPLOY_USER }}/${{ env.PROJECT_DIR }}
+            cd "/home/${{ secrets.DEPLOY_USER }}/${{ env.PROJECT_DIR }}"
+
             cp distfiles/* .
-            rm -rfd distfiles/
-            podman-compose down || true
+            rm -rf distfiles/
+
+            echo "SERVICE_NAME=${{ env.SERVICE_NAME }}" > .env
+            echo "VERSION_TAG=${{ env.VERSION_TAG }}" >> .env
+            echo "REDIS_PORT=${{ env.REDIS_PORT }}" >> .env
+            echo "POSTGRES_PORT=${{ env.POSTGRES_PORT }}" >> .env
+            echo "CONFIG_PATH=${{ env.CONFIG_PATH }}" >> .env
+
+            # Stop existing dev containers to avoid port conflicts
+            podman compose down || true
+            # podman stop $(podman ps --filter "name=dev" -q) 2>/dev/null || true
+            # podman stop $(podman ps --filter "name=${{ env.SERVICE_NAME }}" -q) 2>/dev/null || true
+
             podman load -i dapi-w3registrar.tar.gz
-            podman-compose up -d
+            podman tag $(podman images --format "{{.Repository}}:{{.Tag}}" | head -1) w3registrar:${{ env.VERSION_TAG }}
+            podman compose up -d
             rm dapi-w3registrar.tar.gz
-         EOF
