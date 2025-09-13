@@ -143,6 +143,35 @@ $$;";
 
         info!("Table `indexer_state` created");
 
+        // Create unified view for cross-network search
+        let create_all_registrations_view = "CREATE OR REPLACE VIEW all_registrations AS
+        SELECT wallet_id, network::text, discord, twitter, matrix, email, 
+               display_name, github, legal, web, pgp_fingerprint
+        FROM registration;";
+
+        info!("Creating `all_registrations` view");
+        info!("{create_all_registrations_view}");
+
+        self.client.simple_query(create_all_registrations_view).await?;
+
+        // Create search index for improved performance
+        let create_search_index = "CREATE INDEX IF NOT EXISTS idx_registration_search ON registration 
+        USING gin(to_tsvector('english', 
+          coalesce(discord,'') || ' ' || 
+          coalesce(twitter,'') || ' ' ||
+          coalesce(matrix,'') || ' ' ||
+          coalesce(email,'') || ' ' ||
+          coalesce(display_name,'') || ' ' ||
+          coalesce(github,'')
+        ));";
+
+        info!("Creating search index");
+        info!("{create_search_index}");
+
+        self.client.simple_query(create_search_index).await?;
+
+        info!("Cross-network search infrastructure created");
+
         Ok(())
     }
 
@@ -965,8 +994,9 @@ impl Query for RegistrationQuery {
                     statement.push_str(" AND ");
                 }
 
-                if let Some(network) = &v.network {
-                    statement.push_str(&format!("network = '{}'", network));
+                if let Some(_network) = &v.network {
+                    statement.push_str(&format!("network = ${}", index_pointer));
+                    index_pointer += 1;
                 }
 
                 statement = statement
@@ -991,6 +1021,10 @@ impl Query for RegistrationQuery {
                 } else {
                     format!("%{}%", filter.field.inner())   // e.g. display_name ILIKE '%Jow%'
                 }));
+            }
+            // Add network parameter if present
+            if let Some(network) = &condition.network {
+                params.push(network.to_string());
             }
         }
 

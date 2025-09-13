@@ -195,6 +195,25 @@ Once all fields for a network are done, w3registrar calls `provide_judgement` wi
   }
 }
 ```
+
+**Search across all networks** (cross-network search):
+```jsonc
+{
+  "version": "1.0",
+  "type": "SearchAllNetworks",
+  "payload": {
+    "outputs": ["WalletID", "Discord", "Display", "Network"],
+    "filters": {
+        "fields": [
+            { "field": { "Discord": "username" }, "strict": false }
+        ],
+        "result_size": 10
+    },
+    "include_networks": ["paseo", "polkadot"], // optional, defaults to all networks
+    "max_results_per_network": 25 // optional, defaults to 50, max 100
+  }
+}
+```
 >> Possible output fields ["WalletID", "Discord", "Display", "Email", "Matrix", "Twitter", "Github", "Legal", "Web", "PGPFingerprint", "Timeline", "Network"]  
 >> Possible filter fields ["AccountId32", "Twitter", "Discord", "Matrix", "Display", "Legal", "Web", "Email", "Github", "PGPFingerprint"]  
 
