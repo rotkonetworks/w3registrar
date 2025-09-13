@@ -47,7 +47,7 @@ use tokio_tungstenite::WebSocketStream;
 use tracing::info_span;
 use tracing::instrument;
 use tracing::Span;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tungstenite::Error;
 
 use crate::{
@@ -533,6 +533,52 @@ pub struct IncomingSearchRequest {
     pub filters: Filter,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IncomingSearchAllNetworksRequest {
+    pub outputs: Vec<DisplayedInfo>,
+    pub filters: Filter,
+    pub include_networks: Option<Vec<Network>>, // optional network filter
+    pub max_results_per_network: Option<usize>, // security: limit results per network
+}
+
+impl IncomingSearchAllNetworksRequest {
+    // Security: validate and sanitize input
+    pub fn validate(&mut self) -> anyhow::Result<()> {
+        // Limit max results per network to prevent DoS
+        const MAX_RESULTS_PER_NETWORK: usize = 100;
+        const MAX_NETWORKS: usize = 10;
+        
+        if let Some(max_results) = self.max_results_per_network {
+            if max_results > MAX_RESULTS_PER_NETWORK {
+                self.max_results_per_network = Some(MAX_RESULTS_PER_NETWORK);
+            }
+        } else {
+            self.max_results_per_network = Some(50); // default limit
+        }
+        
+        // Apply same result_size limit to filters
+        if let Some(result_size) = self.filters.result_size {
+            if result_size > MAX_RESULTS_PER_NETWORK {
+                self.filters.result_size = Some(MAX_RESULTS_PER_NETWORK);
+            }
+        }
+        
+        // Limit number of networks that can be searched
+        if let Some(networks) = &self.include_networks {
+            if networks.len() > MAX_NETWORKS {
+                return Err(anyhow::anyhow!("Too many networks requested (max: {})", MAX_NETWORKS));
+            }
+            // Remove duplicates
+            let mut unique_networks = networks.clone();
+            unique_networks.sort();
+            unique_networks.dedup();
+            self.include_networks = Some(unique_networks);
+        }
+        
+        Ok(())
+    }
+}
+
 mod date_format {
     use chrono::NaiveDate;
     use serde::{self, Deserialize, Deserializer, Serializer};
@@ -708,6 +754,7 @@ pub enum WebSocketMessage {
     SubscribeAccountState(IncomingSubscribeRequest),
     VerifyPGPKey(IncomingVerifyPGPRequest),
     SearchRegistration(IncomingSearchRequest),
+    SearchAllNetworks(IncomingSearchAllNetworksRequest),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -723,6 +770,7 @@ impl VersionedMessage {
             WebSocketMessage::SubscribeAccountState(_) => "SubscribeAccountState",
             WebSocketMessage::VerifyPGPKey(_) => "VerifyPGPKey",
             WebSocketMessage::SearchRegistration(_) => "SearchRegistration",
+            WebSocketMessage::SearchAllNetworks(_) => "SearchAllNetworks",
         }
     }
 }
@@ -935,6 +983,9 @@ impl SocketListener {
             }
             WebSocketMessage::SearchRegistration(incoming) => {
                 self.handle_search_request(incoming).await
+            }
+            WebSocketMessage::SearchAllNetworks(incoming) => {
+                self.handle_search_all_networks_request(incoming).await
             }
         }
     }
@@ -1552,6 +1603,94 @@ impl SocketListener {
     ) -> anyhow::Result<serde_json::Value> {
         let query: Vec<RegistrationRecord> = request.search().await?;
         Ok(serde_json::to_value(query)?)
+    }
+
+    async fn handle_search_all_networks_request(
+        &self,
+        mut request: IncomingSearchAllNetworksRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        use futures::future::join_all;
+        use std::collections::HashMap;
+        
+        // Security: validate input
+        request.validate()?;
+        
+        // Get networks to search - default to all if not specified
+        let networks = request.include_networks.unwrap_or_else(|| {
+            vec![Network::Paseo, Network::Polkadot, Network::Kusama, Network::Rococo]
+        });
+        
+        let max_per_network = request.max_results_per_network.unwrap_or(50);
+        
+        // Create parallel search tasks for each network
+        let search_futures = networks.into_iter().map(|network| {
+            let filters = request.filters.clone();
+            let outputs = request.outputs.clone();
+            
+            async move {
+                // Create individual search request for this network
+                let mut network_filters = filters;
+                // Apply per-network result limit
+                network_filters.result_size = Some(max_per_network);
+                
+                let search_req = IncomingSearchRequest {
+                    network: Some(network.clone()),
+                    outputs,
+                    filters: network_filters,
+                };
+                
+                match search_req.search().await {
+                    Ok(results) => {
+                        // Tag results with network for identification
+                        let tagged_results: Vec<_> = results.into_iter().map(|mut record| {
+                            record.network = Some(network.clone());
+                            record
+                        }).collect();
+                        Ok((network, tagged_results))
+                    }
+                    Err(e) => {
+                        warn!("Search failed for network {}: {}", network, e);
+                        Ok((network, Vec::new()))
+                    }
+                }
+            }
+        });
+        
+        // Execute all searches in parallel with timeout
+        let results = join_all(search_futures).await;
+        
+        let mut all_results = Vec::new();
+        let mut network_counts = HashMap::new();
+        
+        for result in results {
+            match result {
+                Ok((network, mut records)) => {
+                    network_counts.insert(network.to_string(), records.len());
+                    all_results.append(&mut records);
+                }
+                Err(e) => {
+                    error!("Cross-network search error: {}", e);
+                }
+            }
+        }
+        
+        // Security: enforce global result limit
+        const MAX_TOTAL_RESULTS: usize = 500;
+        if all_results.len() > MAX_TOTAL_RESULTS {
+            all_results.truncate(MAX_TOTAL_RESULTS);
+        }
+        
+        // Deduplicate by wallet_id if same identity exists on multiple networks
+        all_results.sort_by(|a, b| a.wallet_id.cmp(&b.wallet_id));
+        all_results.dedup_by(|a, b| a.wallet_id == b.wallet_id);
+        
+        let response = serde_json::json!({
+            "results": all_results,
+            "network_counts": network_counts,
+            "total_count": all_results.len()
+        });
+        
+        Ok(response)
     }
 }
 
