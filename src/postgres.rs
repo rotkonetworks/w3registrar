@@ -53,7 +53,7 @@ BEGIN
     IF NOT EXISTS ( SELECT 1 FROM pg_type WHERE typname='event' )
     THEN CREATE TYPE EVENT AS ENUM (
             'verified', 'created', 'discord', 'twitter', 'matrix',
-            'email', 'display', 'github', 'legal', 'web', 'pgp_fingerprint'
+            'email', 'display', 'github', 'legal', 'web', 'pgp_fingerprint', 'image'
     );
     END IF;
 END
