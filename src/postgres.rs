@@ -955,7 +955,7 @@ impl Query for RegistrationQuery {
                         ));
                     } else {
                         statement.push_str(&format!(
-                            "{} ILIKE ${}", // Postgres uses ILIKE for case-insensitive matching, 
+                            "{} ILIKE ${}", // Postgres uses ILIKE for case-insensitive matching,
                             //  LIKE is case-sensitive.
                             filter.field.table_column_name(),
                             index + 1
@@ -986,11 +986,14 @@ impl Query for RegistrationQuery {
         let mut params = vec![];
         if let Some(condition) = &self.condition {
             for filter in condition.filters.iter() {
-                params.push(format!("{}", if filter.strict {
-                    filter.field.inner()    // exact match, e.g. display_name = 'Jow'
-                } else {
-                    format!("%{}%", filter.field.inner())   // e.g. display_name ILIKE '%Jow%'
-                }));
+                params.push(format!(
+                    "{}",
+                    if filter.strict {
+                        filter.field.inner() // exact match, e.g. display_name = 'Jow'
+                    } else {
+                        format!("%{}%", filter.field.inner()) // e.g. display_name ILIKE '%Jow%'
+                    }
+                ));
             }
         }
 
@@ -1310,7 +1313,7 @@ impl Query for DeleteQuery<TimelineCondition> {
                 }
 
                 if let Some(network) = &v.network {
-                    statement.push_str(&format!("network = '{}'", network));
+                    statement.push_str(&format!("network = ${}", index));
                     index += 1;
                 }
 
@@ -1505,7 +1508,9 @@ impl FromStr for DisplayedInfo {
             "wallet_id" | "WalletID" | "Wallet_ID" | "walletId" => return Ok(Self::WalletID),
             "Network" | "network" | "Network" => return Ok(Self::Network),
             "Discord" | "discord" => return Ok(Self::Discord),
-            "Display" | "display" | "display_name" | "Display_Name" | "DisplayName" => return Ok(Self::Display),
+            "Display" | "display" | "display_name" | "Display_Name" | "DisplayName" => {
+                return Ok(Self::Display)
+            }
             "Email" | "email" => return Ok(Self::Email),
             "Matrix" | "matrix" => return Ok(Self::Matrix),
             "Twitter" | "twitter" => return Ok(Self::Twitter),
