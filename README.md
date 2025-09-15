@@ -134,7 +134,7 @@ redirect_url = "http://your-domain.com/oauth/callback/github"
   - Runs on `host:port` from `[http]` section.
 - **WebSocket**:
   - Runs on `host:port` from `[websocket]` section.
-  - Accepts JSON messages of type `SubscribeAccountState` (to watch an account's fields) or `VerifyIdentity` (to mark a challenge done).
+  - Accepts JSON messages of type `SubscribeAccountState` (to watch an account's fields), `VerifyPGPKey` (to verify a PGP key), `SearchRegistration` (to search for registration)
   - On changes, pushes updated state back to any subscribed clients.
 - **Email**:
   - If any `fields` contains `"email"`, w3registrar spawns one IMAP loop that watches a single mailbox.  
