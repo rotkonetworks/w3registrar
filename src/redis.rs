@@ -126,7 +126,7 @@ impl RedisConnection {
         &mut self,
         network: &Network,
         account_id: &AccountId32,
-    ) -> anyhow::Result<Vec<Vec<(AccountType, String)>>> {
+    ) -> anyhow::Result<Vec<Challenge>> {
         info!(account_id = ?account_id.to_string(), network = ?network, "Getting challenges");
         let state = match self.get_verification_state(network, account_id).await? {
             Some(s) => s,
@@ -139,10 +139,13 @@ impl RedisConnection {
             .iter()
             .filter(|(_, challenge)| !challenge.done)
             .filter_map(|(acc_type, challenge)| {
-                challenge
-                    .token
-                    .as_ref()
-                    .map(|token| vec![(acc_type.clone(), token.clone())])
+                challenge.token.as_ref().map(|token| {
+                    Challenge::new(
+                        acc_type.to_owned(),
+                        challenge.name.to_owned(),
+                        token.to_owned(),
+                    )
+                })
             })
             .collect();
 
@@ -258,7 +261,8 @@ impl RedisConnection {
         let mut pipe = redis::pipe();
 
         for (acc_type, info) in state.challenges.iter() {
-            let acc_key = Account::from_type_and_value(acc_type.to_owned(), info.name.to_string());
+            let acc_key =
+                Account::from_type_and_value(acc_type.to_owned(), info.name.to_string());
             let key = format!("{acc_key}|{network}|{account_id}");
             pipe.cmd("SET")
                 .arg(&key)
@@ -436,6 +440,23 @@ impl RedisConnection {
 
 pub struct RedisManager {
     addr: url::Url,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct Challenge {
+    account_type: AccountType,
+    account_name: String,
+    challenge: String,
+}
+
+impl Challenge {
+    fn new(account_type: AccountType, account_name: String, challenge: String) -> Self {
+        Self {
+            account_type,
+            account_name,
+            challenge,
+        }
+    }
 }
 
 #[async_trait]

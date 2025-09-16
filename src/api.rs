@@ -60,7 +60,7 @@ use crate::{
     indexer::Indexer,
     node::{
         self, filter_accounts, get_judgement,
-        identity::events::{JudgementGiven, JudgementRequested, JudgementUnrequested},
+        identity::events::{IdentitySet, JudgementGiven, JudgementRequested, JudgementUnrequested},
         substrate::runtime_types::{
             pallet_identity::types::Registration,
             pallet_identity::types::{Data as IdentityData, Judgement},
@@ -90,7 +90,8 @@ pub struct AccountVerification {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChallengeInfo {
-    pub name: String,
+    #[sede(alias = "name")]
+    pub account_name: String,
     pub done: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
@@ -116,7 +117,7 @@ impl AccountVerification {
         self.challenges.insert(
             account_type.to_owned(),
             ChallengeInfo {
-                name,
+                account_name: name,
                 done: token.is_none(), // for now if no token provided, challenge is done
                 token,
             },
