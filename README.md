@@ -155,7 +155,7 @@ Once all fields for a network are done, w3registrar calls `provide_judgement` wi
 **Subscribe** to an account:
 ```jsonc
 {
-  "version": "1.0",
+  "version": "1.1",
   "type": "SubscribeAccountState",
   "payload": {
     "network": "rococo",
@@ -167,7 +167,7 @@ Once all fields for a network are done, w3registrar calls `provide_judgement` wi
 **Mark Identity Verified** for a challenge token:
 ```jsonc
 {
-  "version": "1.0",
+  "version": "1.1",
   "type": "VerifyIdentity",
   "payload": {
     "network": "rococo",
@@ -181,7 +181,7 @@ Once all fields for a network are done, w3registrar calls `provide_judgement` wi
 **Search** for an indexed registration:
 ```jsonc
 {
-  "version": "1.0",
+  "version": "1.1",
   "type": "SearchRegistration",
   "payload": {
     "outputs": ["WalletID", "Timeline", "Discord", "Github", "Web", "Email", "Network", "Display"], // can be left empty
@@ -201,6 +201,14 @@ Once all fields for a network are done, w3registrar calls `provide_judgement` wi
 You can test with [`websocat`](https://github.com/vi/websocat) or a custom client.
 
 ---
+
+### Returned Objets
+#### SearchRegistration
+TODO
+#### SubscribeAccountState
+TODO
+#### VerifyPGPKey
+TODO
 
 ### Companion Frontend: w3registrar-www
 
