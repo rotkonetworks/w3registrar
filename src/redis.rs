@@ -126,6 +126,40 @@ impl RedisConnection {
         &mut self,
         network: &Network,
         account_id: &AccountId32,
+    ) -> anyhow::Result<Vec<Challenge>> {
+        info!(account_id = ?account_id.to_string(), network = ?network, "Getting challenges");
+        let state = match self.get_verification_state(network, account_id).await? {
+            Some(s) => s,
+            None => return Ok(Vec::new()),
+        };
+
+        info!(account_id = ?account_id.to_string(), network = ?network, "Filtering pending challenges");
+        let pending = state
+            .challenges
+            .iter()
+            .filter(|(_, challenge)| !challenge.done)
+            .filter_map(|(acc_type, challenge)| {
+                challenge.token.as_ref().map(|token| {
+                    Challenge::new(
+                        acc_type.to_owned(),
+                        challenge.account_name.to_owned(),
+                        token.to_owned(),
+                    )
+                })
+            })
+            .collect();
+
+        Ok(pending)
+    }
+
+    /// Get all pending challenges of `wallet_id` as a [Vec<Vec<String>>]
+    /// Returns pairs of [account_type, challenge_token]
+    #[instrument(skip_all, parent = &self.span)]
+    #[deprecated]
+    async fn get_challenges_legacy(
+        &mut self,
+        network: &Network,
+        account_id: &AccountId32,
     ) -> anyhow::Result<Vec<Vec<(AccountType, String)>>> {
         info!(account_id = ?account_id.to_string(), network = ?network, "Getting challenges");
         let state = match self.get_verification_state(network, account_id).await? {
@@ -142,7 +176,7 @@ impl RedisConnection {
                 challenge
                     .token
                     .as_ref()
-                    .map(|token| vec![(acc_type.clone(), token.clone())])
+                    .map(|token| vec![(acc_type.to_owned(), token.to_owned())])
             })
             .collect();
 
@@ -258,7 +292,8 @@ impl RedisConnection {
         let mut pipe = redis::pipe();
 
         for (acc_type, info) in state.challenges.iter() {
-            let acc_key = Account::from_type_and_value(acc_type.to_owned(), info.name.to_string());
+            let acc_key =
+                Account::from_type_and_value(acc_type.to_owned(), info.account_name.to_string());
             let key = format!("{acc_key}|{network}|{account_id}");
             pipe.cmd("SET")
                 .arg(&key)
@@ -333,6 +368,36 @@ impl RedisConnection {
     ) -> anyhow::Result<serde_json::Value> {
         let fields = self.extract_info(network, account_id).await?;
         let pending_challenges = self.get_challenges(network, account_id).await?;
+
+        Ok(serde_json::json!({
+            "type": "JsonResult",
+            "payload": {
+                "type": "ok",
+                "message": {
+                    "AccountState": {
+                        "account": account_id.to_string(),
+                        "network": network,
+                        "hashed_info": hash,
+                        "verification_state": {
+                            "fields": fields
+                        },
+                        "pending_challenges": pending_challenges
+                    }
+                }
+            }
+        }))
+    }
+
+    #[instrument(skip_all, parent = &self.span)]
+    #[deprecated]
+    pub async fn build_account_state_message_legacy(
+        &mut self,
+        network: &Network,
+        account_id: &AccountId32,
+        hash: Option<String>, // optional for state updates
+    ) -> anyhow::Result<serde_json::Value> {
+        let fields = self.extract_info(network, account_id).await?;
+        let pending_challenges = self.get_challenges_legacy(network, account_id).await?;
 
         Ok(serde_json::json!({
             "type": "JsonResult",
@@ -436,6 +501,23 @@ impl RedisConnection {
 
 pub struct RedisManager {
     addr: url::Url,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct Challenge {
+    account_type: AccountType,
+    account_name: String,
+    challenge: String,
+}
+
+impl Challenge {
+    fn new(account_type: AccountType, account_name: String, challenge: String) -> Self {
+        Self {
+            account_type,
+            account_name,
+            challenge,
+        }
+    }
 }
 
 #[async_trait]

@@ -134,7 +134,7 @@ redirect_url = "http://your-domain.com/oauth/callback/github"
   - Runs on `host:port` from `[http]` section.
 - **WebSocket**:
   - Runs on `host:port` from `[websocket]` section.
-  - Accepts JSON messages of type `SubscribeAccountState` (to watch an account's fields) or `VerifyIdentity` (to mark a challenge done).
+  - Accepts JSON messages of type `SubscribeAccountState` (to watch an account's fields), `VerifyPGPKey` (to verify a PGP key), `SearchRegistration` (to search for registration)
   - On changes, pushes updated state back to any subscribed clients.
 - **Email**:
   - If any `fields` contains `"email"`, w3registrar spawns one IMAP loop that watches a single mailbox.  
@@ -155,7 +155,7 @@ Once all fields for a network are done, w3registrar calls `provide_judgement` wi
 **Subscribe** to an account:
 ```jsonc
 {
-  "version": "1.0",
+  "version": "1.1",
   "type": "SubscribeAccountState",
   "payload": {
     "network": "rococo",
@@ -167,7 +167,7 @@ Once all fields for a network are done, w3registrar calls `provide_judgement` wi
 **Mark Identity Verified** for a challenge token:
 ```jsonc
 {
-  "version": "1.0",
+  "version": "1.1",
   "type": "VerifyIdentity",
   "payload": {
     "network": "rococo",
@@ -181,7 +181,7 @@ Once all fields for a network are done, w3registrar calls `provide_judgement` wi
 **Search** for an indexed registration:
 ```jsonc
 {
-  "version": "1.0",
+  "version": "1.1",
   "type": "SearchRegistration",
   "payload": {
     "outputs": ["WalletID", "Timeline", "Discord", "Github", "Web", "Email", "Network", "Display"], // can be left empty
@@ -201,6 +201,14 @@ Once all fields for a network are done, w3registrar calls `provide_judgement` wi
 You can test with [`websocat`](https://github.com/vi/websocat) or a custom client.
 
 ---
+
+### Returned Objets
+#### SearchRegistration
+TODO
+#### SubscribeAccountState
+TODO
+#### VerifyPGPKey
+TODO
 
 ### Companion Frontend: w3registrar-www
 
