@@ -33,7 +33,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sp_core::blake2_256;
-use sp_core::Encode;
 use std::fmt;
 use std::fmt::Display;
 use std::str::FromStr;
@@ -932,106 +931,15 @@ impl SocketListener {
             .await
     }
 
-    #[instrument(skip_all, parent = &self.span, name = "subscription_request")]
-    #[deprecated]
-    pub async fn handle_subscription_request_legacy(
-        &mut self,
-        request: IncomingSubscribeRequest,
-        subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<serde_json::Value> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
-
-        if !cfg.registrar.is_network_supported(&request.network) {
-            return Ok(serde_json::json!({
-                "type": "error",
-                "message": format!("Network {} not supported", request.network)
-            }));
-        }
-
-        let network_cfg = cfg
-            .registrar
-            .get_network(&request.network)
-            .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
-
-        *subscriber = Some(request.account.clone());
-        let client = NodeClient::from_url(&network_cfg.endpoint).await?;
-        let registration = node::get_registration(&client, &request.account).await?;
-
-        let mut conn = RedisConnection::get_connection().await?;
-
-        // 1) attempt to load existing verification state, if any
-        let existing_verification = conn
-            .get_verification_state(&request.network, &request.account)
-            .await?;
-
-        // 2) if none found, create a fresh AccountVerification
-        let mut verification = existing_verification
-            .unwrap_or_else(|| AccountVerification::new(request.network.to_string()));
-
-        // get the accounts from the chain's identity info
-        let accounts = filter_accounts(
-            &registration.info,
-            &request.account,
-            network_cfg.registrar_index,
-            &request.network,
-        )
-        .await?;
-
-        // 3) for each discovered account, only create a token if we do not
-        //    already have one stored. Otherwise, reuse the old token/challenge.
-        for (account, is_done) in &accounts {
-            let (name, acc_type) = (account.inner(), account.account_type());
-
-            // only add a new challenge if not already present.
-            // if *is_done or it's a display_name, we set `token=None` so it's considered done.
-            if !verification.challenges.contains_key(&acc_type) {
-                let token = account.generate_token(*is_done).await;
-                verification.add_challenge(&acc_type, name.clone(), token);
-            }
-        }
-
-        // save new state
-        conn.init_verification_state(&request.network, &request.account, &verification, &accounts)
-            .await?;
-
-        // get hash and build state message
-        let hash = self.hash_identity_info(&registration.info);
-
-        // return state in json
-        conn.build_account_state_message_legacy(&request.network, &request.account, Some(hash))
-            .await
-    }
 
     /// Generates a hex-encoded blake2 hash of the identity info with 0x prefix
     fn hash_identity_info(&self, info: &IdentityInfo) -> String {
-        let encoded_info = info.encode();
-        let hash = blake2_256(&encoded_info);
+        // Hash the debug representation for consistency
+        let info_bytes = format!("{:?}", info).into_bytes();
+        let hash = blake2_256(&info_bytes);
         format!("0x{}", hex::encode(hash))
     }
 
-    #[instrument(skip_all, parent = &self.span)]
-    #[deprecated]
-    async fn process_v1_legacy(
-        &mut self,
-        message: VersionedMessage,
-        subscriber: &mut Option<AccountId32>,
-    ) -> anyhow::Result<serde_json::Value> {
-        match message.payload {
-            WebSocketMessage::SubscribeAccountState(incoming) => {
-                self.handle_subscription_request_legacy(incoming, subscriber)
-                    .await
-            }
-            WebSocketMessage::VerifyPGPKey(incoming) => {
-                self.handle_pgp_verification_request(incoming, subscriber)
-                    .await
-            }
-            WebSocketMessage::SearchRegistration(incoming) => {
-                self.handle_search_request(incoming).await
-            }
-        }
-    }
 
     #[instrument(skip_all, parent = &self.span)]
     async fn process_v1_1(
@@ -1088,7 +996,7 @@ impl SocketListener {
         );
 
         match versioned_msg.version.as_str() {
-            "1.0" => match self.process_v1_legacy(versioned_msg, subscriber).await {
+            "1.0" => match self.process_v1_1(versioned_msg, subscriber).await {
                 Ok(response) => Ok(response),
                 Err(e) => Ok(json!({
                     "type": "error",
@@ -2305,7 +2213,6 @@ mod test {
 
     #[allow(unused_imports)]
     use super::*;
-    use crate::postgres::Query;
 
     #[test]
     fn generic_search() {
