@@ -1,12 +1,12 @@
 mod adapter;
 mod api;
 mod config;
+mod indexer;
 mod node;
 mod postgres;
+mod redis;
 mod runner;
 mod token;
-mod redis;
-mod indexer;
 
 use anyhow::{Context as _, Result};
 use api::{spawn_http_serv, spawn_identity_indexer};
@@ -18,8 +18,8 @@ use tracing_subscriber::EnvFilter;
 use crate::{
     adapter::{dns::watch_dns, mail::watch_mailserver, matrix},
     api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv},
-    redis::RedisConnection,
     config::{Config, GLOBAL_CONFIG},
+    redis::RedisConnection,
 };
 
 #[instrument(skip_all)]

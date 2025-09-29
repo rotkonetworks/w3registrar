@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use crate::postgres::SearchSpace;
 // NOTE: Logging Hygiene
 // 1) Log only base operations (things that are not done by ur own code) for example
 // if foo calls bar, and both are written by you, log what happen in bar but not the returned
@@ -607,6 +608,15 @@ impl Filter {
             time,
         }
     }
+
+    pub(crate) fn generic_search_fields(&self) -> Option<(String, bool)> {
+        for field in self.fields.iter() {
+            if let SearchInfo::Generic(value) = field.field.to_owned() {
+                return Some((value, field.strict));
+            }
+        }
+        None
+    }
 }
 
 impl IncomingSearchRequest {
@@ -623,8 +633,13 @@ impl IncomingSearchRequest {
             let mut registration_query = RegistrationQuery::default();
             let displayed = RegistrationDisplayed::from(&self);
             let condition = RegistrationCondition::from(&self);
+            // search space, Option<SearchSpace>
+            let space = SearchSpace::construct_space(&self);
 
-            registration_query = registration_query.selected(displayed).condition(condition);
+            registration_query = registration_query
+                .selected(displayed)
+                .condition(condition)
+                .space(space);
 
             let mut registrations = registration_query.exec().await?;
 
@@ -640,6 +655,7 @@ impl IncomingSearchRequest {
             let mut registration_query = RegistrationQuery::default();
             let mut displayed = RegistrationDisplayed::default();
             let mut condition = RegistrationCondition::default();
+            let space = SearchSpace::construct_space(&self);
 
             for filter in self.filters.fields.iter() {
                 condition = condition.filter(filter);
@@ -659,7 +675,10 @@ impl IncomingSearchRequest {
                 displayed = displayed.result_size(result_size);
             }
 
-            registration_query = registration_query.selected(displayed).condition(condition);
+            registration_query = registration_query
+                .selected(displayed)
+                .condition(condition)
+                .space(space);
 
             registration_query.exec().await
         }
@@ -2280,4 +2299,79 @@ mod unit_test {
 #[instrument(name = "identity_indexer")]
 pub async fn spawn_identity_indexer() -> anyhow::Result<()> {
     Indexer::new().await?.index().await
+}
+
+mod test {
+
+    #[allow(unused_imports)]
+    use super::*;
+    use crate::postgres::Query;
+
+    #[test]
+    fn generic_search() {
+        let request = IncomingSearchRequest::new(
+            Some(Network::Paseo),
+            vec![DisplayedInfo::Github],
+            Filter::new(
+                vec![
+                    FieldsFilter {
+                        strict: true,
+                        field: SearchInfo::Twitter("X".to_string()),
+                    },
+                    FieldsFilter {
+                        strict: true,
+                        field: SearchInfo::Generic("Y".to_string()),
+                    },
+                ],
+                Some(10),
+                None,
+            ),
+        );
+        let query: RegistrationQuery = (&request).into();
+        assert_eq!(
+            query.statement(),
+            "SELECT github FROM (SELECT similarity($1, search_text) AS sim, * FROM registration) WHERE twitter = $2 AND network = $3 AND sim > 0 ORDER BY sim ASC LIMIT 10".to_string()
+        );
+        assert_eq!(query.params(), vec!["Y", "X", "paseo",]);
+
+        let request = IncomingSearchRequest::new(
+            None,
+            vec![DisplayedInfo::Github],
+            Filter::new(
+                vec![FieldsFilter {
+                    strict: false,
+                    field: SearchInfo::Generic("X".to_string()),
+                }],
+                Some(10),
+                None,
+            ),
+        );
+        let query: RegistrationQuery = (&request).into();
+
+        assert_eq!(
+            query.statement(),
+            "SELECT github FROM (SELECT similarity($1, search_text) AS sim, * FROM registration) WHERE sim > 0 ORDER BY sim ASC LIMIT 10".to_string()
+        );
+        assert_eq!(query.params(), vec!["X"]);
+
+        let request = IncomingSearchRequest::new(
+            None,
+            vec![DisplayedInfo::Github],
+            Filter::new(
+                vec![FieldsFilter {
+                    strict: false,
+                    field: SearchInfo::Matrix("X".to_string()),
+                }],
+                Some(10),
+                None,
+            ),
+        );
+
+        let query: RegistrationQuery = (&request).into();
+        assert_eq!(
+            query.statement(),
+            "SELECT github FROM registration WHERE matrix ILIKE $1 LIMIT 10".to_string()
+        );
+        assert_eq!(query.params(), vec!["%X%"]);
+    }
 }
