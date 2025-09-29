@@ -8,12 +8,12 @@ use crate::config::GLOBAL_CONFIG;
 
 use anyhow::{anyhow, Result};
 use sp_core::blake2_256;
-use sp_core::Encode;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
-use subxt::ext::sp_core::sr25519::Pair as Sr25519Pair;
-use subxt::ext::sp_core::Pair;
+use subxt_signer::sr25519::Keypair;
+use subxt_signer::SecretUri;
+use subxt::tx::Signer;
 use subxt::utils::AccountId32;
 use subxt::SubstrateConfig;
 use tracing::{error, info, warn};
@@ -30,8 +30,8 @@ use substrate::runtime_types::people_paseo_runtime::RuntimeCall;
 pub use substrate::*;
 pub type Client = subxt::OnlineClient<SubstrateConfig>;
 pub type Block = subxt::blocks::Block<SubstrateConfig, Client>;
-pub type BlockHash = <SubstrateConfig as subxt::Config>::Hash;
-type PairSigner = subxt::tx::PairSigner<SubstrateConfig, Sr25519Pair>;
+pub type BlockHash = subxt::config::substrate::H256;
+type PairSigner = Keypair;
 
 // consts
 const MAX_RESUBMIT_ATTEMPTS: u32 = 3;
@@ -44,7 +44,7 @@ pub async fn get_registration(
     who: &AccountId32,
 ) -> Result<Registration<u128, IdentityInfo>> {
     let storage = client.storage().at_latest().await?;
-    let identity = super::node::storage().identity().identity_of(who);
+    let identity = super::node::storage().identity().identity_of(who.clone());
     match storage.fetch(&identity).await? {
         None => Err(anyhow!("No registration found for {}", who)),
         Some(reg) => Ok(reg),
@@ -108,7 +108,11 @@ pub async fn provide_judgement<'a>(
     let (client, network_cfg) = setup_network(network).await?;
 
     let registration = get_registration(&client, who).await?;
-    let hash = hex::encode(blake2_256(&registration.info.encode()));
+    // Use subxt's built-in encoding through metadata
+    // Encode the registration info directly
+    // Simply convert to bytes for hashing
+    let info_bytes = format!("{:?}", registration.info).into_bytes();
+    let hash = hex::encode(blake2_256(&info_bytes));
 
     info!(
         hash = %hash,
@@ -135,7 +139,7 @@ pub async fn provide_judgement<'a>(
     info!("Signer loaded");
     let mut resubmit_count = 0;
     let mut current_fee_multiplier = 1.0;
-    let mut current_nonce = client.tx().account_nonce(signer.account_id()).await?;
+    let mut current_nonce = client.tx().account_nonce(&<Keypair as Signer<SubstrateConfig>>::account_id(&signer)).await?;
     info!("Nonce fetched");
 
     'tx_loop: while resubmit_count < MAX_RESUBMIT_ATTEMPTS {
@@ -145,7 +149,7 @@ pub async fn provide_judgement<'a>(
 
         // build transaction params with current nonce
         let tx_params = subxt::config::substrate::SubstrateExtrinsicParamsBuilder::new()
-            .mortal(latest_block.header(), 10)
+            .mortal(10)
             .nonce(current_nonce)
             .tip((100_000_f64 * current_fee_multiplier) as u128)
             .build();
@@ -199,7 +203,7 @@ pub async fn provide_judgement<'a>(
                 subxt::tx::TxStatus::Error { message } => {
                     if message.contains("nonce") {
                         warn!("Nonce error detected, fetching latest nonce");
-                        current_nonce = fetch_latest_nonce(&client, signer.account_id()).await?;
+                        current_nonce = fetch_latest_nonce(&client, &<Keypair as Signer<SubstrateConfig>>::account_id(&signer)).await?;
                         resubmit_count += 1;
                         tokio::time::sleep(exponential_backoff(resubmit_count)).await;
                         continue 'tx_loop;
@@ -225,8 +229,8 @@ pub async fn provide_judgement<'a>(
                 subxt::tx::TxStatus::Validated => {
                     info!("Transaction validated and added to the pool");
                 }
-                subxt::tx::TxStatus::Broadcasted { num_peers } => {
-                    info!("Transaction broadcasted to {} peers", num_peers);
+                subxt::tx::TxStatus::Broadcasted => {
+                    info!("Transaction broadcasted");
                 }
                 subxt::tx::TxStatus::InBestBlock(in_block) => {
                     info!(
@@ -251,11 +255,11 @@ fn load_signer(network_cfg: &crate::config::RegistrarConfig) -> Result<PairSigne
     let seed = std::fs::read_to_string(&network_cfg.keystore_path)
         .map_err(|e| anyhow!("Failed to read keystore: {}", e))?;
 
-    let acc = Sr25519Pair::from_string(seed.trim(), None)?;
-    let signer = PairSigner::new(acc);
+    let uri = SecretUri::from_str(seed.trim())?;
+    let signer = Keypair::from_uri(&uri)?;
 
     info!(
-        account_id = &signer.account_id().to_string(),
+        account_id = &<Keypair as Signer<SubstrateConfig>>::account_id(&signer).to_string(),
         "Signer account"
     );
     Ok(signer)
