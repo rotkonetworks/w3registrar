@@ -93,14 +93,14 @@ $$;";
             BEGIN
                 NEW.search_text := CONCAT_WS(
                     ' ',
-                    NEW.wallet_id,
-                    NEW.display_name,
-                    NEW.network,
-                    NEW.discord,
-                    NEW.twitter,
-                    NEW.matrix,
-                    NEW.email,
-                    NEW.pgp_fingerprint
+                    COALESCE(NEW.wallet_id, ''),
+                    COALESCE(NEW.display_name, ''),
+                    COALESCE(NEW.network, ''),
+                    COALESCE(NEW.discord, ''),
+                    COALESCE(NEW.twitter, ''),
+                    COALESCE(NEW.matrix, ''),
+                    COALESCE(NEW.email, ''),
+                    COALESCE(NEW.pgp_fingerprint, '')
                 );
                 RETURN NEW;
             END;
@@ -135,7 +135,7 @@ $$;";
             legal           TEXT,
             web             TEXT,
             pgp_fingerprint VARCHAR(40),
-            search_text      TEXT,
+            search_text     TEXT,
             PRIMARY KEY     (wallet_id, network)
         )";
 
@@ -176,13 +176,28 @@ $$;";
 
         info!("Table `indexer_state` created");
 
-        let update_search_text = "UPDATE registration 
-            SET search_text = CONCAT_WS(' ', wallet_id, display_name, network, discord,
-            twitter, matrix, email, pgp_fingerprint);";
+        let update_search_text = "UPDATE registration
+            SET search_text = CONCAT_WS(' ',
+                COALESCE(wallet_id, ''),
+                COALESCE(display_name, ''),
+                COALESCE(network, ''),
+                COALESCE(discord, ''),
+                COALESCE(twitter, ''),
+                COALESCE(matrix, ''),
+                COALESCE(email, ''),
+                COALESCE(pgp_fingerprint, ''));";
         info!("QUERY");
         info!("{update_search_text}");
 
-        self.client.simple_query(create_indexer_state).await?;
+        self.client.simple_query(update_search_text).await?;
+
+        // Create GIN index for efficient trigram similarity search
+        let create_gin_index = "CREATE INDEX IF NOT EXISTS idx_search_text_trgm
+            ON registration USING gin (search_text gin_trgm_ops);";
+        info!("Creating GIN index for search_text");
+        info!("{create_gin_index}");
+
+        self.client.simple_query(create_gin_index).await?;
 
         Ok(())
     }
@@ -1258,7 +1273,7 @@ impl Query for SearchSpace {
     }
 
     fn params(&self) -> Vec<Self::PARAM> {
-        todo!()
+        vec![self.query.clone()]
     }
 }
 
