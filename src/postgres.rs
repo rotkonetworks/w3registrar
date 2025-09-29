@@ -93,9 +93,9 @@ $$;";
             BEGIN
                 NEW.search_text := CONCAT_WS(
                     ' ',
-                    COALESCE(NEW.wallet_id, ''),
+                    NEW.wallet_id,
                     COALESCE(NEW.display_name, ''),
-                    COALESCE(NEW.network, ''),
+                    NEW.network,
                     COALESCE(NEW.discord, ''),
                     COALESCE(NEW.twitter, ''),
                     COALESCE(NEW.matrix, ''),
@@ -178,9 +178,9 @@ $$;";
 
         let update_search_text = "UPDATE registration
             SET search_text = CONCAT_WS(' ',
-                COALESCE(wallet_id, ''),
+                wallet_id,
                 COALESCE(display_name, ''),
-                COALESCE(network, ''),
+                network,
                 COALESCE(discord, ''),
                 COALESCE(twitter, ''),
                 COALESCE(matrix, ''),
