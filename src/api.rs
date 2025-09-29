@@ -931,7 +931,6 @@ impl SocketListener {
             .await
     }
 
-
     /// Generates a hex-encoded blake2 hash of the identity info with 0x prefix
     fn hash_identity_info(&self, info: &IdentityInfo) -> String {
         // Hash the debug representation for consistency
@@ -939,7 +938,6 @@ impl SocketListener {
         let hash = blake2_256(&info_bytes);
         format!("0x{}", hex::encode(hash))
     }
-
 
     #[instrument(skip_all, parent = &self.span)]
     async fn process_v1_1(
@@ -2213,6 +2211,7 @@ mod test {
 
     #[allow(unused_imports)]
     use super::*;
+    use crate::postgres::Query;
 
     #[test]
     fn generic_search() {
@@ -2237,7 +2236,7 @@ mod test {
         let query: RegistrationQuery = (&request).into();
         assert_eq!(
             query.statement(),
-            "SELECT github FROM (SELECT similarity($1, search_text) AS sim, * FROM registration) WHERE twitter = $2 AND network = $3 AND sim > 0 ORDER BY sim ASC LIMIT 10".to_string()
+            "SELECT github FROM (SELECT similarity($1, search_text) AS sim, * FROM registration) WHERE twitter = $2 AND network = $3 AND sim > 0 ORDER BY sim DESC LIMIT 10".to_string()
         );
         assert_eq!(query.params(), vec!["Y", "X", "paseo",]);
 
@@ -2257,7 +2256,7 @@ mod test {
 
         assert_eq!(
             query.statement(),
-            "SELECT github FROM (SELECT similarity($1, search_text) AS sim, * FROM registration) WHERE sim > 0 ORDER BY sim ASC LIMIT 10".to_string()
+            "SELECT github FROM (SELECT similarity($1, search_text) AS sim, * FROM registration) WHERE sim > 0 ORDER BY sim DESC LIMIT 10".to_string()
         );
         assert_eq!(query.params(), vec!["X"]);
 
