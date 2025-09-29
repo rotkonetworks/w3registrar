@@ -8,7 +8,6 @@ use once_cell::sync::OnceCell;
 use std::str::FromStr;
 use std::sync::Arc;
 use subxt::utils::AccountId32;
-use tokio::time::Duration;
 use tokio_stream::StreamExt;
 use tracing::{error, info, instrument};
 use trust_dns_resolver::{
@@ -185,20 +184,6 @@ pub async fn watch_dns() -> anyhow::Result<()> {
 
 }
 
-#[instrument(skip_all)]
-async fn process_challenges(redis_conn: &mut RedisConnection) -> Result<()> {
-    let challenge_keys = redis_conn.search("web|*").await?;
-
-    for challenge_key in &challenge_keys {
-        if let Err(e) = process_single_challenge(challenge_key, redis_conn).await {
-            error!(challenge = %challenge_key, error = %e, "Challenge processing failed");
-        }
-
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    Ok(())
-}
 
 async fn process_single_challenge(
     challenge_key: &str,

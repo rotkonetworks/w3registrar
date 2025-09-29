@@ -31,15 +31,6 @@ impl RedisConnection {
         Self::get_connection().await
     }
 
-    /// Clears all caches
-    #[instrument(skip_all, parent = &self.span)]
-    pub async fn flushall(&mut self) -> anyhow::Result<()> {
-        redis::cmd("FLUSHALL")
-            .arg("ASYNC")
-            .exec_async(&mut self.manager.0)
-            .await?;
-        Ok(())
-    }
 
     // TODO: replace all occurance of .get_connection() to .default()
     #[instrument(skip_all, parent = None)]
@@ -154,34 +145,6 @@ impl RedisConnection {
 
     /// Get all pending challenges of `wallet_id` as a [Vec<Vec<String>>]
     /// Returns pairs of [account_type, challenge_token]
-    #[instrument(skip_all, parent = &self.span)]
-    #[deprecated]
-    async fn get_challenges_legacy(
-        &mut self,
-        network: &Network,
-        account_id: &AccountId32,
-    ) -> anyhow::Result<Vec<Vec<(AccountType, String)>>> {
-        info!(account_id = ?account_id.to_string(), network = ?network, "Getting challenges");
-        let state = match self.get_verification_state(network, account_id).await? {
-            Some(s) => s,
-            None => return Ok(Vec::new()),
-        };
-
-        info!(account_id = ?account_id.to_string(), network = ?network, "Filtering pending challenges");
-        let pending = state
-            .challenges
-            .iter()
-            .filter(|(_, challenge)| !challenge.done)
-            .filter_map(|(acc_type, challenge)| {
-                challenge
-                    .token
-                    .as_ref()
-                    .map(|token| vec![(acc_type.to_owned(), token.to_owned())])
-            })
-            .collect();
-
-        Ok(pending)
-    }
 
     /// constructing [VerificationFields] object from the registration done of all the accounts
     /// under `wallet_id`
@@ -388,35 +351,6 @@ impl RedisConnection {
         }))
     }
 
-    #[instrument(skip_all, parent = &self.span)]
-    #[deprecated]
-    pub async fn build_account_state_message_legacy(
-        &mut self,
-        network: &Network,
-        account_id: &AccountId32,
-        hash: Option<String>, // optional for state updates
-    ) -> anyhow::Result<serde_json::Value> {
-        let fields = self.extract_info(network, account_id).await?;
-        let pending_challenges = self.get_challenges_legacy(network, account_id).await?;
-
-        Ok(serde_json::json!({
-            "type": "JsonResult",
-            "payload": {
-                "type": "ok",
-                "message": {
-                    "AccountState": {
-                        "account": account_id.to_string(),
-                        "network": network,
-                        "hashed_info": hash,
-                        "verification_state": {
-                            "fields": fields
-                        },
-                        "pending_challenges": pending_challenges
-                    }
-                }
-            }
-        }))
-    }
 
     #[instrument(skip_all)]
     pub async fn process_state_change(

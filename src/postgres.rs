@@ -86,6 +86,38 @@ $$;";
         Ok(())
     }
 
+    async fn auto_update_tables(&mut self) -> anyhow::Result<()> {
+        let func = "
+            CREATE OR REPLACE FUNCTION registration_update_search_text()
+            RETURNS trigger AS $$
+            BEGIN
+                NEW.search_text := CONCAT_WS(
+                    ' ',
+                    COALESCE(NEW.wallet_id, ''),
+                    COALESCE(NEW.display_name, ''),
+                    COALESCE(NEW.network, ''),
+                    COALESCE(NEW.discord, ''),
+                    COALESCE(NEW.twitter, ''),
+                    COALESCE(NEW.matrix, ''),
+                    COALESCE(NEW.email, ''),
+                    COALESCE(NEW.pgp_fingerprint, '')
+                );
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;";
+        self.client.simple_query(func).await?;
+
+        let auto_update = "
+            CREATE OR REPLACE TRIGGER trg_update_search_text
+            BEFORE INSERT OR UPDATE
+            ON registration
+            FOR EACH ROW
+            EXECUTE FUNCTION registration_update_search_text();";
+        self.client.simple_query(auto_update).await?;
+
+        Ok(())
+    }
+
     /// Creates all necessary `tables` to handle long term registration process
     async fn init_tables(&mut self) -> anyhow::Result<()> {
         // TODO: parametarize table name?
@@ -103,6 +135,7 @@ $$;";
             legal           TEXT,
             web             TEXT,
             pgp_fingerprint VARCHAR(40),
+            search_text     TEXT,
             PRIMARY KEY     (wallet_id, network)
         )";
 
@@ -143,6 +176,29 @@ $$;";
 
         info!("Table `indexer_state` created");
 
+        let update_search_text = "UPDATE registration
+            SET search_text = CONCAT_WS(' ',
+                COALESCE(wallet_id, ''),
+                COALESCE(display_name, ''),
+                COALESCE(network, ''),
+                COALESCE(discord, ''),
+                COALESCE(twitter, ''),
+                COALESCE(matrix, ''),
+                COALESCE(email, ''),
+                COALESCE(pgp_fingerprint, ''));";
+        info!("QUERY");
+        info!("{update_search_text}");
+
+        self.client.simple_query(update_search_text).await?;
+
+        // Create GIN index for efficient trigram similarity search
+        let create_gin_index = "CREATE INDEX IF NOT EXISTS idx_search_text_trgm
+            ON registration USING gin (search_text gin_trgm_ops);";
+        info!("Creating GIN index for search_text");
+        info!("{create_gin_index}");
+
+        self.client.simple_query(create_gin_index).await?;
+
         Ok(())
     }
 
@@ -153,6 +209,8 @@ $$;";
         self.init_types().await?;
         info!("Initiating postgess tables");
         self.init_tables().await?;
+        info!("Initiating auto update");
+        self.auto_update_tables().await?;
         Ok(())
     }
 
@@ -751,26 +809,30 @@ impl Query for TimelineQuery {
     type PARAM = String;
 
     fn params(&self) -> Vec<String> {
-        let mut thing = vec![];
+        let mut params = vec![];
         match &self.condition {
-            Some(v) => {
-                if let Some(wallet_id) = &v.wallet_id {
-                    thing.push(wallet_id.to_string());
+            Some(condition) => {
+                if let Some(wallet_id) = &condition.wallet_id {
+                    params.push(wallet_id.to_string());
                 }
 
-                if let Some(date) = &v.date {
+                if let Some(date) = &condition.date {
                     if let Some(lt) = date.lt {
-                        thing.push(format!("{}", lt));
+                        params.push(format!("{}", lt));
                     }
 
                     if let Some(gt) = date.gt {
-                        thing.push(format!("{}", gt));
+                        params.push(format!("{}", gt));
                     }
+                }
+
+                if let Some(network) = &condition.network {
+                    params.push(format!("{}", network));
                 }
             }
             None => {}
         }
-        thing
+        params
     }
 
     fn statement(&self) -> String {
@@ -815,7 +877,7 @@ impl Query for TimelineQuery {
                 }
 
                 if let Some(network) = &v.network {
-                    statement.push_str(&format!("network = '{}' ", network));
+                    statement.push_str(&format!("network = ${} ", index));
                     index += 1;
                 }
 
@@ -898,11 +960,13 @@ impl TimelineQuery {
     }
 }
 
+#[derive(Debug)]
 pub struct RegistrationQuery {
     pub displayed: RegistrationDisplayed,
     pub condition: Option<RegistrationCondition>,
     pub table_name: String,
     pub limit: Option<Limit>,
+    pub space: Option<SearchSpace>,
 }
 
 impl Default for RegistrationQuery {
@@ -911,6 +975,7 @@ impl Default for RegistrationQuery {
             displayed: RegistrationDisplayed::default(),
             condition: None,
             limit: None,
+            space: None,
             table_name: String::from("registration"),
         }
     }
@@ -921,8 +986,10 @@ impl Query for RegistrationQuery {
 
     type PARAM = String;
 
+    // TODO: this part need refinement
     fn statement(&self) -> Self::STATEMENT {
         let mut statement = String::from("SELECT ");
+        let mut index = 1;
 
         if self.displayed.len() == 0 {
             statement.push_str("*");
@@ -937,43 +1004,63 @@ impl Query for RegistrationQuery {
             statement = statement.trim_end_matches(|c| c == ',').to_owned();
         }
 
-        statement.push_str(" FROM registration ");
-        let mut index_pointer = 1;
+        statement.push_str(" FROM ");
+        if let Some(space) = &self.space {
+            statement.push_str(space.statement().as_str());
+            index += 1
+        } else {
+            statement.push_str("registration");
+        }
 
         match &self.condition {
             Some(v) => {
-                if !v.filters.is_empty() || v.network.is_some() {
-                    statement.push_str("WHERE ");
+                if !v.filters.is_empty() || v.network.is_some() || self.space.is_some() {
+                    statement.push_str(" WHERE ");
                 }
 
-                for (index, filter) in v.filters.iter().enumerate() {
-                    if filter.strict {
-                        statement.push_str(&format!(
-                            "{} = ${}",
-                            filter.field.table_column_name(),
-                            index + 1
-                        ));
-                    } else {
-                        statement.push_str(&format!(
-                            "{} ILIKE ${}", // Postgres uses ILIKE for case-insensitive matching,
-                            //  LIKE is case-sensitive.
-                            filter.field.table_column_name(),
-                            index + 1
-                        ));
+                for filter in v.filters.iter() {
+                    if let Some(table_name) = filter.field.table_column_name() {
+                        if filter.strict {
+                            statement.push_str(&format!("{} = ${}", table_name, index));
+                        } else {
+                            statement.push_str(&format!(
+                                "{} ILIKE ${}", // Postgres uses ILIKE for case-insensitive matching,
+                                //  LIKE is case-sensitive.
+                                table_name,
+                                index
+                            ));
+                        }
+                        index += 1;
+                        statement.push_str(" AND ");
                     }
-                    index_pointer += 1;
-                    statement.push_str(" AND ");
                 }
 
                 if let Some(network) = &v.network {
-                    statement.push_str(&format!("network = '{}'", network));
+                    statement.push_str(&format!("network = ${} AND ", index));
+                    index += 1;
+                }
+
+                if self.space.is_some() {
+                    statement.push_str(&format!("sim > 0 AND"));
                 }
 
                 statement = statement
-                    .trim_end_matches(|c| c == ' ' || c == ',' || c == 'A' || c == 'N' || c == 'D')
+                    .trim_end_matches(|c| {
+                        c == ' '
+                            || c == ','
+                            || c == 'A'
+                            || c == 'N'
+                            || c == 'D'
+                            || c == 'O'
+                            || c == 'R'
+                    })
                     .to_owned();
             }
             None => {}
+        }
+
+        if let Some(space) = &self.space {
+            statement.push_str(&format!(" ORDER BY sim DESC"));
         }
 
         if let Some(result_size) = self.displayed.result_size {
@@ -984,16 +1071,22 @@ impl Query for RegistrationQuery {
 
     fn params(&self) -> Vec<Self::PARAM> {
         let mut params = vec![];
+        // Make sure to pass the generic search param first
+        if let Some(space) = &self.space {
+            params.push(space.query.to_owned());
+        }
         if let Some(condition) = &self.condition {
+            // Then the rest of the params
             for filter in condition.filters.iter() {
-                params.push(format!(
-                    "{}",
-                    if filter.strict {
-                        filter.field.inner() // exact match, e.g. display_name = 'Jow'
-                    } else {
-                        format!("%{}%", filter.field.inner()) // e.g. display_name ILIKE '%Jow%'
-                    }
-                ));
+                if filter.strict && !matches!(filter.field, SearchInfo::Generic(_)) {
+                    params.push(format!("{}", filter.field.inner())) // exact match, e.g. display_name = 'Jow'
+                } else if !filter.strict && !matches!(filter.field, SearchInfo::Generic(_)) {
+                    params.push(format!("%{}%", filter.field.inner())) // e.g. display_name ILIKE '%Jow%'
+                }
+            }
+
+            if let Some(network) = &condition.network {
+                params.push(format!("{}", network));
             }
         }
 
@@ -1019,6 +1112,11 @@ impl RegistrationQuery {
         self
     }
 
+    pub fn space(mut self, space: Option<SearchSpace>) -> Self {
+        self.space = space;
+        self
+    }
+
     pub fn limit(mut self, limit: Option<Limit>) -> Self {
         self.limit = limit;
         self
@@ -1027,6 +1125,51 @@ impl RegistrationQuery {
     pub fn table_name(mut self, dbname: String) -> Self {
         self.table_name = dbname;
         self
+    }
+}
+
+impl Into<RegistrationQuery> for &IncomingSearchRequest {
+    fn into(self) -> RegistrationQuery {
+        if self.outputs.contains(&DisplayedInfo::Timeline) {
+            let mut registration_query = RegistrationQuery::default();
+            let displayed = RegistrationDisplayed::from(self);
+            let condition = RegistrationCondition::from(self);
+            // search space, Option<SearchSpace>
+            let space = SearchSpace::construct_space(&self);
+
+            registration_query
+                .selected(displayed)
+                .condition(condition)
+                .space(space)
+        } else {
+            let mut registration_query = RegistrationQuery::default();
+            let mut displayed = RegistrationDisplayed::default();
+            let mut condition = RegistrationCondition::default();
+            let space = SearchSpace::construct_space(&self);
+
+            for filter in self.filters.fields.iter() {
+                condition = condition.filter(filter);
+            }
+
+            if let Some(network) = &self.network {
+                condition = condition.network(&network);
+            }
+
+            for output in &self.outputs {
+                if let Ok(output) = output.try_into() {
+                    displayed.push(output);
+                }
+            }
+
+            if let Some(result_size) = self.filters.result_size {
+                displayed = displayed.result_size(result_size);
+            }
+
+            registration_query
+                .selected(displayed)
+                .condition(condition)
+                .space(space)
+        }
     }
 }
 
@@ -1053,9 +1196,10 @@ impl TimelineQuery {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum Order {
     ASC,
+    #[default]
     DESC,
 }
 
@@ -1073,6 +1217,71 @@ pub struct Limit {
 impl Limit {
     pub fn new(size: usize) -> Self {
         Self { size }
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct SearchSpace {
+    query: String,
+    order: Order,
+    strict: bool,
+    table_name: String,
+}
+
+impl SearchSpace {
+    pub fn construct_space(input: &IncomingSearchRequest) -> Option<Self> {
+        // get generic search if any and add the order
+        input
+            .filters
+            .generic_search_fields()
+            .map(|(query, strict)| Self {
+                query,
+                strict,
+                table_name: String::from("registration"),
+                order: Order::default(),
+            })
+    }
+
+    fn query(mut self, query: String) -> Self {
+        self.query = query;
+        self
+    }
+
+    fn strict(mut self, strict: bool) -> Self {
+        self.strict = strict;
+        self
+    }
+
+    fn table_name(mut self, table_name: String) -> Self {
+        self.table_name = table_name;
+        self
+    }
+
+    fn order(mut self, order: Order) -> Self {
+        self.order = order;
+        self
+    }
+}
+
+impl Query for SearchSpace {
+    type STATEMENT = String;
+
+    type PARAM = String;
+
+    fn statement(&self) -> Self::STATEMENT {
+        format!("(SELECT similarity($1, search_text) AS sim, * FROM registration)")
+    }
+
+    fn params(&self) -> Vec<Self::PARAM> {
+        vec![self.query.clone()]
+    }
+}
+
+impl TryFrom<&IncomingSearchRequest> for SearchSpace {
+    type Error = ();
+
+    fn try_from(value: &IncomingSearchRequest) -> Result<Self, Self::Error> {
+        todo!()
     }
 }
 
@@ -1180,7 +1389,7 @@ impl TimelineDisplayed {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct RegistrationDisplayed {
     displayed: Vec<DisplayedRegistrationInfo>,
     result_size: Option<usize>,
@@ -1385,6 +1594,7 @@ impl DisplayedTimelineInfo {
     }
 }
 
+#[derive(Debug)]
 pub enum DisplayedRegistrationInfo {
     WalletID,
     Discord,
@@ -1539,21 +1749,23 @@ pub enum SearchInfo {
     Email(String),
     Github(String),
     PGPFingerprint([u8; 20]),
+    Generic(String),
 }
 
 impl SearchInfo {
-    pub fn table_column_name(&self) -> &'_ str {
+    pub fn table_column_name(&self) -> Option<&'_ str> {
         match self {
-            SearchInfo::AccountId32(_) => "wallet_id",
-            SearchInfo::Twitter(_) => "twitter",
-            SearchInfo::Discord(_) => "discord",
-            SearchInfo::Matrix(_) => "matrix",
-            SearchInfo::Display(_) => "display_name",
-            SearchInfo::Legal(_) => "legal",
-            SearchInfo::Web(_) => "web",
-            SearchInfo::Email(_) => "email",
-            SearchInfo::Github(_) => "github",
-            SearchInfo::PGPFingerprint(_) => "pgp_fingerprint",
+            SearchInfo::AccountId32(_) => Some("wallet_id"),
+            SearchInfo::Twitter(_) => Some("twitter"),
+            SearchInfo::Discord(_) => Some("discord"),
+            SearchInfo::Matrix(_) => Some("matrix"),
+            SearchInfo::Display(_) => Some("display_name"),
+            SearchInfo::Legal(_) => Some("legal"),
+            SearchInfo::Web(_) => Some("web"),
+            SearchInfo::Email(_) => Some("email"),
+            SearchInfo::Github(_) => Some("github"),
+            SearchInfo::PGPFingerprint(_) => Some("pgp_fingerprint"),
+            SearchInfo::Generic(_) => None,
         }
     }
 
@@ -1567,6 +1779,7 @@ impl SearchInfo {
             | SearchInfo::Legal(inner)
             | SearchInfo::Web(inner)
             | SearchInfo::Email(inner)
+            | SearchInfo::Generic(inner)
             | SearchInfo::Github(inner) => inner.to_owned(),
             SearchInfo::PGPFingerprint(inner) => hex::encode(inner),
         }
@@ -1689,7 +1902,7 @@ mod test {
 
         assert_eq!(
             reg_query.statement(),
-            "SELECT wallet_id, display_name FROM registration WHERE display LIKE $1 AND discord = $2 AND network = $3 LIMIT 2"
+            "SELECT wallet_id, display_name FROM registration WHERE display_name ILIKE $1 OR discord = $2 OR network = $3 LIMIT 2"
         );
         //  ------------------------------------------------------------------------------
         let network: Option<Network> = None;
@@ -1713,7 +1926,7 @@ mod test {
 
         assert_eq!(
             reg_query.statement(),
-            "SELECT wallet_id, display_name FROM registration WHERE display = $1 LIMIT 2"
+            "SELECT wallet_id, display_name FROM registration WHERE display_name = $1 LIMIT 2"
         );
         //  ------------------------------------------------------------------------------
         let outputs: Vec<DisplayedInfo> = vec![];
@@ -1728,7 +1941,7 @@ mod test {
 
         assert_eq!(
             reg_query.statement(),
-            "SELECT * FROM registration WHERE display = $1 LIMIT 2"
+            "SELECT * FROM registration WHERE display_name = $1 LIMIT 2"
         );
         //  ------------------------------------------------------------------------------
         let filters: Filter = Filter::default();
@@ -1762,11 +1975,11 @@ mod test {
             .condition(condition);
 
         assert_eq!(
-            "SELECT wallet_id, discord FROM registration WHERE email LIKE $1 AND network = $2",
+            "SELECT wallet_id, discord FROM registration WHERE email ILIKE $1 OR network = $2",
             query.statement()
         );
         assert_eq!(
-            vec!["thing@example.com".to_string(), "paseo".to_string(),],
+            vec!["%thing@example.com%".to_string(), "paseo".to_string(),],
             query.params()
         );
     }
@@ -1810,7 +2023,7 @@ mod test {
             .table_name(table_name);
 
         assert_eq!(
-            "DELETE * FROM registration WHERE wallet_id = $1 AND network = $2",
+            "DELETE FROM registration WHERE wallet_id = $1 AND network = $2",
             delete_query.statement()
         );
 
