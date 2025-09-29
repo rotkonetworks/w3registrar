@@ -191,6 +191,36 @@ $$;";
 
         self.client.simple_query(update_search_text).await?;
 
+        let enable_gin_index = "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
+        info!("Enabling extension pg_trgm");
+        info!("{enable_gin_index}");
+
+        self.client.simple_query(enable_gin_index).await?;
+
+        let enable_gin_index = "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
+        info!("Enabling extension pg_trgm");
+        info!("{enable_gin_index}");
+
+        self.client.simple_query(enable_gin_index).await?;
+
+        let enable_gin_index = "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
+        info!("Enabling extension pg_trgm");
+        info!("{enable_gin_index}");
+
+        self.client.simple_query(enable_gin_index).await?;
+
+        let enable_gin_index = "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
+        info!("Enabling extension pg_trgm");
+        info!("{enable_gin_index}");
+
+        self.client.simple_query(enable_gin_index).await?;
+
+        let enable_gin_index = "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
+        info!("Enabling extension pg_trgm");
+        info!("{enable_gin_index}");
+
+        self.client.simple_query(enable_gin_index).await?;
+
         // Create GIN index for efficient trigram similarity search
         let create_gin_index = "CREATE INDEX IF NOT EXISTS idx_search_text_trgm
             ON registration USING gin (search_text gin_trgm_ops);";
