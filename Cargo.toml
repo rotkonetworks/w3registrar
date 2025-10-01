@@ -36,7 +36,10 @@ strum = { version = "0.26", features = ["derive"] }
 imap = "2.4.1"
 native-tls = "0.2.12"
 mail-parser = "0.10"
+jmap-client = { version = "0.3.3", features = ["async"] }
 regex = "1.11.1"
+secstr = "0.5"
+zeroize = { version = "1.8", features = ["derive"] }
 # hickory tls unstable, locking to trust-dns
 trust-dns-resolver = { version = "=0.23.2", features = ["dns-over-rustls"] }
 axum = "0.8.3"
