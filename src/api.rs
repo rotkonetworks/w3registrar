@@ -52,6 +52,7 @@ use tungstenite::Error;
 
 use crate::{
     adapter::{
+        email::jmap::send_email_challenge,
         github::{Github, GithubRedirectStepTwoParams},
         pgp::PGPHelper,
         Adapter,
@@ -94,7 +95,11 @@ pub struct ChallengeInfo {
     pub account_name: String,
     pub done: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
+    pub token: Option<String>,  // For backward compatibility and non-email challenges
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inbound_token: Option<String>,  // Token shown via WebSocket (for manual email sending)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outbound_token: Option<String>, // Token sent via email (for email replies)
 }
 
 impl AccountVerification {
@@ -114,14 +119,50 @@ impl AccountVerification {
         name: String,
         token: Option<String>,
     ) {
-        self.challenges.insert(
-            account_type.to_owned(),
-            ChallengeInfo {
-                account_name: name,
-                done: token.is_none(), // for now if no token provided, challenge is done
-                token,
+        use crate::config::{EmailProtocol, EmailMode, GLOBAL_CONFIG};
+
+        let mut challenge_info = ChallengeInfo {
+            account_name: name,
+            done: token.is_none(),
+            token: token.clone(),
+            inbound_token: None,
+            outbound_token: None,
+        };
+
+        if !matches!(account_type, AccountType::Email) {
+            self.challenges.insert(account_type.to_owned(), challenge_info);
+            self.updated_at = Utc::now();
+            self.complete_all_challenges();
+            return;
+        }
+
+        let cfg = match GLOBAL_CONFIG.get() {
+            Some(c) => c,
+            None => {
+                self.challenges.insert(account_type.to_owned(), challenge_info);
+                self.updated_at = Utc::now();
+                self.complete_all_challenges();
+                return;
+            }
+        };
+
+        match (&cfg.adapter.email.protocol, &cfg.adapter.email.mode) {
+            (EmailProtocol::Jmap, EmailMode::Bidirectional) if token.is_some() => {
+                challenge_info.inbound_token = token.clone();
+                challenge_info.outbound_token = Some("pending".to_string());
+                challenge_info.token = None;
             },
-        );
+            (EmailProtocol::Jmap, EmailMode::Send) => {
+                challenge_info.outbound_token = token.clone();
+                challenge_info.token = None;
+            },
+            _ => {
+                challenge_info.inbound_token = token.clone();
+                challenge_info.token = None;
+            }
+        }
+
+        self.challenges.insert(account_type.to_owned(), challenge_info);
         self.updated_at = Utc::now();
         self.complete_all_challenges();
     }
@@ -923,6 +964,33 @@ impl SocketListener {
         conn.init_verification_state(&request.network, &request.account, &verification, &accounts)
             .await?;
 
+        // Send email challenges if JMAP is configured for sending (for new challenges only)
+        let cfg = GLOBAL_CONFIG.get().expect("GLOBAL_CONFIG is not initialized");
+        if matches!(cfg.adapter.email.protocol, crate::config::EmailProtocol::Jmap)
+            && matches!(cfg.adapter.email.mode, crate::config::EmailMode::Send | crate::config::EmailMode::Bidirectional) {
+            for (account, is_done) in &accounts {
+                if let Account::Email(email_address) = account {
+                    if !is_done {
+                        // Get the challenge token from verification state
+                        if let Some(challenge) = verification.challenges.get(&AccountType::Email) {
+                            if let Some(token) = &challenge.token {
+                                info!("Sending email challenge to {} for {}/{}", email_address, request.network, request.account);
+                                if let Err(e) = send_email_challenge(
+                                    email_address,
+                                    token,
+                                    &request.network,
+                                    &request.account,
+                                ).await {
+                                    error!("Failed to send email challenge to {}: {}", email_address, e);
+                                    // Continue processing even if email fails
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // get hash and build state message
         let hash = self.hash_identity_info(&registration.info);
 
@@ -1677,9 +1745,56 @@ impl NodeListener {
             verification.add_challenge(&acc_type, name, token);
         }
 
-        // Save verification state to Redis
+        // Generate outbound token for bidirectional email before saving
+        if matches!(cfg.adapter.email.protocol, crate::config::EmailProtocol::Jmap)
+            && matches!(cfg.adapter.email.mode, crate::config::EmailMode::Bidirectional) {
+            for (account, is_done) in &filtered_accounts {
+                if let Account::Email(_) = account {
+                    if !is_done {
+                        if let Some(challenge) = verification.challenges.get_mut(&AccountType::Email) {
+                            if challenge.outbound_token == Some("pending".to_string()) {
+                                // Generate a fresh token for email sending
+                                challenge.outbound_token = Some(Token::generate().await.show());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Save verification state to Redis (with all tokens)
         conn.init_verification_state(network, who, &verification, &filtered_accounts)
             .await?;
+
+        // Send email challenges if JMAP is configured for sending
+        if matches!(cfg.adapter.email.protocol, crate::config::EmailProtocol::Jmap)
+            && matches!(cfg.adapter.email.mode, crate::config::EmailMode::Send | crate::config::EmailMode::Bidirectional) {
+            for (account, is_done) in &filtered_accounts {
+                if let Account::Email(email_address) = account {
+                    if !is_done {
+                        // Get the challenge from verification state
+                        if let Some(challenge) = verification.challenges.get(&AccountType::Email) {
+                            // Get the appropriate token for email sending
+                            let email_token = challenge.outbound_token.as_ref()
+                                .or(challenge.token.as_ref());
+
+                            if let Some(token) = email_token {
+                                info!("Sending email challenge to {} for {}/{} with token: {}", email_address, network, who, token);
+                                if let Err(e) = send_email_challenge(
+                                    email_address,
+                                    token,
+                                    network,
+                                    who,
+                                ).await {
+                                    error!("Failed to send email challenge to {}: {}", email_address, e);
+                                    // Continue processing even if email fails
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // clears all "timelines" related to this requester and reconstruct a new one
         let pog_connection = PostgresConnection::default().await?;
@@ -2212,6 +2327,7 @@ mod test {
     #[allow(unused_imports)]
     use super::*;
     use crate::postgres::Query;
+    
 
     #[test]
     fn generic_search() {
