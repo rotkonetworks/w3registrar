@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+
 use crate::api::Network;
 use crate::node::identity::events::judgement_requested::RegistrarIndex;
 use anyhow::anyhow;
@@ -29,6 +30,21 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EmailProtocol {
+    Imap,
+    Jmap,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EmailMode {
+    Receive,      // Only receive and process emails
+    Send,         // Only send challenges via email
+    Bidirectional, // Both send and receive
+}
+
+#[derive(Clone, Deserialize)]
 pub struct EmailConfig {
     pub username: String,
     pub password: String,
@@ -38,6 +54,36 @@ pub struct EmailConfig {
     pub mailbox: String,
     pub server: String,
     pub checking_frequency: Option<u64>,
+    #[serde(default = "default_email_protocol")]
+    pub protocol: EmailProtocol,
+    #[serde(default = "default_email_mode")]
+    pub mode: EmailMode,
+}
+
+// Custom Debug to avoid logging passwords
+impl std::fmt::Debug for EmailConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmailConfig")
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .field("name", &self.name)
+            .field("port", &self.port)
+            .field("email", &self.email)
+            .field("mailbox", &self.mailbox)
+            .field("server", &self.server)
+            .field("checking_frequency", &self.checking_frequency)
+            .field("protocol", &self.protocol)
+            .field("mode", &self.mode)
+            .finish()
+    }
+}
+
+fn default_email_protocol() -> EmailProtocol {
+    EmailProtocol::Imap
+}
+
+fn default_email_mode() -> EmailMode {
+    EmailMode::Receive
 }
 
 #[derive(Debug, Clone, Deserialize)]
