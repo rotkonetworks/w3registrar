@@ -1,19 +1,20 @@
 use std::fmt::Display;
 use subxt::utils::AccountId32;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
-    api::{Account, Network},
+    api::{Account, AccountType, Network},
     node::register_identity,
     postgres::PostgresConnection,
+    rate_limit::get_rate_limiter,
     redis::RedisConnection,
 };
 
-pub mod dns;
+pub mod email;
 pub mod github;
-pub mod mail;
 pub mod matrix;
 pub mod pgp;
+pub mod web;
 
 #[derive(Debug, Clone)]
 pub enum RegistrationError<'a> {
@@ -63,34 +64,39 @@ pub trait Adapter {
         let account_type = &account.account_type();
         let pog_connection = PostgresConnection::default().await?;
 
-        // get the current state
-        let state = match redis_connection
+        // Check rate limit before processing
+        let rate_limiter = get_rate_limiter();
+        let network_str = network.to_string();
+        let account_str = account_id.to_string();
+        let field_str = account_type.to_string();
+
+        // Check and record the attempt
+        rate_limiter.check_and_record_attempt(&network_str, &account_str, &field_str).await?;
+
+        info!(
+            "Token validation attempt for {}/{}/{} - {} attempts remaining",
+            network, account_id, account_type,
+            rate_limiter.get_remaining_attempts(&network_str, &account_str, &field_str).await
+        );
+
+        let state = redis_connection
             .get_verification_state(network, account_id)
             .await?
-        {
-            Some(state) => state,
-            None => {
-                return Err(anyhow::anyhow!(
+            .ok_or_else(|| {
+                anyhow::anyhow!(
                     "{}",
                     RegistrationError::ChallengeDoesNotExist(account, account_id, network)
-                ))
-            }
-        };
+                )
+            })?;
 
-        // get the challenge for the account type
-        let challenge = match state.challenges.get(&account_type) {
-            Some(challenge) => challenge,
-            None => {
-                return Err(anyhow::anyhow!(
+        let challenge = state.challenges.get(&account_type)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
                     "{}",
                     RegistrationError::ChallengeDoesNotExist(account, account_id, network)
-                ))
-            }
-        };
+                )
+            })?;
 
-        info!("Checking if this challenge is already done...");
-        // challenge is already completed
-        // FIXME: 
         if challenge.done {
             return Err(anyhow::anyhow!(
                 "{}",
@@ -98,24 +104,34 @@ pub trait Adapter {
             ));
         }
 
-        // verify the token
-        let token = match &challenge.token {
-            Some(token) => token,
-            None => {
-                return Err(anyhow::anyhow!(
-                    "{}",
-                    RegistrationError::NotVerifiable(account)
-                ))
-            }
+        let valid = match account_type {
+            AccountType::Email => {
+                [&challenge.inbound_token, &challenge.outbound_token, &challenge.token]
+                    .iter()
+                    .filter_map(|t| t.as_ref())
+                    .any(|token| text_content == token)
+            },
+            _ => challenge.token.as_ref().map_or(false, |t| text_content == t)
         };
 
-        // check if the message matches the token (fixed comparison)
-        if text_content != *token {
+        if !valid {
+            warn!(
+                "Invalid token attempt for {}/{}/{} - {} attempts remaining",
+                network, account_id, account_type,
+                rate_limiter.get_remaining_attempts(&network_str, &account_str, &field_str).await
+            );
             return Err(anyhow::anyhow!(
                 "{}",
                 RegistrationError::WrongChallenge(text_content)
             ));
         }
+
+        // Token is valid, reset rate limit for this field
+        rate_limiter.reset_attempts(&network_str, &account_str, &field_str).await;
+        info!(
+            "Valid token for {}/{}/{} - rate limit reset",
+            network, account_id, account_type
+        );
 
         // update challenge status
         redis_connection
@@ -127,27 +143,16 @@ pub trait Adapter {
             .update_timeline(account_type.into(), account_id, network)
             .await?;
 
-        let state = match redis_connection
+        let state = redis_connection
             .get_verification_state(network, account_id)
             .await?
-        {
-            Some(state) => state,
-            None => return Err(anyhow::anyhow!("{}", RegistrationError::InternalError)),
-        };
+            .ok_or_else(|| anyhow::anyhow!("{}", RegistrationError::InternalError))?;
 
-        // register identity if all challenges are completed
-        info!("Checking if all challenges are done");
         if state.completed {
-            info!("All challenges are completed");
-            // FIXME: Metadata error: The generated code is not compatible with the node
             register_identity(account_id, network).await?;
-            info!("Identity registred on chain");
-
-            // TODO: finalize when jdugement is given not here
             pog_connection
                 .finalize_timeline(account_id, network)
                 .await?;
-            info!("Registration timeline updated");
         }
 
         Ok(())
