@@ -54,12 +54,43 @@ state_dir = "/tmp/matrix_"
 [adapter.email]
 email = "w3reg@rotko.net"
 username = "w3reg"
-password = "pw"
+password = "changeme"                          # Plain text (development only)
 name = "w3registrar"
 mailbox = "INBOX"
 server = "mail.rotko.net"
-port = 143                # IMAPS port
-checking_frequency = 500 # In seconds, Optional
+port = 143                # IMAP port (143 for STARTTLS, 993 for IMAPS)
+checking_frequency = 500  # In seconds, Optional
+# protocol = "imap"      # Default protocol (can be omitted)
+# mode = "receive"       # Default mode: receive | send | bidirectional
+
+# Uncomment below to use JMAP instead of IMAP:
+# protocol = "jmap"
+# server = "https://jmap.fastmail.com/api/"  # Example JMAP endpoint
+# port = 443             # Not typically used for JMAP but required field
+# mode = "bidirectional" # Can send and receive emails (JMAP only)
+
+# Protocol configurations:
+# 1. IMAP receive-only (default):
+#    protocol = "imap"
+#    mode = "receive"
+#    Note: IMAP only supports receiving emails, not sending
+#
+# 2. JMAP send-only (for sending challenge emails):
+#    protocol = "jmap"
+#    mode = "send"
+#    server = "https://your-jmap-server.com/api/"
+#
+# 3. JMAP bidirectional (send challenges and receive responses):
+#    protocol = "jmap"
+#    mode = "bidirectional"
+#    server = "https://your-jmap-server.com/api/"
+#
+# Web Domain Verification:
+# The web field supports both HTTP and DNS verification
+# Users can either:
+# - Host a file at https://domain/.well-known/w3registrar/{challenge}
+# - Create /w3registrar-verify.txt containing the challenge
+# - Add a TXT DNS record with the challenge token
 
 [adapter.github]
 client_id = "..."

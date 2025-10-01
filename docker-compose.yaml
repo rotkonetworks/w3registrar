@@ -16,23 +16,23 @@ services:
       retries: 3
     command: ["redis-server", "--bind", "0.0.0.0"]
 
-  w3registrar:
-    image: w3registrar:${VERSION_TAG:-prod}
-    container_name: ${SERVICE_NAME:-w3registrar}
-    pull_policy: never
-    restart: unless-stopped
-    command: ["w3registrar"]
-    network_mode: "host"
-    # networks:
-    #   - w3r_network
-    volumes:
-      - ${CONFIG_PATH:-./config.toml}:/etc/w3registrar/config.toml:ro
-      - ${KEYFILE:-./keyfile}:/etc/w3registrar/keyfile:ro
-      - ${SSL_CERT:-./ssl_cert.pem}:/etc/w3registrar/ssl_cert.pem:ro
-    environment:
-      - CONFIG_PATH=/etc/w3registrar/config.toml
-      - RUST_LOG=info
-      - KEYFILE_PATH=/etc/w3registrar/keyfile
+  # w3registrar:
+  #   image: w3registrar:${VERSION_TAG:-prod}
+  #   container_name: ${SERVICE_NAME:-w3registrar}
+  #   pull_policy: never
+  #   restart: unless-stopped
+  #   command: ["w3registrar"]
+  #   network_mode: "host"
+  #   # networks:
+  #   #   - w3r_network
+  #   volumes:
+  #     - ${CONFIG_PATH:-./config.toml}:/etc/w3registrar/config.toml:ro
+  #     - ${KEYFILE:-./keyfile}:/etc/w3registrar/keyfile:ro
+  #     - ${SSL_CERT:-./ssl_cert.pem}:/etc/w3registrar/ssl_cert.pem:ro
+  #   environment:
+  #     - CONFIG_PATH=/etc/w3registrar/config.toml
+  #     - RUST_LOG=info
+  #     - KEYFILE_PATH=/etc/w3registrar/keyfile
 
 volumes:
   # postgres_data:
