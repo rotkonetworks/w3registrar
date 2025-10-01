@@ -112,31 +112,56 @@ impl RedisConnection {
 
     /// Get all pending challenges of `wallet_id` as a [Vec<Vec<String>>]
     /// Returns pairs of [account_type, challenge_token]
+    /// NOTE: For automated email verification (JMAP send), no token is exposed
     #[instrument(skip_all, parent = &self.span)]
     async fn get_challenges(
         &mut self,
         network: &Network,
         account_id: &AccountId32,
     ) -> anyhow::Result<Vec<Challenge>> {
+        use crate::config::{EmailProtocol, EmailMode, GLOBAL_CONFIG};
+        use crate::api::AccountType;
+
         info!(account_id = ?account_id.to_string(), network = ?network, "Getting challenges");
         let state = match self.get_verification_state(network, account_id).await? {
             Some(s) => s,
             None => return Ok(Vec::new()),
         };
 
-        info!(account_id = ?account_id.to_string(), network = ?network, "Filtering pending challenges");
+        // Determine email verification mode
+        let is_automated_email = if let Some(cfg) = GLOBAL_CONFIG.get() {
+            matches!(cfg.adapter.email.protocol, EmailProtocol::Jmap)
+                && matches!(cfg.adapter.email.mode, EmailMode::Send | EmailMode::Bidirectional)
+        } else {
+            false
+        };
+
+        info!(account_id = ?account_id.to_string(), network = ?network, automated_email = ?is_automated_email, "Filtering pending challenges");
         let pending = state
             .challenges
             .iter()
             .filter(|(_, challenge)| !challenge.done)
             .filter_map(|(acc_type, challenge)| {
-                challenge.token.as_ref().map(|token| {
-                    Challenge::new(
-                        acc_type.to_owned(),
-                        challenge.account_name.to_owned(),
-                        token.to_owned(),
-                    )
-                })
+                if matches!(acc_type, AccountType::Email) && is_automated_email {
+                    let cfg = GLOBAL_CONFIG.get().expect("Config not initialized");
+                    let display = match &cfg.adapter.email.mode {
+                        EmailMode::Bidirectional => challenge.inbound_token.as_ref()
+                            .cloned()
+                            .unwrap_or_else(|| "pending".to_string()),
+                        EmailMode::Send => "✉️ Check your email".to_string(),
+                        _ => challenge.inbound_token.as_ref()
+                            .or(challenge.token.as_ref())
+                            .cloned()
+                            .unwrap_or_else(|| "pending".to_string()),
+                    };
+                    Some(Challenge::new(acc_type.to_owned(), challenge.account_name.to_owned(), display))
+                } else {
+                    let token = match acc_type {
+                        AccountType::Email => challenge.inbound_token.as_ref().or(challenge.token.as_ref()),
+                        _ => challenge.token.as_ref(),
+                    }?;
+                    Some(Challenge::new(acc_type.to_owned(), challenge.account_name.to_owned(), token.to_owned()))
+                }
             })
             .collect();
 
