@@ -4,6 +4,7 @@ mod config;
 mod indexer;
 mod node;
 mod postgres;
+mod rate_limit;
 mod redis;
 mod runner;
 mod token;
@@ -16,9 +17,13 @@ use tracing::{error, info, instrument};
 use tracing_subscriber::EnvFilter;
 
 use crate::{
-    adapter::{dns::watch_dns, mail::watch_mailserver, matrix},
+    adapter::{
+        web::watch_web,
+        email::{watch_mailserver, watch_jmap_server, initialize_jmap_sender},
+        matrix
+    },
     api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv},
-    config::{Config, GLOBAL_CONFIG},
+    config::{Config, EmailProtocol, EmailMode, GLOBAL_CONFIG},
     redis::RedisConnection,
 };
 
@@ -104,6 +109,10 @@ async fn main() -> Result<()> {
         .init()
         .await?;
 
+    // initialize rate limiter for token validation
+    rate_limit::init_rate_limiter(None);
+    info!("initialized rate limiter for token validation");
+
     // initialize runner
     let mut runner = runner::Runner::new();
     info!("initialized task runner");
@@ -121,7 +130,27 @@ async fn main() -> Result<()> {
 
     if needs_email {
         info!("starting email service...");
-        runner.spawn(watch_mailserver, Some("email_service")).await;
+        match config.adapter.email.protocol {
+            EmailProtocol::Imap => {
+                info!("using IMAP protocol (receive-only)");
+                runner.spawn(watch_mailserver, Some("email_service")).await;
+            }
+            EmailProtocol::Jmap => {
+                info!("using JMAP protocol (mode: {:?})", config.adapter.email.mode);
+
+                // Initialize JMAP sender if needed
+                if matches!(config.adapter.email.mode, EmailMode::Send | EmailMode::Bidirectional) {
+                    if let Err(e) = initialize_jmap_sender().await {
+                        error!("Failed to initialize JMAP sender: {}", e);
+                    }
+                }
+
+                // Start receiver if needed
+                if matches!(config.adapter.email.mode, EmailMode::Receive | EmailMode::Bidirectional) {
+                    runner.spawn(watch_jmap_server, Some("email_service")).await;
+                }
+            }
+        }
     }
 
     if needs_matrix_bot {
@@ -132,11 +161,20 @@ async fn main() -> Result<()> {
     }
 
     if needs_web {
-        info!("starting dns watch service...");
-        runner.spawn(watch_dns, Some("dns_service")).await;
+        info!("starting web watch service (HTTP + DNS verification)...");
+        runner.spawn(watch_web, Some("web_service")).await;
     }
 
     info!("all services started successfully");
+
+    // spawn periodic rate limiter cleanup task
+    tokio::spawn(async {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600)); // Every hour
+        loop {
+            interval.tick().await;
+            rate_limit::get_rate_limiter().cleanup_expired().await;
+        }
+    });
 
     // run until interrupted
     runner.run().await;
