@@ -342,11 +342,11 @@ $$;";
     ) -> anyhow::Result<()> {
         // FIXME: update time should be also be changed
 
-        let query = format!("INSERT INTO indexer_state (network, last_block_hash, last_block_index) VALUES ('{}',$1, $2) ON CONFLICT (network) DO UPDATE SET last_block_hash = EXCLUDED.last_block_hash, last_block_index = EXCLUDED.last_block_index ; ", network);
+        let query = "INSERT INTO indexer_state (network, last_block_hash, last_block_index) VALUES ($1, $2, $3) ON CONFLICT (network) DO UPDATE SET last_block_hash = EXCLUDED.last_block_hash, last_block_index = EXCLUDED.last_block_index";
 
-        let values: &[&(dyn ToSql + Sync)] = &[&hex::encode(hash.as_bytes()), &index];
+        let values: &[&(dyn ToSql + Sync)] = &[&network.to_string(), &hex::encode(hash.as_bytes()), &index];
 
-        self.client.query(&query, values).await?;
+        self.client.query(query, values).await?;
 
         Ok(())
     }
@@ -489,10 +489,10 @@ $$;";
     }
 
     pub async fn get_indexer_state(&self, network: &Network) -> anyhow::Result<IndexerState> {
-        let query = format!("SELECT network::text, last_block_index, last_block_hash, updated_at FROM indexer_state WHERE network='{}'", network);
+        let query = "SELECT network::text, last_block_index, last_block_hash, updated_at FROM indexer_state WHERE network=$1";
         let postgres_connection = PostgresConnection::default().await?;
         Ok(IndexerState::try_from(
-            &self.client.query_one(&query, &[]).await?,
+            &self.client.query_one(query, &[&network.to_string()]).await?,
         )?)
     }
 }
