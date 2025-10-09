@@ -134,8 +134,13 @@ impl TokenRateLimiter {
     }
 
     /// Build a key for rate limiting based on network, account, and field
+    /// Uses length-prefixed encoding to prevent collision attacks
     fn build_key(network: &str, account: &str, field: &str) -> String {
-        format!("{}|{}|{}", network, account, field)
+        // Security: Use length-prefixed encoding to prevent key collisions
+        format!("{}:{}|{}:{}|{}:{}",
+            network.len(), network,
+            account.len(), account,
+            field.len(), field)
     }
 
     /// Check and record a token validation attempt
@@ -146,12 +151,15 @@ impl TokenRateLimiter {
         field: &str,
     ) -> Result<()> {
         let key = Self::build_key(network, account, field);
-        let mut records = self.records.write().await;
 
-        let record = records.entry(key.clone()).or_insert_with(AttemptRecord::new);
-        record.add_attempt(&self.config)?;
+        // Security: Minimize lock duration to prevent DoS
+        let result = {
+            let mut records = self.records.write().await;
+            let record = records.entry(key.clone()).or_insert_with(AttemptRecord::new);
+            record.add_attempt(&self.config)
+        }; // Lock released here
 
-        Ok(())
+        result
     }
 
     /// Get the number of remaining attempts for a key

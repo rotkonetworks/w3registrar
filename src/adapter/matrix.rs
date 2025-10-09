@@ -29,7 +29,7 @@ use tracing::{error, info, instrument, warn};
 
 use crate::api::Account;
 use crate::redis::RedisConnection;
-use crate::GLOBAL_CONFIG;
+use crate::config::GLOBAL_CONFIG;
 use crate::{adapter::Adapter, api::Network, node::register_identity};
 
 // TODO: move those "independent" functions inside the Matrix struct (handle_content, etc.)

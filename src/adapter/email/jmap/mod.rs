@@ -4,8 +4,8 @@ use jmap_client::mailbox::{query::Filter as MailboxFilter, Role};
 use jmap_client::email::{self, Property, query::Filter as EmailFilter};
 use jmap_client::email_submission::Address;
 use jmap_client::core::query::Filter;
-use std::time::Duration;
-use tracing::{error, info, instrument};
+use std::time::{Duration, Instant};
+use tracing::{error, info, instrument, warn, debug};
 
 use crate::{
     adapter::Adapter,
@@ -37,14 +37,15 @@ impl JmapMail {
         let accounts = redis_connection.search(&search_query).await?;
 
         if accounts.is_empty() {
-            info!("verification: no account found for {}", search_query);
+            info!("verification: no account found for email");
             return Ok(());
         }
 
         for acc_str in accounts {
-            info!("verification: processing account {}", acc_str);
+            info!("verification: processing account");
             let info: Vec<&str> = acc_str.split("|").collect();
             if info.len() != 4 {
+                warn!("verification: malformed account string with {} parts", info.len());
                 continue;
             }
 
@@ -54,8 +55,13 @@ impl JmapMail {
                 if let Some(text) = self
                     .body
                     .as_ref()
-                    .and_then(|b| b.lines().next())
-                    .map(|l| l.trim().to_owned())
+                    .and_then(|b| {
+                        // Security: Take first non-empty line, limit length to prevent attacks
+                        b.lines()
+                            .map(|l| l.trim())
+                            .find(|l| !l.is_empty())
+                            .and_then(|l| if l.len() <= 256 { Some(l.to_owned()) } else { None })
+                    })
                 {
                     match <JmapMail as Adapter>::handle_content(
                         &text,
@@ -82,6 +88,8 @@ pub struct JmapClient {
     mailbox_id: Option<String>,
     identity_id: Option<String>,
     sent_mailbox_id: Option<String>,
+    last_email_count: Option<usize>,
+    last_state_check: Option<Instant>,
 }
 
 impl JmapClient {
@@ -102,6 +110,8 @@ impl JmapClient {
             mailbox_id: None,
             identity_id: None,
             sent_mailbox_id: None,
+            last_email_count: None,
+            last_state_check: None,
         };
 
         // Initialize based on mode
@@ -227,7 +237,7 @@ Subject: {}
             )
             .await?;
 
-        info!("Sent challenge email to {} for {}/{}", to_email, network, account_id);
+        info!("Sent challenge email to [REDACTED] for {}/{}", network, account_id);
 
         Ok(())
     }
@@ -259,7 +269,7 @@ Subject: {}
         Ok(())
     }
 
-    pub async fn check_mailbox(&self) -> anyhow::Result<()> {
+    pub async fn check_mailbox(&mut self) -> anyhow::Result<()> {
         if !matches!(self.config.mode, EmailMode::Receive | EmailMode::Bidirectional) {
             return Err(anyhow!("Email mode does not support receiving"));
         }
@@ -269,51 +279,123 @@ Subject: {}
 
         info!("JMAP: Starting to monitor mailbox {}", mailbox_id);
 
+        // Use optimized polling with state tracking
+        self.check_mailbox_optimized().await
+    }
+
+    /// Optimized mailbox monitoring with efficient state tracking
+    async fn check_mailbox_optimized(&mut self) -> anyhow::Result<()> {
+        info!("JMAP: Using optimized polling with intelligent state tracking");
+
+        let check_interval = Duration::from_secs(self.config.checking_frequency.unwrap_or(30));
+        let quick_check_interval = Duration::from_secs(5); // Quick check for state changes
+
         loop {
-            // Query for unseen emails in the mailbox
-            let mut query_response = self.client
-                .email_query(
-                    Filter::and([
-                        EmailFilter::in_mailbox(mailbox_id),
-                        EmailFilter::not_keyword("$seen"),
-                    ]).into(),
-                    [email::query::Comparator::from()].into(),
-                )
-                .await?;
+            let now = Instant::now();
+            let should_full_check = self.last_state_check
+                .map(|last| now.duration_since(last) >= check_interval)
+                .unwrap_or(true);
 
-            let email_ids = query_response.take_ids();
-
-            if !email_ids.is_empty() {
-                info!("JMAP: Found {} unseen emails", email_ids.len());
-
-                for email_id in email_ids {
-                    info!("JMAP: Processing email {}", email_id);
-
-                    // Mark as seen first to avoid reprocessing
-                    if let Err(e) = self.mark_as_seen(&email_id).await {
-                        error!("JMAP: Failed to mark email {} as seen: {}", email_id, e);
-                        continue;
-                    }
-
-                    match self.fetch_email(&email_id).await {
-                        Ok(mail) => {
-                            info!("JMAP: Mail from {}", mail.sender);
-                            if let Err(e) = mail.process_email().await {
-                                error!("JMAP: Failed to process email {}: {}", email_id, e);
-                            }
-                        }
-                        Err(e) => {
-                            error!("JMAP: Failed to fetch email {}: {}", email_id, e);
-                        }
+            if should_full_check {
+                // Do a full check
+                debug!("Performing full email check");
+                self.process_unseen_emails().await?;
+                self.last_state_check = Some(now);
+            } else {
+                // Do a quick state check
+                if let Ok(has_changes) = self.check_for_email_changes().await {
+                    if has_changes {
+                        info!("Detected email state change, processing new emails");
+                        self.process_unseen_emails().await?;
+                        self.last_state_check = Some(now);
                     }
                 }
             }
 
             // Wait before next check
-            let checking_frequency = self.config.checking_frequency.unwrap_or(500);
-            tokio::time::sleep(Duration::from_secs(checking_frequency)).await;
+            tokio::time::sleep(quick_check_interval).await;
         }
     }
+
+    /// Check if there are email state changes without fetching all emails
+    async fn check_for_email_changes(&mut self) -> anyhow::Result<bool> {
+        let mailbox_id = self.mailbox_id.as_ref()
+            .ok_or_else(|| anyhow!("No mailbox configured"))?;
+
+        // Query just for the count of unseen emails
+        let query_response = self.client
+            .email_query(
+                Filter::and([
+                    EmailFilter::in_mailbox(mailbox_id),
+                    EmailFilter::not_keyword("$seen"),
+                ]).into(),
+                None::<Vec<_>>, // Don't fetch IDs, just count
+            )
+            .await?;
+
+        let current_count = query_response.total().unwrap_or(0);
+
+        // Check if count changed
+        let has_changes = match self.last_email_count {
+            Some(last) => current_count != last,
+            None => current_count > 0,
+        };
+
+        if has_changes {
+            debug!("Email count changed from {:?} to {}", self.last_email_count, current_count);
+        }
+
+        self.last_email_count = Some(current_count);
+        Ok(has_changes)
+    }
+
+    /// Process all unseen emails in the mailbox
+    async fn process_unseen_emails(&self) -> anyhow::Result<()> {
+        let mailbox_id = self.mailbox_id.as_ref()
+            .ok_or_else(|| anyhow!("No mailbox configured"))?;
+
+        // Query for unseen emails
+        let mut query_response = self.client
+            .email_query(
+                Filter::and([
+                    EmailFilter::in_mailbox(mailbox_id),
+                    EmailFilter::not_keyword("$seen"),
+                ]).into(),
+                [email::query::Comparator::from()].into(),
+            )
+            .await?;
+
+        let email_ids = query_response.take_ids();
+
+        if !email_ids.is_empty() {
+            info!("JMAP: Found {} unseen emails", email_ids.len());
+
+            for email_id in email_ids {
+                info!("JMAP: Processing email {}", email_id);
+
+                // Mark as seen first to avoid reprocessing
+                if let Err(e) = self.mark_as_seen(&email_id).await {
+                    error!("JMAP: Failed to mark email {} as seen: {}", email_id, e);
+                    continue;
+                }
+
+                match self.fetch_email(&email_id).await {
+                    Ok(mail) => {
+                        info!("JMAP: Mail from {}", mail.sender);
+                        if let Err(e) = mail.process_email().await {
+                            error!("JMAP: Failed to process email {}: {}", email_id, e);
+                        }
+                    }
+                    Err(e) => {
+                        error!("JMAP: Failed to fetch email {}: {}", email_id, e);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
 }
 
 // Global JMAP client for sending emails
@@ -365,7 +447,7 @@ pub async fn watch_jmap_server() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let client = JmapClient::new(&config.adapter.email).await?;
+    let mut client = JmapClient::new(&config.adapter.email).await?;
 
     tokio::task::spawn(async move {
         let span = tracing::span!(tracing::Level::INFO, "jmap_watcher");

@@ -10,6 +10,34 @@ use crate::{
     redis::RedisConnection,
 };
 
+/// Constant-time string comparison to prevent timing attacks
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
+    use std::cmp::Ordering;
+
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+
+    // Always compare the same number of bytes to prevent length-based timing attacks
+    let max_len = std::cmp::max(a_bytes.len(), b_bytes.len());
+
+    // Pad shorter string with zeros conceptually
+    let mut result = 0u8;
+
+    for i in 0..max_len {
+        let a_byte = a_bytes.get(i).copied().unwrap_or(0);
+        let b_byte = b_bytes.get(i).copied().unwrap_or(0);
+        result |= a_byte ^ b_byte;
+    }
+
+    // Also check if lengths are equal in constant time
+    let len_match = match a_bytes.len().cmp(&b_bytes.len()) {
+        Ordering::Equal => 0,
+        _ => 1,
+    };
+
+    result == 0 && len_match == 0
+}
+
 pub mod email;
 pub mod github;
 pub mod matrix;
@@ -104,14 +132,15 @@ pub trait Adapter {
             ));
         }
 
+        // Security: Use constant-time comparison to prevent timing attacks
         let valid = match account_type {
             AccountType::Email => {
                 [&challenge.inbound_token, &challenge.outbound_token, &challenge.token]
                     .iter()
                     .filter_map(|t| t.as_ref())
-                    .any(|token| text_content == token)
+                    .any(|token| constant_time_eq(text_content, token))
             },
-            _ => challenge.token.as_ref().map_or(false, |t| text_content == t)
+            _ => challenge.token.as_ref().map_or(false, |t| constant_time_eq(text_content, t))
         };
 
         if !valid {
