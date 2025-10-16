@@ -2,6 +2,7 @@ use anyhow::anyhow;
 use anyhow::Result;
 use openpgp::parse::stream::*;
 use openpgp::{parse::Parse, policy::StandardPolicy, Cert};
+use reqwest;
 use sequoia_openpgp::{self as openpgp, KeyHandle};
 use subxt::utils::AccountId32;
 use tracing::error;
@@ -11,6 +12,8 @@ use super::Adapter;
 use crate::api::Account;
 use crate::api::Network;
 use crate::redis::RedisConnection;
+
+const KEYSERVER_URL: &str = "https://keyserver.ubuntu.com";
 
 pub struct PGPHelper {
     signature: Vec<u8>,
@@ -23,6 +26,46 @@ impl PGPHelper {
         Self {
             signature: signature.to_vec().clone(),
         }
+    }
+
+    /// Fetch PGP public key from Ubuntu keyserver by fingerprint
+    pub async fn fetch_key_from_keyserver(fingerprint: &[u8; 20]) -> Result<Cert> {
+        let fingerprint_hex = hex::encode(fingerprint);
+        info!("Fetching PGP key for fingerprint: {}", fingerprint_hex);
+
+        let url = format!(
+            "{}/pks/lookup?op=get&options=mr&search=0x{}",
+            KEYSERVER_URL, fingerprint_hex
+        );
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| anyhow!("Failed to fetch key from keyserver: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "Keyserver returned error: {}",
+                response.status()
+            ));
+        }
+
+        let key_data = response
+            .text()
+            .await
+            .map_err(|e| anyhow!("Failed to read keyserver response: {}", e))?;
+
+        if key_data.is_empty() || !key_data.contains("BEGIN PGP PUBLIC KEY BLOCK") {
+            return Err(anyhow!("No PGP key found for fingerprint: {}", fingerprint_hex));
+        }
+
+        Cert::from_bytes(key_data.as_bytes())
+            .map_err(|e| anyhow!("Failed to parse PGP certificate: {}", e))
     }
 
     /// Verifies PGP signed challenge by first checking if the fingerprint matches the one
@@ -76,6 +119,8 @@ impl PGPHelper {
 
 impl VerificationHelper for PGPHelper {
     fn get_certs(&mut self, _ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+        let mut certs = Vec::new();
+
         for id in _ids {
             info!("ID: {:#?}", id.to_hex());
             let registered = self.signature.clone();
@@ -89,8 +134,25 @@ impl VerificationHelper for PGPHelper {
                     "Encoded signature does not match the registered signature"
                 ));
             }
+
+            // Try to fetch the certificate from keyserver
+            if let Ok(fingerprint_array) = <[u8; 20]>::try_from(registered.as_slice()) {
+                match tokio::runtime::Handle::current().block_on(async {
+                    PGPHelper::fetch_key_from_keyserver(&fingerprint_array).await
+                }) {
+                    Ok(cert) => {
+                        info!("Successfully fetched certificate from keyserver");
+                        certs.push(cert);
+                    }
+                    Err(e) => {
+                        error!(error=?e, "Failed to fetch certificate from keyserver");
+                        return Err(anyhow!("Failed to fetch certificate: {}", e));
+                    }
+                }
+            }
         }
-        Ok(vec![])
+
+        Ok(certs)
     }
 
     fn check(&mut self, structure: MessageStructure) -> Result<()> {
