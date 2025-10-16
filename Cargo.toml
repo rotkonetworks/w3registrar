@@ -22,7 +22,7 @@ chrono = { version = "0.4", features = ["serde"] }
 matrix-sdk = "0.14.0"
 tokio-stream = "0.1.16"
 async-stream = "0.3.6"
-sp-core = "38.0.0"
+sp-core = "38.1.0"
 tokio-tungstenite = "0.26.0"
 futures-util = "0.3.31"
 subxt-signer = "0.44"

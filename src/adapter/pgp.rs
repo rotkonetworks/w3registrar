@@ -68,8 +68,50 @@ impl PGPHelper {
             .map_err(|e| anyhow!("Failed to parse PGP certificate: {}", e))
     }
 
-    /// Verifies PGP signed challenge by first checking if the fingerprint matches the one
-    /// registered, and if the signed challenge is equal to the requested one
+    /// Automated verification: fetch key from keyserver and validate fingerprint matches on-chain
+    pub async fn verify_automated(
+        registered_fingerprint: [u8; 20],
+        network: &Network,
+        account_id: AccountId32,
+    ) -> anyhow::Result<serde_json::Value> {
+        info!("Starting automated PGP verification for account: {:?}", account_id);
+
+        match PGPHelper::fetch_key_from_keyserver(&registered_fingerprint).await {
+            Ok(cert) => {
+                info!("Successfully fetched and validated PGP certificate from keyserver");
+
+                let mut redis_connection = RedisConnection::default().await?;
+                let account = Account::PGPFingerprint(registered_fingerprint);
+
+                // Mark as verified in Redis
+                match PGPHelper::mark_verified(&mut redis_connection, network, &account_id, &account).await {
+                    Ok(_) => Ok(serde_json::json!({
+                        "type": "JsonResult",
+                        "payload": {
+                            "type": "ok",
+                            "message": "Automated PGP verification successful"
+                        }
+                    })),
+                    Err(e) => {
+                        error!(error=?e, "Failed to mark as verified");
+                        Ok(serde_json::json!({
+                            "type": "error",
+                            "message": format!("Failed to mark as verified: {e}")
+                        }))
+                    }
+                }
+            }
+            Err(e) => {
+                error!(error=?e, "Failed to fetch certificate from keyserver");
+                Ok(serde_json::json!({
+                    "type": "error",
+                    "message": format!("Failed to fetch key from keyserver: {e}")
+                }))
+            }
+        }
+    }
+
+    /// Active verification: verifies PGP signed challenge by checking fingerprint and signature
     pub async fn verify(
         signed_challenge: &[u8],
         registered_fingerprint: [u8; 20],
@@ -114,6 +156,15 @@ impl PGPHelper {
                 }))
             }
         }
+    }
+
+    async fn mark_verified(
+        redis_connection: &mut RedisConnection,
+        network: &Network,
+        account_id: &AccountId32,
+        account: &Account,
+    ) -> Result<()> {
+        PGPHelper::mark_as_verified(redis_connection, network, account_id, account).await
     }
 }
 
