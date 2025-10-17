@@ -11,9 +11,8 @@ use tracing::info;
 use super::Adapter;
 use crate::api::Account;
 use crate::api::Network;
+use crate::config::GLOBAL_CONFIG;
 use crate::redis::RedisConnection;
-
-const KEYSERVER_URL: &str = "https://keyserver.ubuntu.com";
 
 pub struct PGPHelper {
     signature: Vec<u8>,
@@ -28,14 +27,19 @@ impl PGPHelper {
         }
     }
 
-    /// Fetch PGP public key from Ubuntu keyserver by fingerprint
+    /// Fetch PGP public key from keyserver by fingerprint
     pub async fn fetch_key_from_keyserver(fingerprint: &[u8; 20]) -> Result<Cert> {
+        let cfg = GLOBAL_CONFIG
+            .get()
+            .expect("GLOBAL_CONFIG is not initialized");
+        let keyserver_url = &cfg.adapter.pgp.keyserver_url;
+
         let fingerprint_hex = hex::encode(fingerprint);
-        info!("Fetching PGP key for fingerprint: {}", fingerprint_hex);
+        info!("Fetching PGP key for fingerprint: {} from {}", fingerprint_hex, keyserver_url);
 
         let url = format!(
             "{}/pks/lookup?op=get&options=mr&search=0x{}",
-            KEYSERVER_URL, fingerprint_hex
+            keyserver_url, fingerprint_hex
         );
 
         let client = reqwest::Client::builder()
