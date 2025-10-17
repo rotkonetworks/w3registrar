@@ -229,6 +229,31 @@ $$;";
 
         self.client.simple_query(create_gin_index).await?;
 
+        info!("Creating `pgp_keys` table");
+
+        let create_pgp_keys = "CREATE TABLE IF NOT EXISTS pgp_keys (
+            fingerprint     VARCHAR(40) PRIMARY KEY,
+            address         VARCHAR(48) NOT NULL,
+            network         NETWORK NOT NULL,
+            armored_key     TEXT NOT NULL,
+            uploaded_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            verified        BOOLEAN DEFAULT FALSE,
+            UNIQUE(address, network)
+        );";
+
+        info!("QUERY");
+        info!("{create_pgp_keys}");
+
+        self.client.simple_query(create_pgp_keys).await?;
+        info!("Table `pgp_keys` created");
+
+        let create_index_address_network = "CREATE INDEX IF NOT EXISTS idx_pgp_address_network
+            ON pgp_keys(address, network);";
+        info!("Creating index for pgp_keys (address, network)");
+        info!("{create_index_address_network}");
+
+        self.client.simple_query(create_index_address_network).await?;
+
         Ok(())
     }
 
@@ -516,6 +541,82 @@ $$;";
         let cfg = GLOBAL_CONFIG.get().unwrap();
         let pog_config = cfg.postgres.clone();
         PostgresConnection::new(&pog_config).await
+    }
+
+    /// Store a PGP public key in the database
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn store_pgp_key(
+        &self,
+        fingerprint: &str,
+        address: &AccountId32,
+        network: &Network,
+        armored_key: &str,
+    ) -> anyhow::Result<()> {
+        let query = "
+            INSERT INTO pgp_keys (fingerprint, address, network, armored_key, verified)
+            VALUES ($1, $2, $3, $4, false)
+            ON CONFLICT (address, network)
+            DO UPDATE SET
+                fingerprint = EXCLUDED.fingerprint,
+                armored_key = EXCLUDED.armored_key,
+                uploaded_at = CURRENT_TIMESTAMP,
+                verified = false
+        ";
+
+        self.client
+            .execute(query, &[&fingerprint, &address.to_string(), &network.to_string(), &armored_key])
+            .await?;
+
+        info!("Stored PGP key for address {} on network {}", address, network);
+        Ok(())
+    }
+
+    /// Fetch a PGP public key from the database by fingerprint
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn get_pgp_key_by_fingerprint(&self, fingerprint: &str) -> anyhow::Result<Option<String>> {
+        let query = "SELECT armored_key FROM pgp_keys WHERE fingerprint = $1";
+
+        let rows = self.client.query(query, &[&fingerprint]).await?;
+
+        if rows.is_empty() {
+            Ok(None)
+        } else {
+            let armored_key: String = rows[0].get(0);
+            Ok(Some(armored_key))
+        }
+    }
+
+    /// Fetch a PGP public key from the database by address and network
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn get_pgp_key_by_address(
+        &self,
+        address: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<Option<(String, String)>> {
+        let query = "SELECT fingerprint, armored_key FROM pgp_keys WHERE address = $1 AND network = $2";
+
+        let rows = self.client
+            .query(query, &[&address.to_string(), &network.to_string()])
+            .await?;
+
+        if rows.is_empty() {
+            Ok(None)
+        } else {
+            let fingerprint: String = rows[0].get(0);
+            let armored_key: String = rows[0].get(1);
+            Ok(Some((fingerprint, armored_key)))
+        }
+    }
+
+    /// Mark a PGP key as verified
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn mark_pgp_key_verified(&self, fingerprint: &str) -> anyhow::Result<()> {
+        let query = "UPDATE pgp_keys SET verified = true WHERE fingerprint = $1";
+
+        self.client.execute(query, &[&fingerprint]).await?;
+
+        info!("Marked PGP key {} as verified", fingerprint);
+        Ok(())
     }
 
     pub async fn get_indexer_state(&self, network: &Network) -> anyhow::Result<IndexerState> {

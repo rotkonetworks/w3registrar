@@ -535,6 +535,20 @@ pub struct IncomingVerifyPGPAutomatedRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IncomingUploadPGPKeyRequest {
+    pub network: Network,
+    #[serde(deserialize_with = "ss58_to_account_id32")]
+    pub account: AccountId32,
+    pub armored_key: String,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IncomingFetchPGPKeyRequest {
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IncomingSearchRequest {
     pub network: Option<Network>,
     pub outputs: Vec<DisplayedInfo>,
@@ -734,6 +748,8 @@ pub enum WebSocketMessage {
     SubscribeAccountState(IncomingSubscribeRequest),
     VerifyPGPKey(IncomingVerifyPGPRequest),
     VerifyPGPKeyAutomated(IncomingVerifyPGPAutomatedRequest),
+    UploadPGPKey(IncomingUploadPGPKeyRequest),
+    FetchPGPKey(IncomingFetchPGPKeyRequest),
     SearchRegistration(IncomingSearchRequest),
 }
 
@@ -750,6 +766,8 @@ impl VersionedMessage {
             WebSocketMessage::SubscribeAccountState(_) => "SubscribeAccountState",
             WebSocketMessage::VerifyPGPKey(_) => "VerifyPGPKey",
             WebSocketMessage::VerifyPGPKeyAutomated(_) => "VerifyPGPKeyAutomated",
+            WebSocketMessage::UploadPGPKey(_) => "UploadPGPKey",
+            WebSocketMessage::FetchPGPKey(_) => "FetchPGPKey",
             WebSocketMessage::SearchRegistration(_) => "SearchRegistration",
         }
     }
@@ -965,6 +983,12 @@ impl SocketListener {
             WebSocketMessage::VerifyPGPKeyAutomated(incoming) => {
                 self.handle_pgp_automated_verification_request(incoming, subscriber)
                     .await
+            }
+            WebSocketMessage::UploadPGPKey(incoming) => {
+                self.handle_upload_pgp_key_request(incoming).await
+            }
+            WebSocketMessage::FetchPGPKey(incoming) => {
+                self.handle_fetch_pgp_key_request(incoming).await
             }
             WebSocketMessage::SearchRegistration(incoming) => {
                 self.handle_search_request(incoming).await
@@ -1626,6 +1650,110 @@ impl SocketListener {
             account_id,
         )
         .await
+    }
+
+    /// Handles PGP key upload
+    async fn handle_upload_pgp_key_request(
+        &self,
+        request: IncomingUploadPGPKeyRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        use sequoia_openpgp::{Cert, parse::Parse};
+
+        let cfg = GLOBAL_CONFIG
+            .get()
+            .expect("GLOBAL_CONFIG is not initialized");
+
+        // filter only supported networks
+        if !cfg.registrar.is_network_supported(&request.network) {
+            return Err(anyhow!("Network {} not supported", request.network));
+        }
+
+        // parse and validate PGP key
+        let cert = Cert::from_bytes(request.armored_key.as_bytes())
+            .map_err(|e| anyhow!("Invalid PGP key format: {}", e))?;
+
+        // extract fingerprint from certificate
+        let cert_fingerprint = hex::encode(cert.fingerprint().as_bytes());
+
+        // verify fingerprint matches what user provided
+        if cert_fingerprint.to_lowercase() != request.fingerprint.to_lowercase() {
+            return Err(anyhow!(
+                "Fingerprint mismatch: provided {} but key has {}",
+                request.fingerprint,
+                cert_fingerprint
+            ));
+        }
+
+        // get network configuration
+        let network_cfg = cfg
+            .registrar
+            .get_network(&request.network)
+            .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
+
+        // get registration info from blockchain to verify fingerprint matches on-chain
+        let client = NodeClient::from_url(&network_cfg.endpoint).await?;
+        let registration = node::get_registration(&client, &request.account).await?;
+
+        let Some(onchain_fingerprint) = registration.info.pgp_fingerprint else {
+            return Err(anyhow!(
+                "No fingerprint registered on chain for account {:?}",
+                request.account
+            ));
+        };
+
+        let onchain_fingerprint_hex = hex::encode(onchain_fingerprint);
+
+        // verify uploaded key matches on-chain fingerprint
+        if cert_fingerprint.to_lowercase() != onchain_fingerprint_hex.to_lowercase() {
+            return Err(anyhow!(
+                "Uploaded key fingerprint {} does not match on-chain fingerprint {}",
+                cert_fingerprint,
+                onchain_fingerprint_hex
+            ));
+        }
+
+        // store in database
+        let pg_conn = PostgresConnection::default().await?;
+        pg_conn
+            .store_pgp_key(
+                &cert_fingerprint,
+                &request.account,
+                &request.network,
+                &request.armored_key,
+            )
+            .await?;
+
+        Ok(serde_json::json!({
+            "type": "JsonResult",
+            "payload": {
+                "type": "ok",
+                "message": "PGP key uploaded successfully",
+                "fingerprint": cert_fingerprint
+            }
+        }))
+    }
+
+    /// Handles PGP key fetch
+    async fn handle_fetch_pgp_key_request(
+        &self,
+        request: IncomingFetchPGPKeyRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        let pg_conn = PostgresConnection::default().await?;
+
+        match pg_conn.get_pgp_key_by_fingerprint(&request.fingerprint).await? {
+            Some(armored_key) => Ok(serde_json::json!({
+                "type": "JsonResult",
+                "payload": {
+                    "type": "ok",
+                    "armored_key": armored_key,
+                    "fingerprint": request.fingerprint
+                }
+            })),
+            None => Ok(serde_json::json!({
+                "type": "error",
+                "message": format!("No PGP key found for fingerprint: {}", request.fingerprint)
+            })),
+        }
     }
 
     async fn handle_search_request(
