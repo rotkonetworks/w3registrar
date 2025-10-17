@@ -82,15 +82,8 @@ impl PGPHelper {
             return Err(anyhow!("No PGP key found for fingerprint: {}", fingerprint_hex));
         }
 
-        let cert = Cert::from_bytes(key_data.as_bytes())
-            .map_err(|e| anyhow!("Failed to parse PGP certificate: {}", e))?;
-
-        // Store fetched key in database for future use
-        info!("Storing fetched PGP key in database for future use");
-        // Note: We don't have address/network context here, so we can't store it yet
-        // The key will be stored when it's used for verification with full context
-
-        Ok(cert)
+        Cert::from_bytes(key_data.as_bytes())
+            .map_err(|e| anyhow!("Failed to parse PGP certificate: {}", e))
     }
 
     /// Automated verification: fetch key from keyserver and validate fingerprint matches on-chain
@@ -99,11 +92,29 @@ impl PGPHelper {
         network: &Network,
         account_id: AccountId32,
     ) -> anyhow::Result<serde_json::Value> {
+        use crate::postgres::PostgresConnection;
+
         info!("Starting automated PGP verification for account: {:?}", account_id);
 
         match PGPHelper::fetch_key_from_keyserver(&registered_fingerprint).await {
-            Ok(_cert) => {
-                info!("Successfully fetched and validated PGP certificate from keyserver");
+            Ok(cert) => {
+                info!("Successfully fetched and validated PGP certificate");
+
+                let fingerprint_hex = hex::encode(registered_fingerprint);
+
+                // Check if key was fetched from keyserver (not database)
+                // If so, store it in database for future use
+                let pg_conn = PostgresConnection::default().await?;
+                if pg_conn.get_pgp_key_by_fingerprint(&fingerprint_hex).await?.is_none() {
+                    // Key was fetched from keyserver, store it
+                    use sequoia_openpgp::serialize::SerializeInto;
+                    let armored_bytes = cert.armored().to_vec()?;
+                    let armored_key = String::from_utf8_lossy(&armored_bytes).to_string();
+                    pg_conn
+                        .store_pgp_key(&fingerprint_hex, &account_id, network, &armored_key)
+                        .await?;
+                    info!("Stored keyserver-fetched PGP key in database");
+                }
 
                 let mut redis_connection = RedisConnection::default().await?;
                 let account = Account::PGPFingerprint(registered_fingerprint);
