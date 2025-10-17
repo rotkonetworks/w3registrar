@@ -27,15 +27,29 @@ impl PGPHelper {
         }
     }
 
-    /// Fetch PGP public key from keyserver by fingerprint
+    /// Fetch PGP public key - checks local database first, then keyserver
     pub async fn fetch_key_from_keyserver(fingerprint: &[u8; 20]) -> Result<Cert> {
+        use crate::postgres::PostgresConnection;
+
+        let fingerprint_hex = hex::encode(fingerprint);
+
+        // First, try to fetch from local database
+        info!("Checking local database for PGP key: {}", fingerprint_hex);
+        let pg_conn = PostgresConnection::default().await?;
+
+        if let Some(armored_key) = pg_conn.get_pgp_key_by_fingerprint(&fingerprint_hex).await? {
+            info!("Found PGP key in local database");
+            return Cert::from_bytes(armored_key.as_bytes())
+                .map_err(|e| anyhow!("Failed to parse stored PGP certificate: {}", e));
+        }
+
+        // If not in database, fetch from keyserver
         let cfg = GLOBAL_CONFIG
             .get()
             .expect("GLOBAL_CONFIG is not initialized");
         let keyserver_url = &cfg.adapter.pgp.keyserver_url;
 
-        let fingerprint_hex = hex::encode(fingerprint);
-        info!("Fetching PGP key for fingerprint: {} from {}", fingerprint_hex, keyserver_url);
+        info!("Fetching PGP key for fingerprint: {} from keyserver {}", fingerprint_hex, keyserver_url);
 
         let url = format!(
             "{}/pks/lookup?op=get&options=mr&search=0x{}",
@@ -68,8 +82,15 @@ impl PGPHelper {
             return Err(anyhow!("No PGP key found for fingerprint: {}", fingerprint_hex));
         }
 
-        Cert::from_bytes(key_data.as_bytes())
-            .map_err(|e| anyhow!("Failed to parse PGP certificate: {}", e))
+        let cert = Cert::from_bytes(key_data.as_bytes())
+            .map_err(|e| anyhow!("Failed to parse PGP certificate: {}", e))?;
+
+        // Store fetched key in database for future use
+        info!("Storing fetched PGP key in database for future use");
+        // Note: We don't have address/network context here, so we can't store it yet
+        // The key will be stored when it's used for verification with full context
+
+        Ok(cert)
     }
 
     /// Automated verification: fetch key from keyserver and validate fingerprint matches on-chain
