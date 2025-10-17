@@ -81,7 +81,7 @@ impl PGPHelper {
         info!("Starting automated PGP verification for account: {:?}", account_id);
 
         match PGPHelper::fetch_key_from_keyserver(&registered_fingerprint).await {
-            Ok(cert) => {
+            Ok(_cert) => {
                 info!("Successfully fetched and validated PGP certificate from keyserver");
 
                 let mut redis_connection = RedisConnection::default().await?;
@@ -168,7 +168,14 @@ impl PGPHelper {
         account_id: &AccountId32,
         account: &Account,
     ) -> Result<()> {
-        PGPHelper::mark_as_verified(redis_connection, network, account_id, account).await
+        let account_type = &account.account_type();
+
+        // Update challenge status directly for automated verification
+        redis_connection
+            .update_challenge_status(network, account_id, account_type)
+            .await?;
+
+        Ok(())
     }
 }
 
