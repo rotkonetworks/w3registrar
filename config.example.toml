@@ -66,3 +66,6 @@ client_id = "..."
 client_secret = "..."
 gh_url = "https://github.com/login/oauth/authorize"
 redirect_url = "http://example.com/oauth/callback/github"
+
+[adapter.pgp]
+keyserver_url = "https://keyserver.ubuntu.com"

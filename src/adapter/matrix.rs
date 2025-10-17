@@ -4,7 +4,6 @@ use matrix_sdk::{
     config::{RequestConfig, StoreConfig, SyncSettings},
     deserialized_responses::RawSyncOrStrippedState,
     encryption::{identities::Device, BackupDownloadStrategy, EncryptionSettings},
-    matrix_auth::MatrixSession,
     room::Room,
     ruma::{
         self,
@@ -46,16 +45,14 @@ impl Matrix {
     async fn login() -> anyhow::Result<Client> {
         let cfg = GLOBAL_CONFIG.get().unwrap().adapter.matrix.clone();
         let state_dir = Path::new(&cfg.state_dir);
-        let session_path = state_dir.join("session.json");
 
         info!("Creating matrix client");
         let client = Client::builder()
             .homeserver_url(cfg.homeserver)
-            .store_config(StoreConfig::default())
+            .store_config(StoreConfig::new("w3registrar".to_string()))
             .request_config(
                 RequestConfig::new()
-                    .timeout(Duration::from_secs(60))
-                    .retry_timeout(Duration::from_secs(60)),
+                    .timeout(Duration::from_secs(60)),
             )
             .sqlite_store(state_dir, None)
             .with_encryption_settings(EncryptionSettings {
@@ -66,25 +63,21 @@ impl Matrix {
             .build()
             .await?;
 
-        if session_path.exists() {
-            info!("Restoring session in {}", session_path.display());
-            let session = tokio::fs::read_to_string(session_path).await?;
-            let session: MatrixSession = serde_json::from_str(&session)?;
-            client.restore_session(session).await?;
-            info!("Logged in as {}", cfg.username);
-        } else {
-            info!("Logging in as {}", cfg.username);
-            client
-                .matrix_auth()
-                .login_username(cfg.username, cfg.password.as_str())
-                .initial_device_display_name("w3r")
-                .await?;
-
-            info!("Writing session to {}", session_path.display());
-            let session = client.matrix_auth().session().expect("Session missing");
-            let session = serde_json::to_string(&session)?;
-            info!("Session content before save: {}", session);
-            tokio::fs::write(session_path, session).await?;
+        // The SQLite store automatically persists sessions
+        // Try to sync once to see if we have a valid session
+        match client.sync_once(SyncSettings::default()).await {
+            Ok(_) => {
+                info!("Restored session from store, logged in as {}", cfg.username);
+            }
+            Err(_) => {
+                info!("No valid session found, logging in as {}", cfg.username);
+                client
+                    .matrix_auth()
+                    .login_username(cfg.username, cfg.password.as_str())
+                    .initial_device_display_name("w3r")
+                    .await?;
+                info!("Login successful");
+            }
         }
 
         info!("Importing secrets");

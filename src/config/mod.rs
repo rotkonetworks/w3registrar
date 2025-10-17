@@ -16,6 +16,7 @@ pub struct Adapter {
     pub matrix: MatrixConfig,
     pub email: EmailConfig,
     pub github: GithubConfig,
+    pub pgp: PGPConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -223,6 +224,19 @@ impl Default for GithubConfig {
 }
 
 impl GithubConfig {}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PGPConfig {
+    pub keyserver_url: String,
+}
+
+impl Default for PGPConfig {
+    fn default() -> Self {
+        Self {
+            keyserver_url: "https://keyserver.ubuntu.com".to_string(),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct HTTPConfig {

@@ -528,6 +528,13 @@ pub struct IncomingVerifyPGPRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IncomingVerifyPGPAutomatedRequest {
+    pub network: Network,
+    #[serde(deserialize_with = "ss58_to_account_id32")]
+    pub account: AccountId32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IncomingSearchRequest {
     pub network: Option<Network>,
     pub outputs: Vec<DisplayedInfo>,
@@ -726,6 +733,7 @@ pub struct VerifyIdentityRequest {
 pub enum WebSocketMessage {
     SubscribeAccountState(IncomingSubscribeRequest),
     VerifyPGPKey(IncomingVerifyPGPRequest),
+    VerifyPGPKeyAutomated(IncomingVerifyPGPAutomatedRequest),
     SearchRegistration(IncomingSearchRequest),
 }
 
@@ -741,6 +749,7 @@ impl VersionedMessage {
         match self.payload {
             WebSocketMessage::SubscribeAccountState(_) => "SubscribeAccountState",
             WebSocketMessage::VerifyPGPKey(_) => "VerifyPGPKey",
+            WebSocketMessage::VerifyPGPKeyAutomated(_) => "VerifyPGPKeyAutomated",
             WebSocketMessage::SearchRegistration(_) => "SearchRegistration",
         }
     }
@@ -951,6 +960,10 @@ impl SocketListener {
             }
             WebSocketMessage::VerifyPGPKey(incoming) => {
                 self.handle_pgp_verification_request(incoming, subscriber)
+                    .await
+            }
+            WebSocketMessage::VerifyPGPKeyAutomated(incoming) => {
+                self.handle_pgp_automated_verification_request(incoming, subscriber)
                     .await
             }
             WebSocketMessage::SearchRegistration(incoming) => {
@@ -1566,6 +1579,49 @@ impl SocketListener {
         PGPHelper::verify(
             request.signed_challenge.as_bytes(),
             registred_fingerprint,
+            &request.network,
+            account_id,
+        )
+        .await
+    }
+
+    /// Handles automated PGP verification by fetching key from keyserver
+    async fn handle_pgp_automated_verification_request(
+        &self,
+        request: IncomingVerifyPGPAutomatedRequest,
+        subscriber: &mut Option<AccountId32>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let cfg = GLOBAL_CONFIG
+            .get()
+            .expect("GLOBAL_CONFIG is not initialized");
+
+        // filter only supported networks
+        if !cfg.registrar.is_network_supported(&request.network) {
+            return Err(anyhow!("Network {} not supported", request.network));
+        }
+
+        // get network configuration
+        let network_cfg = cfg
+            .registrar
+            .get_network(&request.network)
+            .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
+
+        *subscriber = Some(request.account.clone());
+        // get registration info from the blockchain node
+        let client = NodeClient::from_url(&network_cfg.endpoint).await?;
+        let registration = node::get_registration(&client, &request.account).await?;
+
+        let Some(registered_fingerprint) = registration.info.pgp_fingerprint else {
+            return Err(anyhow!(
+                "No fingerprint is registered on chain for {:?}",
+                request.account
+            ));
+        };
+        let account_id = request.account;
+
+        // automated verification via keyserver
+        PGPHelper::verify_automated(
+            registered_fingerprint,
             &request.network,
             account_id,
         )

@@ -2,6 +2,7 @@
 name = "w3registrar"
 version = "0.4.9"
 edition = "2021"
+rust-version = "1.89"
 
 [dependencies]
 serde = { version = "1.0.208", features = ["derive"] }
@@ -18,13 +19,10 @@ uuid = { version = "1.10.0", features = ["v4", "macro-diagnostics"] }
 async-trait = "0.1.81"
 rand = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
-# Pulling matrix-sdk in from GitHub, as the latest stable crate causes a
-# conflict with sqlx. Something to do with SQlite.
-matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk.git", rev = "19e89bbd6a0df1c4a5636252b02b9e16cc7ab44d" }
-matrix-sdk-crypto = "0.9.0" # fixes vulnerability tmp
+matrix-sdk = "0.14.0"
 tokio-stream = "0.1.16"
 async-stream = "0.3.6"
-sp-core = "38.0.0"
+sp-core = "38.1.0"
 tokio-tungstenite = "0.26.0"
 futures-util = "0.3.31"
 subxt-signer = "0.44"
@@ -50,3 +48,8 @@ mobc = "0.9.0"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
+
+[patch.crates-io]
+parity-bip39 = { git = "https://github.com/rotkonetworks/rust-bip39" }
+
+
