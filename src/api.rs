@@ -925,13 +925,30 @@ impl SocketListener {
             .unwrap_or_else(|| AccountVerification::new(request.network.to_string()));
 
         // get the accounts from the chain's identity info
-        let accounts = filter_accounts(
-            &registration.info,
-            &request.account,
-            network_cfg.registrar_index,
-            &request.network,
-        )
-        .await?;
+        // OR generate all possible verifiable fields if no on-chain identity exists
+        let accounts_from_chain = Account::into_accounts(&registration.info);
+        let accounts = if accounts_from_chain.is_empty() {
+            // No on-chain identity - generate codes for all verifiable fields
+            info!("No on-chain identity found, generating codes for all verifiable fields");
+            let verifiable_fields = vec![
+                Account::Email(String::new()),
+                Account::Twitter(String::new()),
+                Account::Github(String::new()),
+                Account::Matrix(String::new()),
+                Account::Discord(String::new()),
+                Account::Web(String::new()),
+            ];
+            Account::into_hashmap(verifiable_fields, false)
+        } else {
+            // Has on-chain identity - use existing flow
+            filter_accounts(
+                &registration.info,
+                &request.account,
+                network_cfg.registrar_index,
+                &request.network,
+            )
+            .await?
+        };
 
         // 3) for each discovered account, only create a token if we do not
         //    already have one stored. Otherwise, reuse the old token/challenge.
