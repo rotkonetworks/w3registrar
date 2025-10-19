@@ -238,6 +238,9 @@ $$;";
             armored_key     TEXT NOT NULL,
             uploaded_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             verified        BOOLEAN DEFAULT FALSE,
+            remailer_enabled BOOLEAN DEFAULT FALSE,
+            remailer_registered_only BOOLEAN DEFAULT TRUE,
+            require_verified_pgp BOOLEAN DEFAULT TRUE,
             UNIQUE(address, network)
         );";
 
@@ -246,6 +249,16 @@ $$;";
 
         self.client.simple_query(create_pgp_keys).await?;
         info!("Table `pgp_keys` created");
+
+        // Migrate existing tables
+        let add_remailer_columns = "
+            ALTER TABLE pgp_keys
+            ADD COLUMN IF NOT EXISTS remailer_enabled BOOLEAN DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS remailer_registered_only BOOLEAN DEFAULT TRUE,
+            ADD COLUMN IF NOT EXISTS require_verified_pgp BOOLEAN DEFAULT TRUE;
+        ";
+        info!("Adding remailer columns if not exists");
+        self.client.simple_query(add_remailer_columns).await?;
 
         let create_index_address_network = "CREATE INDEX IF NOT EXISTS idx_pgp_address_network
             ON pgp_keys(address, network);";
@@ -616,6 +629,46 @@ $$;";
         self.client.execute(query, &[&fingerprint]).await?;
 
         info!("Marked PGP key {} as verified", fingerprint);
+        Ok(())
+    }
+
+    /// Update remailer settings for a PGP key
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn update_remailer_settings(
+        &self,
+        address: &AccountId32,
+        network: &Network,
+        remailer_enabled: bool,
+        remailer_registered_only: bool,
+        require_verified_pgp: bool,
+    ) -> anyhow::Result<()> {
+        let query = "
+            UPDATE pgp_keys
+            SET remailer_enabled = $1, remailer_registered_only = $2, require_verified_pgp = $3
+            WHERE address = $4 AND network = $5
+        ";
+
+        let rows_affected = self.client
+            .execute(
+                query,
+                &[
+                    &remailer_enabled,
+                    &remailer_registered_only,
+                    &require_verified_pgp,
+                    &address.to_string(),
+                    &network.to_string()
+                ]
+            )
+            .await?;
+
+        if rows_affected == 0 {
+            return Err(anyhow!("No PGP key found for address {} on network {}", address, network));
+        }
+
+        info!(
+            "Updated remailer settings for {} on {}: enabled={}, registered_only={}, verified_only={}",
+            address, network, remailer_enabled, remailer_registered_only, require_verified_pgp
+        );
         Ok(())
     }
 

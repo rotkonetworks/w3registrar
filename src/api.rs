@@ -32,7 +32,7 @@ use redis::{self, Client as RedisClient};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sp_core::blake2_256;
+use sp_core::{blake2_256, crypto::Pair, sr25519, Decode};
 use std::fmt;
 use std::fmt::Display;
 use std::str::FromStr;
@@ -549,6 +549,18 @@ pub struct IncomingFetchPGPKeyRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IncomingUpdateRemailerSettingsRequest {
+    pub network: Network,
+    #[serde(deserialize_with = "ss58_to_account_id32")]
+    pub account: AccountId32,
+    pub remailer_enabled: bool,
+    pub remailer_registered_only: bool,
+    pub require_verified_pgp: bool,
+    pub signature: String, // hex-encoded signature
+    pub timestamp: u64,    // unix timestamp in milliseconds
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IncomingSearchRequest {
     pub network: Option<Network>,
     pub outputs: Vec<DisplayedInfo>,
@@ -750,6 +762,7 @@ pub enum WebSocketMessage {
     VerifyPGPKeyAutomated(IncomingVerifyPGPAutomatedRequest),
     UploadPGPKey(IncomingUploadPGPKeyRequest),
     FetchPGPKey(IncomingFetchPGPKeyRequest),
+    UpdateRemailerSettings(IncomingUpdateRemailerSettingsRequest),
     SearchRegistration(IncomingSearchRequest),
 }
 
@@ -768,12 +781,39 @@ impl VersionedMessage {
             WebSocketMessage::VerifyPGPKeyAutomated(_) => "VerifyPGPKeyAutomated",
             WebSocketMessage::UploadPGPKey(_) => "UploadPGPKey",
             WebSocketMessage::FetchPGPKey(_) => "FetchPGPKey",
+            WebSocketMessage::UpdateRemailerSettings(_) => "UpdateRemailerSettings",
             WebSocketMessage::SearchRegistration(_) => "SearchRegistration",
         }
     }
 }
 
 // ------------------
+// Signature verification helper
+fn verify_signature(
+    account: &AccountId32,
+    message: &[u8],
+    signature_hex: &str,
+) -> anyhow::Result<()> {
+    // decode hex signature
+    let signature_bytes = hex::decode(signature_hex)
+        .map_err(|e| anyhow!("Invalid signature hex: {}", e))?;
+
+    // parse sr25519 signature
+    let signature = sr25519::Signature::try_from(signature_bytes.as_slice())
+        .map_err(|_| anyhow!("Invalid sr25519 signature format"))?;
+
+    // convert AccountId32 to sr25519 public key
+    let public_bytes: [u8; 32] = account.0;
+    let public = sr25519::Public::from_raw(public_bytes);
+
+    // verify signature
+    if sr25519::Pair::verify(&signature, message, &public) {
+        Ok(())
+    } else {
+        Err(anyhow!("Signature verification failed"))
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum SubscribeAccountState {
     SubscribeAccountState,
@@ -1006,6 +1046,9 @@ impl SocketListener {
             }
             WebSocketMessage::FetchPGPKey(incoming) => {
                 self.handle_fetch_pgp_key_request(incoming).await
+            }
+            WebSocketMessage::UpdateRemailerSettings(incoming) => {
+                self.handle_update_remailer_settings_request(incoming).await
             }
             WebSocketMessage::SearchRegistration(incoming) => {
                 self.handle_search_request(incoming).await
@@ -1750,6 +1793,109 @@ impl SocketListener {
         }))
     }
 
+    // TODO: implement smart contract for settings control once polkadot asset hub supports contracts
+    // This would eliminate the need for manual signature verification on every settings update
+    async fn handle_update_remailer_settings_request(
+        &self,
+        request: IncomingUpdateRemailerSettingsRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        let cfg = GLOBAL_CONFIG
+            .get()
+            .expect("GLOBAL_CONFIG is not initialized");
+
+        // filter only supported networks
+        if !cfg.registrar.is_network_supported(&request.network) {
+            return Err(anyhow!("Network {} not supported", request.network));
+        }
+
+        // verify timestamp is recent (within 5 minutes to prevent replay attacks)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let age_ms = now.saturating_sub(request.timestamp);
+        const MAX_AGE_MS: u64 = 5 * 60 * 1000; // 5 minutes
+
+        if age_ms > MAX_AGE_MS {
+            return Err(anyhow!(
+                "Signature timestamp too old: {} ms (max {} ms)",
+                age_ms,
+                MAX_AGE_MS
+            ));
+        }
+
+        // construct signed message (must match frontend signing format)
+        let message = format!(
+            "Update remailer settings\nAccount: {}\nNetwork: {}\nEnabled: {}\nRegistered only: {}\nVerified PGP only: {}\nTimestamp: {}",
+            request.account,
+            request.network,
+            request.remailer_enabled,
+            request.remailer_registered_only,
+            request.require_verified_pgp,
+            request.timestamp
+        );
+
+        // verify signature proves account ownership
+        verify_signature(&request.account, message.as_bytes(), &request.signature)?;
+
+        // get network configuration
+        let network_cfg = cfg
+            .registrar
+            .get_network(&request.network)
+            .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
+
+        // verify account has PGP key in database
+        let pg_conn = PostgresConnection::default().await?;
+        let db_key = pg_conn.get_pgp_key_by_address(&request.account, &request.network).await?;
+
+        let Some((db_fingerprint, _)) = db_key else {
+            return Err(anyhow!(
+                "No PGP key found in database for account {:?}. Upload a key first.",
+                request.account
+            ));
+        };
+
+        // get on-chain registration to verify fingerprint matches
+        let client = NodeClient::from_url(&network_cfg.endpoint).await?;
+        let registration = node::get_registration(&client, &request.account).await?;
+
+        let Some(onchain_fingerprint) = registration.info.pgp_fingerprint else {
+            return Err(anyhow!(
+                "No fingerprint registered on chain for account {:?}",
+                request.account
+            ));
+        };
+
+        let onchain_fingerprint_hex = hex::encode(onchain_fingerprint);
+
+        // verify database fingerprint matches on-chain
+        if db_fingerprint.to_lowercase() != onchain_fingerprint_hex.to_lowercase() {
+            return Err(anyhow!(
+                "Database fingerprint does not match on-chain fingerprint."
+            ));
+        }
+
+        // update remailer settings in database
+        pg_conn
+            .update_remailer_settings(
+                &request.account,
+                &request.network,
+                request.remailer_enabled,
+                request.remailer_registered_only,
+                request.require_verified_pgp,
+            )
+            .await?;
+
+        Ok(serde_json::json!({
+            "type": "JsonResult",
+            "payload": {
+                "type": "ok",
+                "message": "Remailer settings updated successfully"
+            }
+        }))
+    }
+
     /// Handles PGP key fetch
     async fn handle_fetch_pgp_key_request(
         &self,
@@ -2412,7 +2558,6 @@ mod test {
 
     #[allow(unused_imports)]
     use super::*;
-    use crate::postgres::Query;
 
     #[test]
     fn generic_search() {
