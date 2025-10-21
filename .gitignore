@@ -11,3 +11,5 @@ TODO*
 config.production.toml
 config.staging.toml
 config.development.toml
+secrets/
+models/

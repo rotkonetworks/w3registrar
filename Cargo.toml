@@ -40,11 +40,21 @@ trust-dns-resolver = { version = "=0.23.2", features = ["dns-over-rustls"] }
 axum = "0.8.3"
 reqwest = { version = "0.12.15", features = ["json"] }
 sequoia-openpgp = {version = "2.0.0", default-features = false, features = ["compression", "crypto-openssl"]}
-tokio-postgres = { version = "0.7.13", features = ["with-chrono-0_4"] }
+tokio-postgres = { version = "0.7.13", features = ["with-chrono-0_4", "with-serde_json-1"] }
 postgres-openssl = "0.5.1"
 openssl = "0.10.73"
 postgres-types = { version = "0.2.9", features = ["derive"] }
 mobc = "0.9.0"
+
+# Image verification dependencies
+image = { version = "0.24", default-features = false, features = ["jpeg", "png", "webp"] }
+cid = "0.11"
+# TODO: nsfw crate has dependency conflict with matrix-sdk (time version)
+# nsfw = { version = "0.1", optional = true, default-features = false, features = ["jpeg", "png", "webp"] }
+
+[features]
+default = []
+# nsfw-detection = ["nsfw"]  # disabled due to dependency conflict
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

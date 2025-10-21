@@ -32,7 +32,7 @@ use redis::{self, Client as RedisClient};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sp_core::{blake2_256, crypto::Pair, sr25519, Decode};
+use sp_core::{blake2_256, crypto::Pair, sr25519};
 use std::fmt;
 use std::fmt::Display;
 use std::str::FromStr;
@@ -561,6 +561,16 @@ pub struct IncomingUpdateRemailerSettingsRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IncomingVerifyImageRequest {
+    pub network: Network,
+    #[serde(deserialize_with = "ss58_to_account_id32")]
+    pub account: AccountId32,
+    pub image_url: String,
+    // Note: alt_text is NOT provided by user
+    // We generate it (future: using BLIP/CLIP) and provide it to them for accessibility
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IncomingSearchRequest {
     pub network: Option<Network>,
     pub outputs: Vec<DisplayedInfo>,
@@ -763,6 +773,7 @@ pub enum WebSocketMessage {
     UploadPGPKey(IncomingUploadPGPKeyRequest),
     FetchPGPKey(IncomingFetchPGPKeyRequest),
     UpdateRemailerSettings(IncomingUpdateRemailerSettingsRequest),
+    VerifyImage(IncomingVerifyImageRequest),
     SearchRegistration(IncomingSearchRequest),
 }
 
@@ -782,6 +793,7 @@ impl VersionedMessage {
             WebSocketMessage::UploadPGPKey(_) => "UploadPGPKey",
             WebSocketMessage::FetchPGPKey(_) => "FetchPGPKey",
             WebSocketMessage::UpdateRemailerSettings(_) => "UpdateRemailerSettings",
+            WebSocketMessage::VerifyImage(_) => "VerifyImage",
             WebSocketMessage::SearchRegistration(_) => "SearchRegistration",
         }
     }
@@ -1049,6 +1061,9 @@ impl SocketListener {
             }
             WebSocketMessage::UpdateRemailerSettings(incoming) => {
                 self.handle_update_remailer_settings_request(incoming).await
+            }
+            WebSocketMessage::VerifyImage(incoming) => {
+                self.handle_image_verification_request(incoming).await
             }
             WebSocketMessage::SearchRegistration(incoming) => {
                 self.handle_search_request(incoming).await
@@ -1647,16 +1662,44 @@ impl SocketListener {
             .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
 
         *subscriber = Some(request.account.clone());
-        // get registration info on fron the blockchain node
-        let client = NodeClient::from_url(&network_cfg.endpoint).await?;
-        let registration = node::get_registration(&client, &request.account).await?;
 
-        let Some(registred_fingerprint) = registration.info.pgp_fingerprint else {
-            return Err(anyhow!(
-                "No fingerprint is registered on chain for {:?}",
+        // try to get fingerprint from draft (redis) first
+        let mut conn = RedisConnection::get_connection().await?;
+        let mut fingerprint_bytes: Option<[u8; 20]> = None;
+
+        if let Some(verification_state) = conn.get_verification_state(&request.network, &request.account).await? {
+            if let Some(challenge_info) = verification_state.challenges.get(&AccountType::PGPFingerprint) {
+                // parse hex fingerprint from challenge name
+                if let Ok(bytes) = hex::decode(&challenge_info.account_name) {
+                    if bytes.len() == 20 {
+                        let mut fp = [0u8; 20];
+                        fp.copy_from_slice(&bytes);
+                        fingerprint_bytes = Some(fp);
+                        info!("Using fingerprint from draft: {}", challenge_info.account_name);
+                    }
+                }
+            }
+        }
+
+        // if not found in draft, try on-chain registration
+        if fingerprint_bytes.is_none() {
+            let client = NodeClient::from_url(&network_cfg.endpoint).await?;
+            let registration = node::get_registration(&client, &request.account).await?;
+
+            if let Some(onchain_fingerprint) = registration.info.pgp_fingerprint {
+                fingerprint_bytes = Some(onchain_fingerprint);
+                info!("Using fingerprint from on-chain registration: {}", hex::encode(onchain_fingerprint));
+            }
+        }
+
+        // if still no fingerprint, return error
+        let registred_fingerprint = fingerprint_bytes.ok_or_else(|| {
+            anyhow!(
+                "No fingerprint found (neither in draft nor on-chain) for {:?}",
                 request.account
-            ));
-        };
+            )
+        })?;
+
         let account_id = request.account;
 
         // verify challenge
@@ -1691,21 +1734,49 @@ impl SocketListener {
             .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
 
         *subscriber = Some(request.account.clone());
-        // get registration info from the blockchain node
-        let client = NodeClient::from_url(&network_cfg.endpoint).await?;
-        let registration = node::get_registration(&client, &request.account).await?;
 
-        let Some(registered_fingerprint) = registration.info.pgp_fingerprint else {
-            return Err(anyhow!(
-                "No fingerprint is registered on chain for {:?}",
+        // try to get fingerprint from draft (redis) first
+        let mut conn = RedisConnection::get_connection().await?;
+        let mut fingerprint_bytes: Option<[u8; 20]> = None;
+
+        if let Some(verification_state) = conn.get_verification_state(&request.network, &request.account).await? {
+            if let Some(challenge_info) = verification_state.challenges.get(&AccountType::PGPFingerprint) {
+                // parse hex fingerprint from challenge name
+                if let Ok(bytes) = hex::decode(&challenge_info.account_name) {
+                    if bytes.len() == 20 {
+                        let mut fp = [0u8; 20];
+                        fp.copy_from_slice(&bytes);
+                        fingerprint_bytes = Some(fp);
+                        info!("Using fingerprint from draft: {}", challenge_info.account_name);
+                    }
+                }
+            }
+        }
+
+        // if not found in draft, try on-chain registration
+        if fingerprint_bytes.is_none() {
+            let client = NodeClient::from_url(&network_cfg.endpoint).await?;
+            let registration = node::get_registration(&client, &request.account).await?;
+
+            if let Some(onchain_fingerprint) = registration.info.pgp_fingerprint {
+                fingerprint_bytes = Some(onchain_fingerprint);
+                info!("Using fingerprint from on-chain registration: {}", hex::encode(onchain_fingerprint));
+            }
+        }
+
+        // if still no fingerprint, return error
+        let fingerprint = fingerprint_bytes.ok_or_else(|| {
+            anyhow!(
+                "No fingerprint found (neither in draft nor on-chain) for {:?}",
                 request.account
-            ));
-        };
+            )
+        })?;
+
         let account_id = request.account;
 
         // automated verification via keyserver
         PGPHelper::verify_automated(
-            registered_fingerprint,
+            fingerprint,
             &request.network,
             account_id,
         )
@@ -1750,25 +1821,42 @@ impl SocketListener {
             .get_network(&request.network)
             .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
 
-        // get registration info from blockchain to verify fingerprint matches on-chain
-        let client = NodeClient::from_url(&network_cfg.endpoint).await?;
-        let registration = node::get_registration(&client, &request.account).await?;
+        // try to get fingerprint from draft (redis) first
+        let mut conn = RedisConnection::get_connection().await?;
+        let mut expected_fingerprint: Option<String> = None;
 
-        let Some(onchain_fingerprint) = registration.info.pgp_fingerprint else {
-            return Err(anyhow!(
-                "No fingerprint registered on chain for account {:?}",
+        if let Some(verification_state) = conn.get_verification_state(&request.network, &request.account).await? {
+            if let Some(challenge_info) = verification_state.challenges.get(&AccountType::PGPFingerprint) {
+                expected_fingerprint = Some(challenge_info.account_name.clone());
+                info!("Using fingerprint from draft: {}", challenge_info.account_name);
+            }
+        }
+
+        // if not found in draft, try on-chain registration
+        if expected_fingerprint.is_none() {
+            let client = NodeClient::from_url(&network_cfg.endpoint).await?;
+            let registration = node::get_registration(&client, &request.account).await?;
+
+            if let Some(onchain_fingerprint) = registration.info.pgp_fingerprint {
+                expected_fingerprint = Some(hex::encode(onchain_fingerprint));
+                info!("Using fingerprint from on-chain registration: {}", expected_fingerprint.as_ref().unwrap());
+            }
+        }
+
+        // if still no fingerprint, return error
+        let expected_fingerprint_hex = expected_fingerprint.ok_or_else(|| {
+            anyhow!(
+                "No fingerprint found (neither in draft nor on-chain) for account {:?}",
                 request.account
-            ));
-        };
+            )
+        })?;
 
-        let onchain_fingerprint_hex = hex::encode(onchain_fingerprint);
-
-        // verify uploaded key matches on-chain fingerprint
-        if cert_fingerprint.to_lowercase() != onchain_fingerprint_hex.to_lowercase() {
+        // verify uploaded key matches expected fingerprint (from draft or on-chain)
+        if cert_fingerprint.to_lowercase() != expected_fingerprint_hex.to_lowercase() {
             return Err(anyhow!(
-                "Uploaded key fingerprint {} does not match on-chain fingerprint {}",
+                "Uploaded key fingerprint {} does not match expected fingerprint {}",
                 cert_fingerprint,
-                onchain_fingerprint_hex
+                expected_fingerprint_hex
             ));
         }
 
@@ -1791,6 +1879,181 @@ impl SocketListener {
                 "fingerprint": cert_fingerprint
             }
         }))
+    }
+
+    /// Handles image verification with mandatory NSFW detection
+    async fn handle_image_verification_request(
+        &self,
+        request: IncomingVerifyImageRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        use image::{ImageFormat, GenericImageView};
+        use cid::Cid;
+        use futures::StreamExt;
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use std::time::{Duration as StdDuration, Instant};
+
+        // simple rate limiting: 10 verifications per hour per account
+        static RATE_LIMITER: OnceCell<Mutex<HashMap<String, Instant>>> = OnceCell::new();
+        let rate_limiter = RATE_LIMITER.get_or_init(|| Mutex::new(HashMap::new()));
+
+        let rate_key = format!("{}:{}", request.network, request.account);
+        {
+            let mut limiter = rate_limiter.lock().unwrap();
+            if let Some(last_time) = limiter.get(&rate_key) {
+                if last_time.elapsed() < StdDuration::from_secs(360) {
+                    return Err(anyhow!("rate limit exceeded, try again later"));
+                }
+            }
+            limiter.insert(rate_key.clone(), Instant::now());
+        }
+
+        let cfg = GLOBAL_CONFIG
+            .get()
+            .expect("GLOBAL_CONFIG is not initialized");
+
+        // filter only supported networks
+        if !cfg.registrar.is_network_supported(&request.network) {
+            return Err(anyhow!("Network {} not supported", request.network));
+        }
+
+        // 1. validate IPFS CID format
+        if !request.image_url.starts_with("ipfs://") {
+            return Err(anyhow!("only ipfs:// urls supported"));
+        }
+
+        let cid_str = &request.image_url[7..];
+        let cid = Cid::try_from(cid_str)
+            .map_err(|_| anyhow!("invalid CID format"))?;
+
+        // require CIDv1 with SHA-256 for security
+        if cid.version() != cid::Version::V1 {
+            return Err(anyhow!("CIDv1 required"));
+        }
+
+        if cid.hash().code() != 0x12 {
+            return Err(anyhow!("SHA-256 hash required"));
+        }
+
+        info!("Validating image from IPFS CID: {}", cid_str);
+
+        // 2. fetch image from IPFS gateway
+        let gateway = &cfg.adapter.image.ipfs_gateway;
+        let fetch_url = format!("{}/ipfs/{}", gateway, cid_str);
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(cfg.adapter.image.timeout_seconds))
+            .build()?;
+
+        let response = client.get(&fetch_url)
+            .send()
+            .await
+            .map_err(|e| {
+                error!("IPFS gateway error: {}", e);
+                anyhow!("unable to fetch image")
+            })?;
+
+        // 3. validate size with streaming (prevent TOCTOU)
+        let max_size = cfg.adapter.image.max_size_bytes as usize;
+        let mut bytes = Vec::with_capacity(std::cmp::min(max_size, 8192));
+        let mut total = 0usize;
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|_| anyhow!("failed to read image data"))?;
+            total += chunk.len();
+            if total > max_size {
+                return Err(anyhow!("image exceeds maximum size"));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+
+        info!("Downloaded image: {} bytes", total);
+
+        // 4. validate image format and dimensions
+        let img = image::load_from_memory(&bytes)
+            .map_err(|e| {
+                error!("Image decode error: {}", e);
+                anyhow!("invalid image format")
+            })?;
+
+        let (width, height) = img.dimensions();
+        let format = image::guess_format(&bytes)
+            .map_err(|e| {
+                error!("Format detection error: {}", e);
+                anyhow!("unsupported image format")
+            })?;
+
+        match format {
+            ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP => {},
+            _ => return Err(anyhow!("only png/jpg/webp formats supported")),
+        }
+
+        if width < cfg.adapter.image.min_dimension || height < cfg.adapter.image.min_dimension {
+            return Err(anyhow!(
+                "image too small (min {}x{})",
+                cfg.adapter.image.min_dimension,
+                cfg.adapter.image.min_dimension
+            ));
+        }
+
+        if width > cfg.adapter.image.max_dimension || height > cfg.adapter.image.max_dimension {
+            return Err(anyhow!(
+                "image too large (max {}x{})",
+                cfg.adapter.image.max_dimension,
+                cfg.adapter.image.max_dimension
+            ));
+        }
+
+        info!(
+            "Image validated: {}x{}, format: {:?}",
+            width,
+            height,
+            format
+        );
+
+        // 5. NSFW detection (temporarily disabled due to dependency conflict)
+        // TODO: re-enable when nsfw crate is updated or alternative found
+        error!("Image verification attempted but NSFW detection temporarily disabled");
+        error!("Dependency conflict: nsfw crate requires old tract (time v0.3.23), matrix-sdk requires time >= 0.3.42");
+        return Err(anyhow!(
+            "Image verification temporarily unavailable due to dependency conflict"
+        ));
+
+        // TODO: Uncomment below when NSFW is re-enabled
+        // let pg_conn = PostgresConnection::default().await?;
+        // pg_conn
+        //     .store_image_verification(
+        //         &request.account,
+        //         &request.network,
+        //         cid_str,
+        //         format!("{:?}", format),
+        //         width,
+        //         height,
+        //         bytes.len() as i32,
+        //         alt_text.as_deref(),
+        //         &metadata,
+        //     )
+        //     .await?;
+        //
+        // let mut redis = RedisConnection::get_connection().await?;
+        // redis
+        //     .update_challenge_status(&request.network, &request.account, &AccountType::Image)
+        //     .await?;
+        //
+        // info!("Image verification successful for {}", request.account);
+        //
+        // Ok(serde_json::json!({
+        //     "type": "JsonResult",
+        //     "payload": {
+        //         "type": "ok",
+        //         "message": {
+        //             "verified": true,
+        //             "cid": cid_str,
+        //             "metadata": metadata
+        //         }
+        //     }
+        // }))
     }
 
     // TODO: implement smart contract for settings control once polkadot asset hub supports contracts

@@ -267,6 +267,33 @@ $$;";
 
         self.client.simple_query(create_index_address_network).await?;
 
+        let create_image_verifications = "CREATE TABLE IF NOT EXISTS image_verifications (
+            address         VARCHAR(48) NOT NULL,
+            network         NETWORK NOT NULL,
+            ipfs_cid        VARCHAR(100) NOT NULL,
+            format          VARCHAR(10) NOT NULL,
+            width           INTEGER NOT NULL,
+            height          INTEGER NOT NULL,
+            size_bytes      INTEGER NOT NULL,
+            alt_text        TEXT,  -- AI-generated description for accessibility (future: BLIP/CLIP)
+            metadata        JSONB,
+            verified_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (address, network)
+        );";
+
+        info!("QUERY");
+        info!("{create_image_verifications}");
+
+        self.client.simple_query(create_image_verifications).await?;
+        info!("Table `image_verifications` created");
+
+        let create_index_image_metadata = "CREATE INDEX IF NOT EXISTS idx_image_metadata
+            ON image_verifications USING gin(metadata);";
+        info!("Creating GIN index for image_verifications metadata");
+        info!("{create_index_image_metadata}");
+
+        self.client.simple_query(create_index_image_metadata).await?;
+
         Ok(())
     }
 
@@ -629,6 +656,61 @@ $$;";
         self.client.execute(query, &[&fingerprint]).await?;
 
         info!("Marked PGP key {} as verified", fingerprint);
+        Ok(())
+    }
+
+    /// Store image verification metadata
+    /// Note: alt_text is AI-generated (future: BLIP/CLIP), not user-provided
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn store_image_verification(
+        &self,
+        account: &AccountId32,
+        network: &Network,
+        ipfs_cid: &str,
+        format: String,
+        width: u32,
+        height: u32,
+        size_bytes: i32,
+        alt_text: Option<&str>,  // AI-generated for accessibility
+        metadata: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let query = "
+            INSERT INTO image_verifications
+            (address, network, ipfs_cid, format, width, height, size_bytes, alt_text, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (address, network)
+            DO UPDATE SET
+                ipfs_cid = EXCLUDED.ipfs_cid,
+                format = EXCLUDED.format,
+                width = EXCLUDED.width,
+                height = EXCLUDED.height,
+                size_bytes = EXCLUDED.size_bytes,
+                alt_text = EXCLUDED.alt_text,
+                metadata = EXCLUDED.metadata,
+                verified_at = CURRENT_TIMESTAMP
+        ";
+
+        self.client
+            .execute(
+                query,
+                &[
+                    &account.to_string(),
+                    &network.to_string(),
+                    &ipfs_cid,
+                    &format,
+                    &(width as i32),
+                    &(height as i32),
+                    &size_bytes,
+                    &alt_text,
+                    &metadata,
+                ],
+            )
+            .await?;
+
+        info!(
+            "Stored image verification for address {} on network {}: CID {}",
+            account, network, ipfs_cid
+        );
         Ok(())
     }
 
