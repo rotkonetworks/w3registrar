@@ -38,6 +38,7 @@ pub struct EmailConfig {
     pub mailbox: String,
     pub server: String,
     pub checking_frequency: Option<u64>,
+    pub redirects: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

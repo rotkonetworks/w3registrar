@@ -8,15 +8,16 @@ mod redis;
 mod runner;
 mod token;
 
+use adapter::mail::watch_jmap_server;
 use anyhow::{Context as _, Result};
 use api::{spawn_http_serv, spawn_identity_indexer};
 use postgres::PostgresConnection;
+use tracing_subscriber::EnvFilter;
 use std::panic;
 use tracing::{error, info, instrument};
-use tracing_subscriber::EnvFilter;
 
 use crate::{
-    adapter::{dns::watch_dns, mail::watch_mailserver, matrix},
+    adapter::{dns::watch_dns, matrix},
     api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv},
     config::{Config, GLOBAL_CONFIG},
     redis::RedisConnection,
@@ -121,7 +122,7 @@ async fn main() -> Result<()> {
 
     if needs_email {
         info!("starting email service...");
-        runner.spawn(watch_mailserver, Some("email_service")).await;
+        runner.spawn(watch_jmap_server, Some("email_service")).await;
     }
 
     if needs_matrix_bot {

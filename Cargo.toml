@@ -9,12 +9,12 @@ anyhow = "1.0.86"
 futures = "0.3.30"
 tokio = { version = "1.39.2", features = ["full", "signal"] }
 toml = "0.8.19"
-tracing-subscriber = "0.3.18"
+tracing-subscriber = {version = "0.3.18", features = ["env-filter"]}
 tracing = "0.1.40"
 subxt = { version = "0.44.0" }
 serde_json = "1.0.125"
 hex = "0.4.3"
-uuid = { version = "1.10.0", features = ["v4", "macro-diagnostics"] }
+uuid = { version = "1.10.0", features = ["v4", "macro-diagnostics", "serde"] }
 async-trait = "0.1.81"
 rand = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
@@ -47,6 +47,7 @@ postgres-openssl = "0.5.1"
 openssl = "0.10.73"
 postgres-types = { version = "0.2.9", features = ["derive"] }
 mobc = "0.9.0"
+jmap-client = "0.3.3"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

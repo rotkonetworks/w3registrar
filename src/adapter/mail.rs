@@ -1,31 +1,35 @@
+// TODO: remove unused things
+#![allow(dead_code)]
+
 use anyhow::anyhow;
-use std::net::TcpStream;
-use std::str::FromStr;
-use std::time::Duration;
+use jmap_client::client::{Client, Credentials};
+use jmap_client::email::{EmailAddress, EmailBodyPart, Property};
+use jmap_client::email_submission::Address;
+use jmap_client::event_source::Changes;
+use jmap_client::push_subscription::PushSubscription;
+use jmap_client::TypeState;
+use tokio_stream::StreamExt;
+use tracing::{error, info, instrument};
+use uuid::Uuid;
 
 use crate::{
     adapter::Adapter,
     api::{Account, Network},
-    config::RedisConfig,
+    config::{EmailConfig, GLOBAL_CONFIG},
     redis::RedisConnection,
 };
-use imap::Session;
-use native_tls::{TlsConnector, TlsStream};
+use std::str::FromStr;
 use subxt::utils::AccountId32;
 
-use tracing::{error, info, instrument, Level};
-
-use crate::config::GLOBAL_CONFIG;
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Mail {
+#[derive(Debug, Clone)]
+pub struct JmapMail {
     pub body: Option<String>,
     pub sender: String,
 }
 
-impl Adapter for Mail {}
+impl Adapter for JmapMail {}
 
-impl Mail {
+impl JmapMail {
     fn new(sender: String, body: Option<String>) -> Self {
         Self { body, sender }
     }
@@ -58,7 +62,7 @@ impl Mail {
                     .and_then(|b| b.lines().next())
                     .map(|l| l.trim().to_owned())
                 {
-                    match <Mail as Adapter>::handle_content(
+                    match <JmapMail as Adapter>::handle_content(
                         &text,
                         &mut redis_connection,
                         &network,
@@ -77,232 +81,270 @@ impl Mail {
     }
 }
 
-struct MailListener {
-    session: Session<TlsStream<TcpStream>>,
-    mailbox: String,
-    checking_frequency: u64,
+pub struct JmapClient {
+    client: Client,
+    id: Uuid,
+    config: EmailConfig,
+    mailbox_id: Option<String>,
+    identity_id: Option<String>,
+    sent_mailbox_id: Option<String>,
 }
 
-impl MailListener {
-    fn connect() -> Option<(Session<TlsStream<TcpStream>>, RedisConfig, String)> {
-        let cfg = match GLOBAL_CONFIG.get() {
-            Some(cfg) => cfg,
-            None => {
-                error!("Global config not initialized");
-                return None;
-            }
-        };
+impl Default for JmapClient {
+    fn default() -> Self {
+        todo!()
+    }
+}
 
-        let email_cfg = cfg.adapter.email.clone();
-        info!("connecting to {}", email_cfg.server);
-
-        let tls_connector = match TlsConnector::builder().build() {
-            Ok(tls) => tls,
-            Err(e) => {
-                error!("mail: tls connector failed: {}", e);
-                return None;
-            }
-        };
-
-        let client = match imap::connect_starttls(
-            (email_cfg.server.clone(), email_cfg.port),
-            email_cfg.server.clone(),
-            &tls_connector,
-        ) {
-            Ok(client) => client,
-            Err(e) => {
-                error!("mail: connection failed: {}", e);
-                return None;
-            }
-        };
-
-        info!("mail: login as {}", email_cfg.username);
-
-        let session = match client.login(email_cfg.username.clone(), email_cfg.password.clone()) {
-            Ok(session) => session,
-            Err((e, _)) => {
-                error!("mail: login failed: {:?}", e);
-                return None;
-            }
-        };
-
-        info!("mail: connected to {}", email_cfg.email);
-
-        Some((session, cfg.redis.clone(), email_cfg.mailbox.clone()))
+impl JmapClient {
+    pub async fn push_subscription_verify(
+        &self,
+        id: &str,
+        verification_code: impl Into<String>,
+    ) -> jmap_client::Result<Option<PushSubscription>> {
+        self.client
+            .push_subscription_verify(id, verification_code)
+            .await
     }
 
-    fn new() -> Option<Self> {
-        let (session, _, mailbox) = Self::connect()?;
-        let cfg = GLOBAL_CONFIG.get()?;
-        let checking_frequency = cfg.adapter.email.checking_frequency.unwrap_or(500);
+    pub async fn new(config: &EmailConfig) -> anyhow::Result<Self> {
+        let credentials = Credentials::basic(&config.username, &config.password);
 
-        Some(Self {
-            checking_frequency,
-            session,
-            mailbox,
-        })
+        let client = Client::new()
+            .credentials(credentials)
+            .follow_redirects(&config.redirects)
+            .connect(&config.server)
+            .await?;
+
+        let id = uuid::Uuid::new_v4();
+
+        let jmap_client = Self {
+            client,
+            id,
+            config: config.clone(),
+            mailbox_id: None,
+            identity_id: None,
+            sent_mailbox_id: None,
+        };
+
+        Ok(jmap_client)
     }
 
-    // TODO: care about only first line
-    // async fn get_mail(&mut self, id: u32) -> anyhow::Result<Mail> {
-    //     let mail = self.session.uid_fetch(format!("{}", id), "RFC822")?;
-    //     for msg in mail.iter() {
-    //         let parsed = mail_parser::MessageParser::default()
-    //             .parse(msg.body().unwrap_or_default())
-    //             .unwrap_or_default();
-    //         let address = parsed.return_address().unwrap().to_string();
-    //         let x = parsed.body_text(0).map(|body| body.to_string());
-    //         return Ok(Mail::new(address, x));
-    //     }
-    //     return Err(anyhow!("No message found"));
-    // }
+    pub async fn send_challenge_email(
+        &self,
+        to_email: &str,
+        challenge_token: &str,
+        network: &Network,
+        account_id: &AccountId32,
+    ) -> anyhow::Result<()> {
+        let identity_id = self
+            .identity_id
+            .as_ref()
+            .ok_or_else(|| anyhow!("No identity configured for sending"))?;
 
-    async fn flag_mail_as_seen(&mut self, id: u32) -> anyhow::Result<()> {
-        self.session.uid_store(format!("{id}"), "+FLAGS (\\SEEN)")?;
-        self.session.expunge()?;
+        // Create email body
+        let subject = format!("W3Registrar Verification for {}", network);
+        let body = format!(
+            "Your verification token for {} network (account {})\n\n{}\n\n\
+            Please reply to this email with the token above as the first line of your response.\n\n\
+            This token will expire in 24 hours.",
+            network, account_id, challenge_token
+        );
+
+        // Create the email with proper headers
+        let email_content = format!(
+            "From: {} <{}>
+To: {}
+Subject: {}
+
+{}",
+            self.config.name, self.config.email, to_email, subject, body
+        );
+
+        let create_response = self
+            .client
+            .email_import(
+                email_content.as_bytes().to_vec(),
+                [self.sent_mailbox_id.as_ref().unwrap_or(identity_id)],
+                ["$draft"].into(),
+                None,
+            )
+            .await?;
+
+        let email_id = create_response
+            .id()
+            .ok_or_else(|| anyhow!("Failed to create draft email"))?;
+
+        // Submit the email using email_submission_create_envelope
+        self.client
+            .email_submission_create_envelope(
+                email_id,
+                identity_id,
+                Address::new(&self.config.email),
+                vec![Address::new(to_email)],
+            )
+            .await?;
+
+        info!(
+            "Sent challenge email to {} for {}/{}",
+            to_email, network, account_id
+        );
+
         Ok(())
     }
 
-    /// Retrieves and parses an email message by its ID
-    /// Extracts sender address and message body
-    async fn get_mail(&mut self, id: u32) -> anyhow::Result<Mail> {
-        info!("Attempting to fetch mail with UID {}", id);
+    async fn fetch_email(&self, email_id: &str) -> anyhow::Result<JmapMail> {
+        let email = self
+            .client
+            .email_get(email_id, [Property::From, Property::Preview].into())
+            .await?
+            .ok_or_else(|| anyhow!("Email {} not found", email_id))?;
 
-        let fetched_mails = self.session.fetch(format!("{id}"), "RFC822")?;
-        if fetched_mails.is_empty() {
-            info!("No mail found with MSN {}, trying UID fetch", id);
-            let fetched_mails = self.session.uid_fetch(format!("{id}"), "RFC822")?;
-            if fetched_mails.is_empty() {
-                return Err(anyhow!("No mail found with either MSN or UID {}", id));
-            }
-        }
-
-        let mail = fetched_mails
-            .first()
-            .ok_or_else(|| anyhow!("Fetch succeeded but returned empty result for {}", id))?;
-
-        let parsed = mail_parser::MessageParser::default()
-            .parse(mail.body().unwrap_or_default())
-            .ok_or_else(|| anyhow!("Failed to parse mail content"))?;
-
-        let address = parsed
-            .return_address()
-            .ok_or_else(|| anyhow!("No return address found"))?
+        let sender = email
+            .from()
+            .and_then(|addrs| addrs.first())
+            .and_then(|addr| Some(addr.email()))
+            .ok_or_else(|| anyhow!("No sender found for email"))?
             .to_string();
 
-        let body = parsed.body_text(0).map(|body| body.to_string());
+        let body = email.preview().map(|s| s.to_string());
 
-        info!(
-            "Successfully fetched and parsed mail {} from {}",
-            id, address
-        );
-
-        Ok(Mail::new(address, body))
+        Ok(JmapMail::new(sender, body))
     }
 
-    /// Polls mailbox for new unread messages and processes them
-    /// Uses IMAP IDLE for efficient notification of new messages
-    async fn check_mailbox(&mut self) -> anyhow::Result<()> {
-        info!("Selecting mailbox {}", self.mailbox);
-        self.session.select(&self.mailbox).map_err(|e| {
-            anyhow!(
-                "{}:{} Unable to select mail box {} {}",
-                file!(),
-                line!(),
-                &self.mailbox,
-                e
-            )
-        })?;
+    async fn mark_as_seen(&self, email_id: &str) -> anyhow::Result<()> {
+        self.client
+            .email_set_keyword(email_id, "$seen", true)
+            .await?;
 
-        // TODO: make this duration configurable
-        loop {
-            info!("Starting idle session");
-            // it's here cuz .idle() takes &mut self
-            let mut idle_handle = self.session.idle().map_err(|e| {
-                anyhow!(
-                    "{}:{} Unable to start idle IMAP session {}",
-                    file!(),
-                    line!(),
-                    e
+        Ok(())
+    }
+
+    pub async fn handle_mail_body(
+        &mut self,
+        body: &EmailBodyPart,
+        sender: &EmailAddress,
+    ) -> anyhow::Result<()> {
+        let text = body.charset().unwrap_or_default();
+        let account = Account::Email(sender.email().to_string());
+        let mut redis_connection = RedisConnection::get_connection().await?;
+
+        let search_query = format!("{account}|*");
+        let accounts = redis_connection.search(&search_query).await?;
+
+        if accounts.is_empty() {
+            info!("verification: no account found for {}", search_query);
+            return Ok(());
+        }
+
+        for acc_str in accounts {
+            info!("verification: processing account {}", acc_str);
+            let info: Vec<&str> = acc_str.split("|").collect();
+            if info.len() != 4 {
+                continue;
+            }
+
+            let network = Network::from_str(info[2])?;
+            let id = info[3];
+            if let Ok(wallet_id) = AccountId32::from_str(id) {
+                match <JmapMail as Adapter>::handle_content(
+                    &text,
+                    &mut redis_connection,
+                    &network,
+                    &wallet_id,
+                    &account,
                 )
-            })?;
-
-            idle_handle.set_keepalive(Duration::from_secs(self.checking_frequency));
-
-            info!("Waiting for a mail");
-            idle_handle
-                .wait_keepalive()
-                .map_err(|e| anyhow!("{}:{} Unable to wait for mail, {}", file!(), line!(), e))?;
-            info!("Received a new mail");
-
-            info!("Searching for unseen mails...");
-            let mail_id = self.session.search("UNSEEN").map_err(|e| {
-                anyhow!(
-                    "{}:{} Unable search for `NEW` mails {}",
-                    file!(),
-                    line!(),
-                    e
-                )
-            })?;
-
-            for id in mail_id {
-                info!("Flagging mail with ID {id} as `SEEN`");
-                self.flag_mail_as_seen(id).await.map_err(|e| {
-                    anyhow!(
-                        "{}:{} Unable to flag mail with ID {id} as seen, Reason: {}",
-                        file!(),
-                        line!(),
-                        e
-                    )
-                })?;
-
-                let mail = match self.get_mail(id).await {
-                    Ok(mail) => mail,
+                .await
+                {
+                    Ok(_) => info!("verification: success for {}/{}", account, network),
                     Err(e) => {
-                        error!(
-                            "{}:{} Unable get mail from ID {id}, Reason: {}",
-                            file!(),
-                            line!(),
-                            e
-                        );
-                        continue;
+                        error!("verification: failed for {}/{}: {}", account, network, e)
                     }
-                };
-                info!("Mail: {:#?}", mail);
-
-                mail.process_email().await.map_err(|e| {
-                    anyhow!(
-                        "{}:{} Unable to process mail with ID {id}, Reason: {}",
-                        file!(),
-                        line!(),
-                        e
-                    )
-                })?;
+                }
             }
         }
+
+        Ok(())
+    }
+
+    pub async fn handle_account_changes<'a, I>(&mut self, changes: I) -> anyhow::Result<()>
+    where
+        I: Iterator<Item = (&'a TypeState, &'a String)>,
+    {
+        for (_, state_id) in changes {
+            if let Some(mail) = self
+                .client
+                .email_get(&state_id, Some([Property::TextBody]))
+                .await
+                .unwrap()
+            {
+                // body text
+                let bodys = mail.text_body().unwrap_or_default();
+                // sender address
+                if let Some(sender) = mail.sender().unwrap_or_default().first() {
+                    for body in bodys {
+                        self.handle_mail_body(body, sender).await?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn handle_event(
+        &mut self,
+        event: Result<Changes, jmap_client::Error>,
+    ) -> anyhow::Result<()> {
+        let changes = event.map_err(|e| anyhow::Error::msg(format!("{e:?}")))?;
+        info!(id=?changes.id(),"Change id");
+        for account_id in changes.changed_accounts() {
+            info!(account=?account_id, "Account has changes");
+
+            if let Some(account_changes) = changes.changes(account_id) {
+                self.handle_account_changes(account_changes).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn check_mailbox(&mut self) -> anyhow::Result<()> {
+        let mut stream = self
+            .client
+            .event_source(
+                [TypeState::Email, TypeState::EmailDelivery].into(),
+                false,
+                60.into(),
+                None,
+            )
+            .await
+            .unwrap();
+        info!("Subscribing on jmap EventSource");
+
+        while let Some(event) = stream.next().await {
+            self.handle_event(event).await?;
+        }
+
+        Ok(())
     }
 }
 
-#[instrument(name = "mail_watcher")]
-pub async fn watch_mailserver() -> anyhow::Result<()> {
-    // NOTE: this duplicate exist since the guard is dropped after the end of watch_mailserver and
-    // since we spawn a task that will out live this function which should inherit this context (span)
-    info!("watcher started");
+// Global JMAP client for sending emails
+static JMAP_SENDER: tokio::sync::OnceCell<JmapClient> = tokio::sync::OnceCell::const_new();
 
-    let mut server = match MailListener::new() {
-        Some(server) => server,
-        None => {
-            return Err(anyhow!("Failed to create a MailListener instance"));
-        }
-    };
+#[instrument(name = "jmap_watcher")]
+pub async fn watch_jmap_server() -> anyhow::Result<()> {
+    info!("JMAP watcher started");
 
-    tokio::task::spawn(async move {
-        let span = tracing::span!(Level::INFO, "mail_watcher");
-        let _guard = span.enter();
-        if let Err(e) = server.check_mailbox().await {
-            error!(error = %e, "Error occurred while checking mailbox");
-        }
-    });
+    let config = GLOBAL_CONFIG
+        .get()
+        .ok_or_else(|| anyhow!("Global config not initialized"))?;
+
+    let mut client = JmapClient::new(&config.adapter.email).await?;
+    info!("New jmap client was created");
+
+    if let Err(e) = client.check_mailbox().await {
+        error!(error = %e, "Error occurred while checking JMAP mailbox");
+    }
 
     Ok(())
 }
