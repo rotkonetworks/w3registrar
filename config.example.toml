@@ -5,7 +5,7 @@ endpoint = "wss://dev.rotko.net/people-rococo/"
 registrar_index = 0
 keystore_path = "./.keyfile.rococo" # IdentityJudgement proxy's mnemonic/private keypath
 registrar_account = "5CiPPseXPECbkjWCa6MnjNokrgYjMqmKndv2rSnekmSK2DjL" # ferdie as registrar
-fields = ["email","matrix", "twitter", "discord", "display_name"]
+fields = ["email", "matrix", "twitter", "discord", "display_name", "web", "github", "pgp_fingerprint"]
 
 [registrar.paseo]
 endpoint = "wss://people-paseo.dotters.network"
@@ -66,3 +66,19 @@ client_id = "..."
 client_secret = "..."
 gh_url = "https://github.com/login/oauth/authorize"
 redirect_url = "http://example.com/oauth/callback/github"
+
+[adapter.pgp]
+keyserver_url = "https://keyserver.ubuntu.com"
+
+[adapter.image]
+ipfs_gateway = "https://ipfs.io"
+max_size_bytes = 2097152  # 2MB
+min_dimension = 16
+max_dimension = 4096
+nsfw_threshold = 0.6  # combined porn + sexy + hentai score (0.0-3.0)
+timeout_seconds = 10
+
+# Image verification requires nsfw-detection feature:
+# 1. Download model: ./scripts/download-nsfw-model.sh
+# 2. Build with: cargo build --release --features nsfw-detection
+# 3. Set model path (optional): NSFW_MODEL_PATH=models/nsfw-model.onnx

@@ -229,6 +229,71 @@ $$;";
 
         self.client.simple_query(create_gin_index).await?;
 
+        info!("Creating `pgp_keys` table");
+
+        let create_pgp_keys = "CREATE TABLE IF NOT EXISTS pgp_keys (
+            fingerprint     VARCHAR(40) PRIMARY KEY,
+            address         VARCHAR(48) NOT NULL,
+            network         NETWORK NOT NULL,
+            armored_key     TEXT NOT NULL,
+            uploaded_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            verified        BOOLEAN DEFAULT FALSE,
+            remailer_enabled BOOLEAN DEFAULT FALSE,
+            remailer_registered_only BOOLEAN DEFAULT TRUE,
+            require_verified_pgp BOOLEAN DEFAULT TRUE,
+            UNIQUE(address, network)
+        );";
+
+        info!("QUERY");
+        info!("{create_pgp_keys}");
+
+        self.client.simple_query(create_pgp_keys).await?;
+        info!("Table `pgp_keys` created");
+
+        // Migrate existing tables
+        let add_remailer_columns = "
+            ALTER TABLE pgp_keys
+            ADD COLUMN IF NOT EXISTS remailer_enabled BOOLEAN DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS remailer_registered_only BOOLEAN DEFAULT TRUE,
+            ADD COLUMN IF NOT EXISTS require_verified_pgp BOOLEAN DEFAULT TRUE;
+        ";
+        info!("Adding remailer columns if not exists");
+        self.client.simple_query(add_remailer_columns).await?;
+
+        let create_index_address_network = "CREATE INDEX IF NOT EXISTS idx_pgp_address_network
+            ON pgp_keys(address, network);";
+        info!("Creating index for pgp_keys (address, network)");
+        info!("{create_index_address_network}");
+
+        self.client.simple_query(create_index_address_network).await?;
+
+        let create_image_verifications = "CREATE TABLE IF NOT EXISTS image_verifications (
+            address         VARCHAR(48) NOT NULL,
+            network         NETWORK NOT NULL,
+            ipfs_cid        VARCHAR(100) NOT NULL,
+            format          VARCHAR(10) NOT NULL,
+            width           INTEGER NOT NULL,
+            height          INTEGER NOT NULL,
+            size_bytes      INTEGER NOT NULL,
+            alt_text        TEXT,  -- AI-generated description for accessibility (future: BLIP/CLIP)
+            metadata        JSONB,
+            verified_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (address, network)
+        );";
+
+        info!("QUERY");
+        info!("{create_image_verifications}");
+
+        self.client.simple_query(create_image_verifications).await?;
+        info!("Table `image_verifications` created");
+
+        let create_index_image_metadata = "CREATE INDEX IF NOT EXISTS idx_image_metadata
+            ON image_verifications USING gin(metadata);";
+        info!("Creating GIN index for image_verifications metadata");
+        info!("{create_index_image_metadata}");
+
+        self.client.simple_query(create_index_image_metadata).await?;
+
         Ok(())
     }
 
@@ -516,6 +581,177 @@ $$;";
         let cfg = GLOBAL_CONFIG.get().unwrap();
         let pog_config = cfg.postgres.clone();
         PostgresConnection::new(&pog_config).await
+    }
+
+    /// Store a PGP public key in the database
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn store_pgp_key(
+        &self,
+        fingerprint: &str,
+        address: &AccountId32,
+        network: &Network,
+        armored_key: &str,
+    ) -> anyhow::Result<()> {
+        let query = "
+            INSERT INTO pgp_keys (fingerprint, address, network, armored_key, verified)
+            VALUES ($1, $2, $3, $4, false)
+            ON CONFLICT (address, network)
+            DO UPDATE SET
+                fingerprint = EXCLUDED.fingerprint,
+                armored_key = EXCLUDED.armored_key,
+                uploaded_at = CURRENT_TIMESTAMP,
+                verified = false
+        ";
+
+        self.client
+            .execute(query, &[&fingerprint, &address.to_string(), &network.to_string(), &armored_key])
+            .await?;
+
+        info!("Stored PGP key for address {} on network {}", address, network);
+        Ok(())
+    }
+
+    /// Fetch a PGP public key from the database by fingerprint
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn get_pgp_key_by_fingerprint(&self, fingerprint: &str) -> anyhow::Result<Option<String>> {
+        let query = "SELECT armored_key FROM pgp_keys WHERE fingerprint = $1";
+
+        let rows = self.client.query(query, &[&fingerprint]).await?;
+
+        if rows.is_empty() {
+            Ok(None)
+        } else {
+            let armored_key: String = rows[0].get(0);
+            Ok(Some(armored_key))
+        }
+    }
+
+    /// Fetch a PGP public key from the database by address and network
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn get_pgp_key_by_address(
+        &self,
+        address: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<Option<(String, String)>> {
+        let query = "SELECT fingerprint, armored_key FROM pgp_keys WHERE address = $1 AND network = $2";
+
+        let rows = self.client
+            .query(query, &[&address.to_string(), &network.to_string()])
+            .await?;
+
+        if rows.is_empty() {
+            Ok(None)
+        } else {
+            let fingerprint: String = rows[0].get(0);
+            let armored_key: String = rows[0].get(1);
+            Ok(Some((fingerprint, armored_key)))
+        }
+    }
+
+    /// Mark a PGP key as verified
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn mark_pgp_key_verified(&self, fingerprint: &str) -> anyhow::Result<()> {
+        let query = "UPDATE pgp_keys SET verified = true WHERE fingerprint = $1";
+
+        self.client.execute(query, &[&fingerprint]).await?;
+
+        info!("Marked PGP key {} as verified", fingerprint);
+        Ok(())
+    }
+
+    /// Store image verification metadata
+    /// Note: alt_text is AI-generated (future: BLIP/CLIP), not user-provided
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn store_image_verification(
+        &self,
+        account: &AccountId32,
+        network: &Network,
+        ipfs_cid: &str,
+        format: String,
+        width: u32,
+        height: u32,
+        size_bytes: i32,
+        alt_text: Option<&str>,  // AI-generated for accessibility
+        metadata: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let query = "
+            INSERT INTO image_verifications
+            (address, network, ipfs_cid, format, width, height, size_bytes, alt_text, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (address, network)
+            DO UPDATE SET
+                ipfs_cid = EXCLUDED.ipfs_cid,
+                format = EXCLUDED.format,
+                width = EXCLUDED.width,
+                height = EXCLUDED.height,
+                size_bytes = EXCLUDED.size_bytes,
+                alt_text = EXCLUDED.alt_text,
+                metadata = EXCLUDED.metadata,
+                verified_at = CURRENT_TIMESTAMP
+        ";
+
+        self.client
+            .execute(
+                query,
+                &[
+                    &account.to_string(),
+                    &network.to_string(),
+                    &ipfs_cid,
+                    &format,
+                    &(width as i32),
+                    &(height as i32),
+                    &size_bytes,
+                    &alt_text,
+                    &metadata,
+                ],
+            )
+            .await?;
+
+        info!(
+            "Stored image verification for address {} on network {}: CID {}",
+            account, network, ipfs_cid
+        );
+        Ok(())
+    }
+
+    /// Update remailer settings for a PGP key
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn update_remailer_settings(
+        &self,
+        address: &AccountId32,
+        network: &Network,
+        remailer_enabled: bool,
+        remailer_registered_only: bool,
+        require_verified_pgp: bool,
+    ) -> anyhow::Result<()> {
+        let query = "
+            UPDATE pgp_keys
+            SET remailer_enabled = $1, remailer_registered_only = $2, require_verified_pgp = $3
+            WHERE address = $4 AND network = $5
+        ";
+
+        let rows_affected = self.client
+            .execute(
+                query,
+                &[
+                    &remailer_enabled,
+                    &remailer_registered_only,
+                    &require_verified_pgp,
+                    &address.to_string(),
+                    &network.to_string()
+                ]
+            )
+            .await?;
+
+        if rows_affected == 0 {
+            return Err(anyhow!("No PGP key found for address {} on network {}", address, network));
+        }
+
+        info!(
+            "Updated remailer settings for {} on {}: enabled={}, registered_only={}, verified_only={}",
+            address, network, remailer_enabled, remailer_registered_only, require_verified_pgp
+        );
+        Ok(())
     }
 
     pub async fn get_indexer_state(&self, network: &Network) -> anyhow::Result<IndexerState> {

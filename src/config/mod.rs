@@ -16,6 +16,9 @@ pub struct Adapter {
     pub matrix: MatrixConfig,
     pub email: EmailConfig,
     pub github: GithubConfig,
+    pub pgp: PGPConfig,
+    #[serde(default)]
+    pub image: ImageConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -223,6 +226,42 @@ impl Default for GithubConfig {
 }
 
 impl GithubConfig {}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PGPConfig {
+    pub keyserver_url: String,
+}
+
+impl Default for PGPConfig {
+    fn default() -> Self {
+        Self {
+            keyserver_url: "https://keyserver.ubuntu.com".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ImageConfig {
+    pub ipfs_gateway: String,
+    pub max_size_bytes: u32,
+    pub min_dimension: u32,
+    pub max_dimension: u32,
+    pub nsfw_threshold: f32,
+    pub timeout_seconds: u64,
+}
+
+impl Default for ImageConfig {
+    fn default() -> Self {
+        Self {
+            ipfs_gateway: "https://ipfs.io".to_string(),
+            max_size_bytes: 2 * 1024 * 1024, // 2MB
+            min_dimension: 16,
+            max_dimension: 4096,
+            nsfw_threshold: 0.6, // combined porn + sexy + hentai
+            timeout_seconds: 10,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct HTTPConfig {
