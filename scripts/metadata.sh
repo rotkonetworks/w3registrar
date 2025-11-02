@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 METADATA_DIR="$(dirname "$0")/../metadata"
 mkdir -p "$METADATA_DIR"
 METADATA_DIR="$(cd "$METADATA_DIR" && pwd)"

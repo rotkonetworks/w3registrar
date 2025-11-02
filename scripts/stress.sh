@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 WS_URL=${1:-"ws://127.0.0.1:8080"}
 CONNS=${2:-100}
 TIMEOUT=30

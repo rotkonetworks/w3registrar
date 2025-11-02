@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
 # Default endpoint with override from first argument
 WS_URL=${1:-"wss://api.w3reg.org"}
