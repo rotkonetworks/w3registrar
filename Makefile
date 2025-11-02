@@ -32,10 +32,10 @@ check-deps: ## Check if all dependencies are installed
 secrets-fetch: ## Fetch production configs from server
 	@mkdir -p secrets
 	@echo "📥 Fetching configs from www.rotko.net..."
-	@scp root@www.rotko.net:/home/deploy/dapi-w3registrar/config.docker.toml secrets/dapi-config.toml
-	@scp root@www.rotko.net:/home/deploy/sapi-w3registrar/config.docker.toml secrets/sapi-config.toml
-	@scp root@www.rotko.net:/home/deploy/api-w3registrar/config.docker.toml secrets/api-config.toml
-	@scp root@www.rotko.net:/home/deploy/dapi-w3registrar/ssl_cert.pem secrets/ssl_cert.pem
+	@scp $(SCP_FLAGS) root@www.rotko.net:/home/deploy/dapi-w3registrar/config.docker.toml secrets/dapi-config.toml
+	@scp $(SCP_FLAGS) root@www.rotko.net:/home/deploy/sapi-w3registrar/config.docker.toml secrets/sapi-config.toml
+	@scp $(SCP_FLAGS) root@www.rotko.net:/home/deploy/api-w3registrar/config.docker.toml secrets/api-config.toml
+	@scp $(SCP_FLAGS) root@www.rotko.net:/home/deploy/dapi-w3registrar/ssl_cert.pem secrets/ssl_cert.pem
 	@echo "✅ Configs fetched to secrets/"
 
 encrypt-all: check-deps ## Encrypt all configs (dev, staging, prod)
