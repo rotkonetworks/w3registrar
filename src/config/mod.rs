@@ -4,7 +4,7 @@ use crate::node::identity::events::judgement_requested::RegistrarIndex;
 use anyhow::anyhow;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::env;
+
 use std::fs;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
@@ -79,16 +79,23 @@ pub struct RegistrarConfig {
     pub fields: Vec<String>,
 }
 
+static CONFIG: OnceCell<Config> = OnceCell::const_new();
+
 impl Config {
-    /// Set the [GLOBAL_CONFIG] global variable and return an instance(clone) of it
-    pub fn set_global_config() -> anyhow::Result<Config> {
+    pub fn load() -> anyhow::Result<Config> {
         let config_path =
             std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
         let config = Config::load_from(&config_path)?;
-        GLOBAL_CONFIG
+        CONFIG
             .set(config.clone())
-            .expect("GLOBAL_CONFIG already initialized");
+            .map_err(|_| anyhow!("CONFIG already initialized"))?;
         Ok(config)
+    }
+
+    pub fn load_static<'a>() -> &'a Self {
+        CONFIG
+            .get()
+            .expect("CONFIG is not initialized")
     }
 
     pub fn load_from(path: &str) -> anyhow::Result<Self> {
@@ -105,16 +112,6 @@ impl Config {
         toml::from_str(&content)
             .map_err(|err| anyhow!("Failed to parse config at {}: {:?}", path, err))
     }
-}
-
-pub static GLOBAL_CONFIG: OnceCell<Config> = OnceCell::const_new();
-
-pub async fn initialize_config() {
-    let config_path = env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
-    let config = Config::load_from(&config_path).expect("Failed to load config");
-    GLOBAL_CONFIG
-        .set(config)
-        .expect("GLOBAL_CONFIG already initialized");
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

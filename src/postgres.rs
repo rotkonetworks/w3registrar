@@ -26,7 +26,8 @@ use crate::{
     api::{
         identity_data_tostring, AccountType, FieldsFilter, Filter, IncomingSearchRequest, Network,
     },
-    config::{PostgresConfig, GLOBAL_CONFIG},
+    config::{PostgresConfig},
+    config::Config,
     node::{
         self,
         identity::events::JudgementGiven,
@@ -578,7 +579,7 @@ $$;";
     }
 
     pub async fn default() -> anyhow::Result<Self> {
-        let cfg = GLOBAL_CONFIG.get().unwrap();
+        let cfg = Config::load_static();
         let pog_config = cfg.postgres.clone();
         PostgresConnection::new(&pog_config).await
     }
@@ -891,9 +892,7 @@ impl RegistrationRecord {
 
     // TODO: return None if judgement is not set correctly
     pub async fn from_judgement(jud: &JudgementGiven) -> anyhow::Result<Option<Self>> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
 
         let (network, reg_config) = match cfg.registrar.registrar_config(jud.registrar_index) {
             Some(v) => v,

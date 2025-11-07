@@ -2,7 +2,7 @@ use tracing::{error, info, info_span, instrument, Span};
 
 use crate::{
     api::Network,
-    config::GLOBAL_CONFIG,
+    config::Config,
     node::Client as NodeClient,
     postgres::{PostgresConnection, RegistrationQuery, RegistrationRecord},
 };
@@ -22,9 +22,7 @@ impl Indexer {
     #[instrument(skip_all, parent = &self.span)]
     async fn index_identities(self, network: &Network) -> anyhow::Result<()> {
         let pog_connection = PostgresConnection::default().await?;
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
         match pog_connection.get_indexer_state(network).await {
             Ok(state) => {
                 let network_cfg = cfg
@@ -59,9 +57,7 @@ impl Indexer {
     /// Indexes the missing identities found on chain but missing in db
     #[instrument(skip_all, parent = &self.span)]
     async fn index_remaining_identities(&self, network: &Network) -> anyhow::Result<()> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
 
         let network_cfg = cfg
             .registrar
@@ -114,9 +110,7 @@ impl Indexer {
     /// Gets all on-chain identities untill now and saves them to db
     #[instrument(skip_all, parent = &self.span)]
     async fn index_identities_from_start(&self, network: &Network) -> anyhow::Result<()> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
 
         let network_cfg = cfg
             .registrar
@@ -158,9 +152,7 @@ impl Indexer {
     pub async fn index(self) -> anyhow::Result<()> {
         info!("Starting indexer");
 
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
         let networks = cfg.registrar.supported_networks();
 
         for network in networks {

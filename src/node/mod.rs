@@ -4,7 +4,7 @@
 pub mod substrate {}
 
 use crate::api::{AccountType, Network};
-use crate::config::GLOBAL_CONFIG;
+use crate::config::Config;
 
 use anyhow::{anyhow, Result};
 use sp_core::blake2_256;
@@ -58,9 +58,7 @@ pub async fn get_registration(
 async fn setup_network(
     network: &Network,
 ) -> anyhow::Result<(Client, crate::config::RegistrarConfig)> {
-    let cfg = GLOBAL_CONFIG
-        .get()
-        .expect("GLOBAL_CONFIG is not initialized");
+    let cfg = Config::load_static();
 
     let network_cfg = cfg
         .registrar
@@ -311,9 +309,7 @@ pub async fn filter_accounts(
     let accounts = Account::into_accounts(info);
     info!(accounts=?accounts,"Found accounts");
 
-    let cfg = GLOBAL_CONFIG
-        .get()
-        .expect("GLOBAL_CONFIG is not initialized");
+    let cfg = Config::load_static();
 
     let network_cfg = cfg
         .registrar
@@ -348,7 +344,7 @@ pub async fn filter_accounts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, GLOBAL_CONFIG};
+    use crate::config::{Config};
     use std::sync::Once;
     use tracing::{info, warn};
 
@@ -428,7 +424,7 @@ mod tests {
             let config =
                 Config::load_from("config.toml").expect("Failed to load config from config.toml");
             info!("Loaded config: {:?}", config);
-            GLOBAL_CONFIG
+            Config::load_static()
                 .set(config)
                 .expect("Failed to set global config");
         });

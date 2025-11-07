@@ -11,7 +11,7 @@ use tracing::info;
 use super::Adapter;
 use crate::api::Account;
 use crate::api::Network;
-use crate::config::GLOBAL_CONFIG;
+use crate::config::Config;
 use crate::redis::RedisConnection;
 
 pub struct PGPHelper {
@@ -44,9 +44,7 @@ impl PGPHelper {
         }
 
         // If not in database, fetch from keyserver
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
         let keyserver_url = &cfg.adapter.pgp.keyserver_url;
 
         info!("Fetching PGP key for fingerprint: {} from keyserver {}", fingerprint_hex, keyserver_url);

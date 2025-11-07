@@ -15,7 +15,7 @@ use subxt::utils::AccountId32;
 
 use tracing::{error, info, instrument, Level};
 
-use crate::config::GLOBAL_CONFIG;
+use crate::config::Config;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Mail {
@@ -85,13 +85,7 @@ struct MailListener {
 
 impl MailListener {
     fn connect() -> Option<(Session<TlsStream<TcpStream>>, RedisConfig, String)> {
-        let cfg = match GLOBAL_CONFIG.get() {
-            Some(cfg) => cfg,
-            None => {
-                error!("Global config not initialized");
-                return None;
-            }
-        };
+        let cfg = Config::load_static();
 
         let email_cfg = cfg.adapter.email.clone();
         info!("connecting to {}", email_cfg.server);
@@ -133,7 +127,7 @@ impl MailListener {
 
     fn new() -> Option<Self> {
         let (session, _, mailbox) = Self::connect()?;
-        let cfg = GLOBAL_CONFIG.get()?;
+        let cfg = Config::load_static();
         let checking_frequency = cfg.adapter.email.checking_frequency.unwrap_or(500);
 
         Some(Self {

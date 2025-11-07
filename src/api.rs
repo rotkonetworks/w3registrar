@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use crate::config::Config;
 use crate::postgres::SearchSpace;
 // NOTE: Logging Hygiene
 // 1) Log only base operations (things that are not done by ur own code) for example
@@ -56,7 +57,7 @@ use crate::{
         pgp::PGPHelper,
         Adapter,
     },
-    config::{RedisConfig, RegistrarConfig, GLOBAL_CONFIG},
+    config::{RedisConfig, RegistrarConfig},
     indexer::Indexer,
     node::{
         self, filter_accounts, get_judgement,
@@ -928,9 +929,7 @@ pub struct SocketListener {
 
 impl SocketListener {
     pub async fn new() -> Self {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
         let span = info_span!("socket_listener");
         Self {
             span,
@@ -945,9 +944,7 @@ impl SocketListener {
         request: IncomingSubscribeRequest,
         subscriber: &mut Option<AccountId32>,
     ) -> anyhow::Result<serde_json::Value> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
 
         if !cfg.registrar.is_network_supported(&request.network) {
             return Ok(serde_json::json!({
@@ -1136,9 +1133,7 @@ impl SocketListener {
         accounts: Vec<Account>,
         network: &Network,
     ) -> anyhow::Result<()> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
         let network_cfg = cfg
             .registrar
             .get_network(network)
@@ -1574,7 +1569,7 @@ impl SocketListener {
         // to avoid collisions with futures::StreamExt
         use tokio_stream::StreamExt;
 
-        let redis_cfg = self.redis_cfg.clone();
+        let redis_cfg = Config::load_static().redis.clone();
         info!(account_id = %account.to_string(), "Starting Redis listener task!");
 
         tokio::spawn(async move {
@@ -1646,9 +1641,7 @@ impl SocketListener {
         request: IncomingVerifyPGPRequest,
         subscriber: &mut Option<AccountId32>,
     ) -> anyhow::Result<serde_json::Value> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
 
         // filter only supported networks
         if !cfg.registrar.is_network_supported(&request.network) {
@@ -1718,9 +1711,7 @@ impl SocketListener {
         request: IncomingVerifyPGPAutomatedRequest,
         subscriber: &mut Option<AccountId32>,
     ) -> anyhow::Result<serde_json::Value> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
 
         // filter only supported networks
         if !cfg.registrar.is_network_supported(&request.network) {
@@ -1790,9 +1781,7 @@ impl SocketListener {
     ) -> anyhow::Result<serde_json::Value> {
         use sequoia_openpgp::{Cert, parse::Parse};
 
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
 
         // filter only supported networks
         if !cfg.registrar.is_network_supported(&request.network) {
@@ -1908,9 +1897,7 @@ impl SocketListener {
             limiter.insert(rate_key.clone(), Instant::now());
         }
 
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
 
         // filter only supported networks
         if !cfg.registrar.is_network_supported(&request.network) {
@@ -2062,9 +2049,7 @@ impl SocketListener {
         &self,
         request: IncomingUpdateRemailerSettingsRequest,
     ) -> anyhow::Result<serde_json::Value> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
 
         // filter only supported networks
         if !cfg.registrar.is_network_supported(&request.network) {
@@ -2212,9 +2197,7 @@ impl NodeListener {
     /// This function will fail if the _redis_url_ is an invalid url to a redis server
     /// or if _node_url_ is not a valid url for a substrate BC node
     pub async fn new() -> anyhow::Result<Self> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
         let mut clients = HashMap::new();
 
         for (network, network_cfg) in &cfg.registrar.networks {
@@ -2239,9 +2222,7 @@ impl NodeListener {
         index: u32,
         network: &Network,
     ) -> anyhow::Result<()> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
 
         let network_cfg = cfg
             .registrar
@@ -2341,9 +2322,7 @@ impl NodeListener {
     pub async fn listen(self) -> anyhow::Result<()> {
         info!("Starting node listener");
 
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
         let networks = cfg.registrar.supported_networks();
 
         let mut handles = Vec::new();
@@ -2425,7 +2404,7 @@ impl NodeListener {
                     if let Ok(Some(judgement)) = get_judgement(&jud.target, network).await {
                         if matches!(judgement, Judgement::Reasonable) {
                             // construct a record
-                            let cfg = GLOBAL_CONFIG.get().unwrap();
+                            let cfg = Config::load_static();
                             let pog_config = cfg.postgres.clone();
                             let mut pog_connection =
                                 PostgresConnection::new(&pog_config).await.unwrap();
@@ -2503,9 +2482,7 @@ impl NodeListener {
         index: u32,
         network: &Network,
     ) -> anyhow::Result<()> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
 
         let network_cfg = cfg
             .registrar
@@ -2629,7 +2606,7 @@ impl RedisSubscriber {
 }
 
 pub async fn spawn_redis_subscriber() -> anyhow::Result<()> {
-    let redis_cfg = GLOBAL_CONFIG.get().unwrap().redis.clone();
+    let redis_cfg = Config::load_static().redis.clone();
     RedisSubscriber::new(redis_cfg).listen().await
 }
 
@@ -2716,9 +2693,7 @@ async fn pong() -> &'static str {
 }
 
 pub async fn spawn_http_serv() -> anyhow::Result<()> {
-    let cfg = GLOBAL_CONFIG
-        .get()
-        .expect("GLOBAL_CONFIG is not initialized");
+    let cfg = Config::load_static();
     let gh_config = cfg.adapter.github.clone();
     let http_config = cfg.http.clone();
     let redirect_url = gh_config.redirect_url.unwrap();

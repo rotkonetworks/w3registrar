@@ -2,7 +2,7 @@
 ///
 use crate::{
     adapter::Adapter,
-    config::GLOBAL_CONFIG,
+    config::Config,
     redis::RedisConnection,
     token::{AuthToken, Token},
 };
@@ -22,9 +22,7 @@ impl Adapter for Github {}
 impl Github {
     /// Reconstruct the redirected url with the appended state (challenge)
     pub fn reconstruct_request_url(state: &str) -> anyhow::Result<url::Url> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
         let gh_config = cfg.adapter.github.clone();
         let base_url = gh_config.gh_url;
         let client_id = gh_config.client_id;
@@ -79,9 +77,7 @@ impl Github {
     /// This constructs a unique url per call, where each differs by the `state` parameter.
     /// The state is stored in Redis with 10-minute expiration for security validation.
     pub async fn request_url() -> Option<String> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
         let gh_config = cfg.adapter.github.clone();
         let base_url = gh_config.gh_url;
         let client_id = gh_config.client_id;
@@ -124,9 +120,7 @@ impl Github {
         // Validate state parameter against stored tokens
         Github::validate_state(&params.state).await?;
 
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
+        let cfg = Config::load_static();
         let gh_config = cfg.adapter.github.clone();
 
         let client = Client::new();
