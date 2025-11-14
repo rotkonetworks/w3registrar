@@ -82,3 +82,10 @@ timeout_seconds = 10
 # 1. Download model: ./scripts/download-nsfw-model.sh
 # 2. Build with: cargo build --release --features nsfw-detection
 # 3. Set model path (optional): NSFW_MODEL_PATH=models/nsfw-model.onnx
+
+[ratelimit]
+wallet_requests_hour_limit = 2
+ip_requests_hour_limit = 2
+[ratelimit.exceptions]
+wallets = []
+ips = ["127.0.0.1", "0.0.0.0", "::"]

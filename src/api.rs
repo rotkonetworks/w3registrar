@@ -36,12 +36,14 @@ use serde_json::json;
 use sp_core::{blake2_256, crypto::Pair, sr25519};
 use std::fmt;
 use std::fmt::Display;
+use std::net::IpAddr;
 use std::str::FromStr;
 use std::time::Duration;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use subxt::events::EventDetails;
 use subxt::utils::AccountId32;
 use subxt::SubstrateConfig;
+use tokio::time::Instant;
 use tokio::{net::TcpStream, sync::Mutex};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
@@ -944,6 +946,19 @@ impl SocketListener {
         request: IncomingSubscribeRequest,
         subscriber: &mut Option<AccountId32>,
     ) -> anyhow::Result<serde_json::Value> {
+        let pg_conn = PostgresConnection::default().await?;
+
+        if !pg_conn
+            .is_allowed(&request.account, &request.network)
+            .await?
+        {
+            return Err(anyhow!("rate limit exceeded, try again later"));
+        } else {
+            pg_conn
+                .register_requester(&request.account, &request.network)
+                .await?;
+        }
+
         let cfg = Config::load_static();
 
         if !cfg.registrar.is_network_supported(&request.network) {
@@ -1073,7 +1088,18 @@ impl SocketListener {
         &mut self,
         message: Message,
         subscriber: &mut Option<AccountId32>,
+        sender_addr: IpAddr,
     ) -> Result<serde_json::Value> {
+        let pg_conn = PostgresConnection::default().await?;
+        if !pg_conn.is_allowed_ip(&sender_addr).await? {
+            return Ok(json!({
+                "type": "error",
+                "message": "rate limit exceeded, try again later"
+            }));
+        } else {
+            pg_conn.register_requester_ip(&sender_addr).await?;
+        }
+
         // 1) ensure the message is text
         let text = match message {
             Message::Text(t) => t,
@@ -1283,6 +1309,7 @@ impl SocketListener {
         &mut self,
         ws_write: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
         mut ws_read: SplitStream<WebSocketStream<TcpStream>>,
+        sender_addr: IpAddr,
     ) {
         let mut subscriber: Option<AccountId32> = None;
         let (sender, mut receiver) = mpsc::channel::<serde_json::Value>(100);
@@ -1302,7 +1329,7 @@ impl SocketListener {
                             break;
                         }
                         _ => {
-                            if !self.handle_ws_message(&ws_write, msg_result, &mut subscriber, sender.clone()).await {
+                            if !self.handle_ws_message(&ws_write, msg_result, &mut subscriber, sender.clone(), sender_addr).await {
                                 Self::close_ws_connection().await;
                                 break;
                             }
@@ -1360,12 +1387,13 @@ impl SocketListener {
         msg_result: Result<Message, tokio_tungstenite::tungstenite::Error>,
         subscriber: &mut Option<AccountId32>,
         sender: Sender<serde_json::Value>,
+        sender_addr: IpAddr,
     ) -> bool {
         match msg_result {
             Ok(Message::Text(bytes)) => {
                 // Convert Utf8Bytes to string using to_string()
                 let text = bytes.to_string();
-                self.handle_text_message(write, text, subscriber, sender)
+                self.handle_text_message(write, text, subscriber, sender, sender_addr)
                     .await
             }
             Ok(Message::Close(_)) => false,
@@ -1381,9 +1409,10 @@ impl SocketListener {
         text: String,
         subscriber: &mut Option<AccountId32>,
         sender: Sender<serde_json::Value>,
+        sender_addr: IpAddr,
     ) -> bool {
         match self
-            ._handle_incoming(Message::Text(text.into()), subscriber)
+            ._handle_incoming(Message::Text(text.into()), subscriber, sender_addr)
             .await
         {
             Ok(response) => {
@@ -1489,6 +1518,8 @@ impl SocketListener {
     /// Handles incoming websocket connection
     #[instrument(skip_all, parent = &self.span)]
     pub async fn handle_connection(&mut self, stream: std::net::TcpStream) {
+        let ip_addr = stream.peer_addr().map(|v| v.ip()).unwrap();
+
         let peer_addr = stream
             .peer_addr()
             .map_or("unknown".to_string(), |addr| addr.to_string());
@@ -1527,7 +1558,7 @@ impl SocketListener {
         let write = Arc::new(Mutex::new(write));
 
         info!("Starting WebSocket message processing");
-        self.process_websocket(write, read).await;
+        self.process_websocket(write, read, ip_addr).await;
     }
 
     /// websocket listener
@@ -1660,8 +1691,14 @@ impl SocketListener {
         let mut conn = RedisConnection::get_connection().await?;
         let mut fingerprint_bytes: Option<[u8; 20]> = None;
 
-        if let Some(verification_state) = conn.get_verification_state(&request.network, &request.account).await? {
-            if let Some(challenge_info) = verification_state.challenges.get(&AccountType::PGPFingerprint) {
+        if let Some(verification_state) = conn
+            .get_verification_state(&request.network, &request.account)
+            .await?
+        {
+            if let Some(challenge_info) = verification_state
+                .challenges
+                .get(&AccountType::PGPFingerprint)
+            {
                 // parse hex fingerprint from challenge name
                 if let Ok(bytes) = hex::decode(&challenge_info.account_name) {
                     if bytes.len() == 20 {
@@ -1730,8 +1767,14 @@ impl SocketListener {
         let mut conn = RedisConnection::get_connection().await?;
         let mut fingerprint_bytes: Option<[u8; 20]> = None;
 
-        if let Some(verification_state) = conn.get_verification_state(&request.network, &request.account).await? {
-            if let Some(challenge_info) = verification_state.challenges.get(&AccountType::PGPFingerprint) {
+        if let Some(verification_state) = conn
+            .get_verification_state(&request.network, &request.account)
+            .await?
+        {
+            if let Some(challenge_info) = verification_state
+                .challenges
+                .get(&AccountType::PGPFingerprint)
+            {
                 // parse hex fingerprint from challenge name
                 if let Ok(bytes) = hex::decode(&challenge_info.account_name) {
                     if bytes.len() == 20 {
@@ -1766,12 +1809,7 @@ impl SocketListener {
         let account_id = request.account;
 
         // automated verification via keyserver
-        PGPHelper::verify_automated(
-            fingerprint,
-            &request.network,
-            account_id,
-        )
-        .await
+        PGPHelper::verify_automated(fingerprint, &request.network, account_id).await
     }
 
     /// Handles PGP key upload
@@ -1779,7 +1817,21 @@ impl SocketListener {
         &self,
         request: IncomingUploadPGPKeyRequest,
     ) -> anyhow::Result<serde_json::Value> {
-        use sequoia_openpgp::{Cert, parse::Parse};
+        use sequoia_openpgp::{parse::Parse, Cert};
+
+        let pg_conn = PostgresConnection::default().await?;
+
+        if !pg_conn
+            .is_allowed(&request.account, &request.network)
+            .await?
+        {
+            return Err(anyhow!("rate limit exceeded, try again later"));
+        } else {
+            info!("Requester is allowed");
+            pg_conn
+                .register_requester(&request.account, &request.network)
+                .await?;
+        }
 
         let cfg = Config::load_static();
 
@@ -1814,8 +1866,14 @@ impl SocketListener {
         let mut conn = RedisConnection::get_connection().await?;
         let mut expected_fingerprint: Option<String> = None;
 
-        if let Some(verification_state) = conn.get_verification_state(&request.network, &request.account).await? {
-            if let Some(challenge_info) = verification_state.challenges.get(&AccountType::PGPFingerprint) {
+        if let Some(verification_state) = conn
+            .get_verification_state(&request.network, &request.account)
+            .await?
+        {
+            if let Some(challenge_info) = verification_state
+                .challenges
+                .get(&AccountType::PGPFingerprint)
+            {
                 expected_fingerprint = Some(challenge_info.account_name.clone());
                 info!("Using fingerprint from draft: {}", challenge_info.account_name);
             }
@@ -1875,26 +1933,22 @@ impl SocketListener {
         &self,
         request: IncomingVerifyImageRequest,
     ) -> anyhow::Result<serde_json::Value> {
-        use image::{ImageFormat, GenericImageView};
         use cid::Cid;
         use futures::StreamExt;
-        use std::collections::HashMap;
-        use std::sync::Mutex;
-        use std::time::{Duration as StdDuration, Instant};
+        use image::{GenericImageView, ImageFormat};
 
-        // simple rate limiting: 10 verifications per hour per account
-        static RATE_LIMITER: OnceCell<Mutex<HashMap<String, Instant>>> = OnceCell::new();
-        let rate_limiter = RATE_LIMITER.get_or_init(|| Mutex::new(HashMap::new()));
+        // NOTE: rolling in for testing the viablity of this approach
+        let pg_conn = PostgresConnection::default().await?;
 
-        let rate_key = format!("{}:{}", request.network, request.account);
+        if !pg_conn
+            .is_allowed(&request.account, &request.network)
+            .await?
         {
-            let mut limiter = rate_limiter.lock().unwrap();
-            if let Some(last_time) = limiter.get(&rate_key) {
-                if last_time.elapsed() < StdDuration::from_secs(360) {
-                    return Err(anyhow!("rate limit exceeded, try again later"));
-                }
-            }
-            limiter.insert(rate_key.clone(), Instant::now());
+            return Err(anyhow!("rate limit exceeded, try again later"));
+        } else {
+            pg_conn
+                .register_requester(&request.account, &request.network)
+                .await?;
         }
 
         let cfg = Config::load_static();
@@ -2794,8 +2848,9 @@ pub async fn spawn_identity_indexer() -> anyhow::Result<()> {
 
 mod test {
 
-    #[allow(unused_imports)]
     use super::*;
+    #[allow(unused_imports)]
+    use crate::postgres::Query;
 
     #[test]
     fn generic_search() {

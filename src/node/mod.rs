@@ -11,11 +11,11 @@ use sp_core::blake2_256;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
-use subxt_signer::sr25519::Keypair;
-use subxt_signer::SecretUri;
 use subxt::tx::Signer;
 use subxt::utils::AccountId32;
 use subxt::SubstrateConfig;
+use subxt_signer::sr25519::Keypair;
+use subxt_signer::SecretUri;
 use tracing::{error, info, warn};
 
 use super::api::Account;
@@ -344,7 +344,7 @@ pub async fn filter_accounts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config};
+    use crate::config::Config;
     use std::sync::Once;
     use tracing::{info, warn};
 
@@ -424,7 +424,7 @@ mod tests {
             let config =
                 Config::load_from("config.toml").expect("Failed to load config from config.toml");
             info!("Loaded config: {:?}", config);
-            Config::load_static()
+            Config::load_cell()
                 .set(config)
                 .expect("Failed to set global config");
         });

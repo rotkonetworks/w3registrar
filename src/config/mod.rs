@@ -4,9 +4,10 @@ use crate::node::identity::events::judgement_requested::RegistrarIndex;
 use anyhow::anyhow;
 use serde::Deserialize;
 use std::collections::HashMap;
+use subxt::utils::AccountId32;
 
 use std::fs;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use tokio::sync::OnceCell;
 use url::Url;
@@ -29,6 +30,48 @@ pub struct Config {
     pub http: HTTPConfig,
     pub adapter: Adapter,
     pub postgres: PostgresConfig,
+    pub ratelimit: Ratelimit,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Ratelimit {
+    pub wallet_requests_hour_limit: u64,
+    pub ip_requests_hour_limit: u64,
+    exceptions: Option<Exceptions>,
+}
+
+impl Ratelimit {
+    pub fn is_exception(&self, wallet_id: &AccountId32, network: &Network) -> bool {
+        match &self.exceptions {
+            Some(exceptions) => exceptions
+                .wallets
+                .contains(&(wallet_id.clone(), network.clone())),
+            None => false,
+        }
+    }
+
+    pub fn is_exception_ip(&self, ip: &IpAddr) -> bool {
+        match &self.exceptions {
+            Some(exceptions) => exceptions.ips.contains(&ip),
+            None => false,
+        }
+    }
+}
+
+impl Default for Ratelimit {
+    fn default() -> Self {
+        Self {
+            wallet_requests_hour_limit: 60,
+            ip_requests_hour_limit: 60,
+            exceptions: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Exceptions {
+    wallets: Vec<(AccountId32, Network)>,
+    ips: Vec<IpAddr>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -92,10 +135,12 @@ impl Config {
         Ok(config)
     }
 
+    pub fn load_cell<'a>() -> OnceCell<Config> {
+        CONFIG.clone()
+    }
+
     pub fn load_static<'a>() -> &'a Self {
-        CONFIG
-            .get()
-            .expect("CONFIG is not initialized")
+        CONFIG.get().expect("CONFIG is not initialized")
     }
 
     pub fn load_from(path: &str) -> anyhow::Result<Self> {

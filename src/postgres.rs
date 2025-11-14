@@ -3,6 +3,7 @@
 
 use anyhow::anyhow;
 use hex::ToHex;
+use matrix_sdk::bytes::BytesMut;
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
 use postgres_types::{to_sql_checked, Kind, ToSql, Type};
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sp_core::H256;
 use std::any::Any;
 use std::fmt::{format, Display};
+use std::net::IpAddr;
 use std::ops::Deref;
 use std::slice::Iter;
 use std::{str::FromStr, time::Duration};
@@ -22,12 +24,13 @@ use tracing::instrument;
 use tracing::{error, info, info_span, Span};
 
 use crate::api::TimeFilter;
+use crate::config::Exceptions;
 use crate::{
     api::{
         identity_data_tostring, AccountType, FieldsFilter, Filter, IncomingSearchRequest, Network,
     },
-    config::{PostgresConfig},
     config::Config,
+    config::PostgresConfig,
     node::{
         self,
         identity::events::JudgementGiven,
@@ -293,7 +296,33 @@ $$;";
         info!("Creating GIN index for image_verifications metadata");
         info!("{create_index_image_metadata}");
 
-        self.client.simple_query(create_index_image_metadata).await?;
+        self.client
+            .simple_query(create_index_image_metadata)
+            .await?;
+
+        let create_ip_ratlimitaer = "CREATE TABLE IF NOT EXISTS ip_ratelimiter (
+            ip               cidr NOT NULL,
+            timestamp        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (ip, timestamp)
+        );";
+        info!("Creating ip_ratelimiter table");
+        info!("{create_ip_ratlimitaer}");
+
+        self.client.simple_query(create_ip_ratlimitaer).await?;
+
+        let create_wallet_and_network_ratlimitaer =
+            "CREATE TABLE IF NOT EXISTS wallet_and_network_ratelimiter (
+            address          VARCHAR(48) NOT NULL,
+            network          NETWORK,
+            timestamp        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (address, network, timestamp)
+        );";
+        info!("Creating wallet_and_network_ratelimiter  table");
+        info!("{create_wallet_and_network_ratlimitaer}");
+
+        self.client
+            .simple_query(create_wallet_and_network_ratlimitaer)
+            .await?;
 
         Ok(())
     }
@@ -438,7 +467,16 @@ $$;";
     ) -> anyhow::Result<()> {
         // FIXME: update time should be also be changed
 
-        let query = format!("INSERT INTO indexer_state (network, last_block_hash, last_block_index) VALUES ('{}',$1, $2) ON CONFLICT (network) DO UPDATE SET last_block_hash = EXCLUDED.last_block_hash, last_block_index = EXCLUDED.last_block_index ; ", network);
+        let query = format!(
+            "INSERT INTO indexer_state (network, last_block_hash, last_block_index)
+            VALUES ('{}',$1, $2)
+            ON CONFLICT (network)
+            DO UPDATE SET
+                last_block_hash = EXCLUDED.last_block_hash,
+                last_block_index = EXCLUDED.last_block_index;
+        ",
+            network
+        );
 
         let values: &[&(dyn ToSql + Sync)] = &[&hex::encode(hash.as_bytes()), &index];
 
@@ -593,19 +631,23 @@ $$;";
         network: &Network,
         armored_key: &str,
     ) -> anyhow::Result<()> {
-        let query = "
+        // FIXME: don't you want to update the address and network here
+        let query = format!(
+            "
             INSERT INTO pgp_keys (fingerprint, address, network, armored_key, verified)
-            VALUES ($1, $2, $3, $4, false)
+            VALUES ($1, $2, '{}', $3, false)
             ON CONFLICT (address, network)
             DO UPDATE SET
                 fingerprint = EXCLUDED.fingerprint,
                 armored_key = EXCLUDED.armored_key,
                 uploaded_at = CURRENT_TIMESTAMP,
                 verified = false
-        ";
+        ",
+            network
+        );
 
         self.client
-            .execute(query, &[&fingerprint, &address.to_string(), &network.to_string(), &armored_key])
+            .execute(&query, &[&fingerprint, &address.to_string(), &armored_key])
             .await?;
 
         info!("Stored PGP key for address {} on network {}", address, network);
@@ -614,7 +656,10 @@ $$;";
 
     /// Fetch a PGP public key from the database by fingerprint
     #[instrument(skip_all, parent = &self.span)]
-    pub async fn get_pgp_key_by_fingerprint(&self, fingerprint: &str) -> anyhow::Result<Option<String>> {
+    pub async fn get_pgp_key_by_fingerprint(
+        &self,
+        fingerprint: &str,
+    ) -> anyhow::Result<Option<String>> {
         let query = "SELECT armored_key FROM pgp_keys WHERE fingerprint = $1";
 
         let rows = self.client.query(query, &[&fingerprint]).await?;
@@ -634,11 +679,12 @@ $$;";
         address: &AccountId32,
         network: &Network,
     ) -> anyhow::Result<Option<(String, String)>> {
-        let query = "SELECT fingerprint, armored_key FROM pgp_keys WHERE address = $1 AND network = $2";
+        let query = format!(
+            "SELECT fingerprint, armored_key FROM pgp_keys WHERE address = $1 AND network = '{}'",
+            network
+        );
 
-        let rows = self.client
-            .query(query, &[&address.to_string(), &network.to_string()])
-            .await?;
+        let rows = self.client.query(&query, &[&address.to_string()]).await?;
 
         if rows.is_empty() {
             Ok(None)
@@ -725,22 +771,25 @@ $$;";
         remailer_registered_only: bool,
         require_verified_pgp: bool,
     ) -> anyhow::Result<()> {
-        let query = "
+        let query = format!(
+            "
             UPDATE pgp_keys
             SET remailer_enabled = $1, remailer_registered_only = $2, require_verified_pgp = $3
-            WHERE address = $4 AND network = $5
-        ";
+            WHERE address = $4 AND network = '{}'
+        ",
+            network
+        );
 
-        let rows_affected = self.client
+        let rows_affected = self
+            .client
             .execute(
-                query,
+                &query,
                 &[
                     &remailer_enabled,
                     &remailer_registered_only,
                     &require_verified_pgp,
                     &address.to_string(),
-                    &network.to_string()
-                ]
+                ],
             )
             .await?;
 
@@ -761,6 +810,194 @@ $$;";
         Ok(IndexerState::try_from(
             &self.client.query_one(&query, &[]).await?,
         )?)
+    }
+
+    pub async fn register_requester_ip(&self, ip: &IpAddr) -> anyhow::Result<()> {
+        let query = format!(
+            "
+            INSERT INTO ip_ratelimiter
+            (ip)
+            VALUES ('{}')
+            ON CONFLICT (ip, timestamp)
+            DO UPDATE SET
+                ip = EXCLUDED.ip,
+                timestamp = CURRENT_TIMESTAMP
+        ",
+            ip
+        );
+
+        let mut v = BytesMut::default();
+
+        self.client.execute(&query, &[]).await?;
+
+        info!(ip=?ip, "Updating ratelimit");
+        Ok(())
+    }
+
+    pub async fn register_requester(
+        &self,
+        wallet_id: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<()> {
+        let query = format!(
+            "
+            INSERT INTO wallet_and_network_ratelimiter
+            (address, network)
+            VALUES ($1, '{}')
+            ON CONFLICT (address, network, timestamp)
+            DO UPDATE SET
+                address = EXCLUDED.address,
+                network = EXCLUDED.network,
+                timestamp = CURRENT_TIMESTAMP
+        ",
+            network
+        );
+
+        let mut v = BytesMut::default();
+
+        self.client
+            .execute(&query, &[&wallet_id.to_string()])
+            .await?;
+
+        info!(wallet_id=?wallet_id, network=?network,"Updating ratelimit");
+        Ok(())
+    }
+
+    // NOTE: experimenting with ip blocking
+    pub async fn is_allowed_ip(&self, ip: &IpAddr) -> anyhow::Result<bool> {
+        let ratelimiter = &Config::load_static().ratelimit;
+        if ratelimiter.is_exception_ip(ip) {
+            info!(ip=?ip,"IP is an exception");
+            return Ok(true);
+        } else {
+            let query = Ratelimit::from(ip);
+            let rows = query.exec().await?;
+
+            let limit = ratelimiter.wallet_requests_hour_limit as i64;
+
+            if rows > limit {
+                Ok(false)
+            } else {
+                Ok(true)
+            }
+        }
+    }
+
+    pub async fn is_allowed(
+        &self,
+        wallet_id: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<bool> {
+        let ratelimiter = &Config::load_static().ratelimit;
+        if ratelimiter.is_exception(wallet_id, network) {
+            return Ok(true);
+        } else {
+            let query = Ratelimit::from((wallet_id, network));
+            let rows = query.exec().await?;
+
+            let limit = ratelimiter.wallet_requests_hour_limit as i64;
+
+            if rows >= limit {
+                Ok(false)
+            } else {
+                Ok(true)
+            }
+        }
+    }
+
+    async fn get_rate(&self, arg: &Ratelimit) -> anyhow::Result<i64> {
+        let statement = arg.statement();
+        let params = arg.params();
+
+        let query_params: Vec<&(dyn ToSql + Sync)> = params
+            .iter()
+            .map(|v| v as &(dyn ToSql + Sync))
+            .collect::<Vec<_>>();
+
+        info!(statement=?statement, params=?query_params, "Ratelimit request");
+
+        self.client.clear_type_cache();
+
+        Ok(self
+            .client
+            .query(&statement, &query_params)
+            .await?
+            .first()
+            .map(|row| row.get::<_, i64>(0))
+            .unwrap_or(0))
+    }
+}
+
+pub struct Ratelimit {
+    is_ip: bool,
+    ip: Option<IpAddr>,
+    wallet_id: Option<AccountId32>,
+    network: Option<Network>,
+}
+
+impl Query for Ratelimit {
+    type STATEMENT = String;
+    type PARAM = String;
+
+    fn statement(&self) -> Self::STATEMENT {
+        let mut statement = String::from("SELECT COUNT(*) FROM ");
+
+        if self.is_ip_query() {
+            statement.push_str("ip_ratelimiter ");
+            if let Some(ip) = &self.ip {
+                statement.push_str(&format!("WHERE ip = '{}' ", ip));
+            }
+        } else {
+            statement.push_str("wallet_and_network_ratelimiter ");
+            if let Some(network) = &self.network {
+                statement.push_str(&format!("WHERE address = $1 AND network = '{}' ", network));
+            }
+        }
+
+        statement.push_str("AND timestamp > NOW() - INTERVAL '1 hour'");
+        statement
+    }
+
+    fn params(&self) -> Vec<Self::PARAM> {
+        if !self.is_ip_query() && self.wallet_id.is_some() && self.network.is_some() {
+            return vec![self.wallet_id.clone().unwrap().to_string()];
+        } else {
+            return vec![];
+        }
+    }
+}
+
+impl Ratelimit {
+    async fn exec(&self) -> anyhow::Result<i64> {
+        let mut pog_connection = PostgresConnection::default().await?;
+        info!("Registration search query");
+        pog_connection.get_rate(self).await
+    }
+
+    fn is_ip_query(&self) -> bool {
+        self.is_ip
+    }
+}
+
+impl From<&IpAddr> for Ratelimit {
+    fn from(value: &IpAddr) -> Self {
+        Self {
+            is_ip: true,
+            ip: Some(value.clone()),
+            wallet_id: None,
+            network: None,
+        }
+    }
+}
+
+impl From<(&AccountId32, &Network)> for Ratelimit {
+    fn from(value: (&AccountId32, &Network)) -> Self {
+        Self {
+            is_ip: false,
+            ip: None,
+            wallet_id: Some(value.0.clone()),
+            network: Some(value.1.clone()),
+        }
     }
 }
 
