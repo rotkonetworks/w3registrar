@@ -3,7 +3,6 @@
 
 use anyhow::anyhow;
 use hex::ToHex;
-use matrix_sdk::bytes::BytesMut;
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
 use postgres_types::{to_sql_checked, Kind, ToSql, Type};
@@ -826,11 +825,9 @@ $$;";
             ip
         );
 
-        let mut v = BytesMut::default();
-
         self.client.execute(&query, &[]).await?;
 
-        info!(ip=?ip, "Updating ratelimit");
+        info!(ip=?ip, "updating ratelimit");
         Ok(())
     }
 
@@ -853,34 +850,27 @@ $$;";
             network
         );
 
-        let mut v = BytesMut::default();
-
         self.client
             .execute(&query, &[&wallet_id.to_string()])
             .await?;
 
-        info!(wallet_id=?wallet_id, network=?network,"Updating ratelimit");
+        info!(wallet_id=?wallet_id, network=?network, "updating ratelimit");
         Ok(())
     }
 
-    // NOTE: experimenting with ip blocking
+    // experimenting with ip blocking
     pub async fn is_allowed_ip(&self, ip: &IpAddr) -> anyhow::Result<bool> {
         let ratelimiter = &Config::load_static().ratelimit;
         if ratelimiter.is_exception_ip(ip) {
-            info!(ip=?ip,"IP is an exception");
+            info!(ip=?ip, "ip is an exception");
             return Ok(true);
-        } else {
-            let query = Ratelimit::from(ip);
-            let rows = query.exec().await?;
-
-            let limit = ratelimiter.wallet_requests_hour_limit as i64;
-
-            if rows > limit {
-                Ok(false)
-            } else {
-                Ok(true)
-            }
         }
+
+        let query = Ratelimit::from(ip);
+        let rows = query.exec().await?;
+        let limit = ratelimiter.ip_requests_hour_limit as i64;
+
+        Ok(rows < limit)
     }
 
     pub async fn is_allowed(
@@ -891,18 +881,13 @@ $$;";
         let ratelimiter = &Config::load_static().ratelimit;
         if ratelimiter.is_exception(wallet_id, network) {
             return Ok(true);
-        } else {
-            let query = Ratelimit::from((wallet_id, network));
-            let rows = query.exec().await?;
-
-            let limit = ratelimiter.wallet_requests_hour_limit as i64;
-
-            if rows >= limit {
-                Ok(false)
-            } else {
-                Ok(true)
-            }
         }
+
+        let query = Ratelimit::from((wallet_id, network));
+        let rows = query.exec().await?;
+        let limit = ratelimiter.wallet_requests_hour_limit as i64;
+
+        Ok(rows < limit)
     }
 
     async fn get_rate(&self, arg: &Ratelimit) -> anyhow::Result<i64> {

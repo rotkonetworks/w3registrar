@@ -1515,10 +1515,16 @@ impl SocketListener {
         }
     }
 
-    /// Handles incoming websocket connection
+    /// handles incoming websocket connection
     #[instrument(skip_all, parent = &self.span)]
     pub async fn handle_connection(&mut self, stream: std::net::TcpStream) {
-        let ip_addr = stream.peer_addr().map(|v| v.ip()).unwrap();
+        let ip_addr = match stream.peer_addr() {
+            Ok(addr) => addr.ip(),
+            Err(e) => {
+                error!(error = %e, "failed to get peer address");
+                return;
+            }
+        };
 
         let peer_addr = stream
             .peer_addr()

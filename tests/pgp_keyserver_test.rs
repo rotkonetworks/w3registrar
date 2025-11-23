@@ -1,5 +1,8 @@
 use w3registrar::adapter::pgp::PGPHelper;
-use w3registrar::config::{Adapter, Config, EmailConfig, GithubConfig, HTTPConfig, MatrixConfig, PGPConfig, PostgresConfig, RedisConfig, RegistrarConfig, RegistrarConfigs, WebsocketConfig, GLOBAL_CONFIG};
+use w3registrar::config::{
+    Adapter, Config, EmailConfig, GithubConfig, HTTPConfig, ImageConfig, MatrixConfig, PGPConfig,
+    PostgresConfig, Ratelimit, RedisConfig, RegistrarConfigs, WebsocketConfig,
+};
 use std::collections::HashMap;
 
 fn setup_test_config() {
@@ -33,11 +36,13 @@ fn setup_test_config() {
             pgp: PGPConfig {
                 keyserver_url: "https://keyserver.ubuntu.com".to_string(),
             },
+            image: ImageConfig::default(),
         },
         postgres: PostgresConfig::default(),
+        ratelimit: Ratelimit::default(),
     };
 
-    let _ = GLOBAL_CONFIG.set(config);
+    let _ = Config::load_cell().set(config);
 }
 
 #[tokio::test]
@@ -54,13 +59,13 @@ async fn test_fetch_key_from_keyserver_valid_fingerprint() {
 
     let result = PGPHelper::fetch_key_from_keyserver(&fingerprint).await;
 
-    assert!(result.is_ok(), "Should successfully fetch a valid PGP key");
+    assert!(result.is_ok(), "should successfully fetch a valid pgp key");
 
     let cert = result.unwrap();
     assert_eq!(
         cert.fingerprint().as_bytes(),
         &fingerprint,
-        "Fetched certificate fingerprint should match requested fingerprint"
+        "fetched certificate fingerprint should match requested fingerprint"
     );
 }
 
@@ -73,12 +78,12 @@ async fn test_fetch_key_from_keyserver_invalid_fingerprint() {
 
     let result = PGPHelper::fetch_key_from_keyserver(&fingerprint).await;
 
-    assert!(result.is_err(), "Should fail to fetch non-existent PGP key");
+    assert!(result.is_err(), "should fail to fetch non-existent pgp key");
 
     let err = result.unwrap_err();
     assert!(
         err.to_string().contains("No PGP key found"),
-        "Error message should indicate key not found"
+        "error message should indicate key not found"
     );
 }
 
@@ -116,14 +121,16 @@ async fn test_keyserver_url_configuration() {
             pgp: PGPConfig {
                 keyserver_url: custom_keyserver.to_string(),
             },
+            image: ImageConfig::default(),
         },
         postgres: PostgresConfig::default(),
+        ratelimit: Ratelimit::default(),
     };
 
     assert_eq!(
         config.adapter.pgp.keyserver_url,
         custom_keyserver,
-        "Custom keyserver URL should be configurable"
+        "custom keyserver url should be configurable"
     );
 }
 
@@ -134,6 +141,6 @@ fn test_pgp_config_default() {
     assert_eq!(
         config.keyserver_url,
         "https://keyserver.ubuntu.com",
-        "Default keyserver should be Ubuntu keyserver"
+        "default keyserver should be ubuntu keyserver"
     );
 }
