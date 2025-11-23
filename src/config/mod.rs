@@ -62,7 +62,7 @@ impl Default for Ratelimit {
     fn default() -> Self {
         Self {
             wallet_requests_hour_limit: 60,
-            ip_requests_hour_limit: 60,
+            ip_requests_hour_limit: 120,
             exceptions: None,
         }
     }

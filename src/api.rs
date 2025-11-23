@@ -563,15 +563,14 @@ pub struct IncomingUpdateRemailerSettingsRequest {
     pub timestamp: u64,    // unix timestamp in milliseconds
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct IncomingVerifyImageRequest {
-    pub network: Network,
-    #[serde(deserialize_with = "ss58_to_account_id32")]
-    pub account: AccountId32,
-    pub image_url: String,
-    // Note: alt_text is NOT provided by user
-    // We generate it (future: using BLIP/CLIP) and provide it to them for accessibility
-}
+// image verification disabled until nsfw detection dependency conflict resolved
+// #[derive(Debug, Serialize, Deserialize, Clone)]
+// pub struct IncomingVerifyImageRequest {
+//     pub network: Network,
+//     #[serde(deserialize_with = "ss58_to_account_id32")]
+//     pub account: AccountId32,
+//     pub image_url: String,
+// }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IncomingSearchRequest {
@@ -776,7 +775,7 @@ pub enum WebSocketMessage {
     UploadPGPKey(IncomingUploadPGPKeyRequest),
     FetchPGPKey(IncomingFetchPGPKeyRequest),
     UpdateRemailerSettings(IncomingUpdateRemailerSettingsRequest),
-    VerifyImage(IncomingVerifyImageRequest),
+    // VerifyImage(IncomingVerifyImageRequest), // disabled until nsfw detection works
     SearchRegistration(IncomingSearchRequest),
 }
 
@@ -796,7 +795,6 @@ impl VersionedMessage {
             WebSocketMessage::UploadPGPKey(_) => "UploadPGPKey",
             WebSocketMessage::FetchPGPKey(_) => "FetchPGPKey",
             WebSocketMessage::UpdateRemailerSettings(_) => "UpdateRemailerSettings",
-            WebSocketMessage::VerifyImage(_) => "VerifyImage",
             WebSocketMessage::SearchRegistration(_) => "SearchRegistration",
         }
     }
@@ -992,19 +990,29 @@ impl SocketListener {
         // OR generate all possible verifiable fields if no on-chain identity exists
         let accounts_from_chain = Account::into_accounts(&registration.info);
         let accounts = if accounts_from_chain.is_empty() {
-            // No on-chain identity - generate codes for all verifiable fields
-            info!("No on-chain identity found, generating codes for all verifiable fields");
-            let verifiable_fields = vec![
-                Account::Email(String::new()),
-                Account::Twitter(String::new()),
-                Account::Github(String::new()),
-                Account::Matrix(String::new()),
-                Account::Discord(String::new()),
-                Account::Web(String::new()),
-            ];
+            // no on-chain identity - generate codes for all verifiable fields from network config
+            info!("no on-chain identity found, generating codes for configured verifiable fields");
+            let verifiable_fields: Vec<Account> = network_cfg
+                .fields
+                .iter()
+                .filter_map(|field| match field.as_str() {
+                    "email" => Some(Account::Email(String::new())),
+                    "twitter" => Some(Account::Twitter(String::new())),
+                    "github" => Some(Account::Github(String::new())),
+                    "matrix" => Some(Account::Matrix(String::new())),
+                    "discord" => Some(Account::Discord(String::new())),
+                    "web" => Some(Account::Web(String::new())),
+                    "display_name" => Some(Account::Display(String::new())),
+                    "pgp_fingerprint" => None, // handled separately
+                    _ => {
+                        tracing::warn!("unknown verifiable field in config: {}", field);
+                        None
+                    }
+                })
+                .collect();
             Account::into_hashmap(verifiable_fields, false)
         } else {
-            // Has on-chain identity - use existing flow
+            // has on-chain identity - use existing flow
             filter_accounts(
                 &registration.info,
                 &request.account,
@@ -1073,9 +1081,6 @@ impl SocketListener {
             }
             WebSocketMessage::UpdateRemailerSettings(incoming) => {
                 self.handle_update_remailer_settings_request(incoming).await
-            }
-            WebSocketMessage::VerifyImage(incoming) => {
-                self.handle_image_verification_request(incoming).await
             }
             WebSocketMessage::SearchRegistration(incoming) => {
                 self.handle_search_request(incoming).await
@@ -1934,174 +1939,8 @@ impl SocketListener {
         }))
     }
 
-    /// Handles image verification with mandatory NSFW detection
-    async fn handle_image_verification_request(
-        &self,
-        request: IncomingVerifyImageRequest,
-    ) -> anyhow::Result<serde_json::Value> {
-        use cid::Cid;
-        use futures::StreamExt;
-        use image::{GenericImageView, ImageFormat};
-
-        // NOTE: rolling in for testing the viablity of this approach
-        let pg_conn = PostgresConnection::default().await?;
-
-        if !pg_conn
-            .is_allowed(&request.account, &request.network)
-            .await?
-        {
-            return Err(anyhow!("rate limit exceeded, try again later"));
-        } else {
-            pg_conn
-                .register_requester(&request.account, &request.network)
-                .await?;
-        }
-
-        let cfg = Config::load_static();
-
-        // filter only supported networks
-        if !cfg.registrar.is_network_supported(&request.network) {
-            return Err(anyhow!("Network {} not supported", request.network));
-        }
-
-        // 1. validate IPFS CID format
-        if !request.image_url.starts_with("ipfs://") {
-            return Err(anyhow!("only ipfs:// urls supported"));
-        }
-
-        let cid_str = &request.image_url[7..];
-        let cid = Cid::try_from(cid_str)
-            .map_err(|_| anyhow!("invalid CID format"))?;
-
-        // require CIDv1 with SHA-256 for security
-        if cid.version() != cid::Version::V1 {
-            return Err(anyhow!("CIDv1 required"));
-        }
-
-        if cid.hash().code() != 0x12 {
-            return Err(anyhow!("SHA-256 hash required"));
-        }
-
-        info!("Validating image from IPFS CID: {}", cid_str);
-
-        // 2. fetch image from IPFS gateway
-        let gateway = &cfg.adapter.image.ipfs_gateway;
-        let fetch_url = format!("{}/ipfs/{}", gateway, cid_str);
-
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(cfg.adapter.image.timeout_seconds))
-            .build()?;
-
-        let response = client.get(&fetch_url)
-            .send()
-            .await
-            .map_err(|e| {
-                error!("IPFS gateway error: {}", e);
-                anyhow!("unable to fetch image")
-            })?;
-
-        // 3. validate size with streaming (prevent TOCTOU)
-        let max_size = cfg.adapter.image.max_size_bytes as usize;
-        let mut bytes = Vec::with_capacity(std::cmp::min(max_size, 8192));
-        let mut total = 0usize;
-        let mut stream = response.bytes_stream();
-
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|_| anyhow!("failed to read image data"))?;
-            total += chunk.len();
-            if total > max_size {
-                return Err(anyhow!("image exceeds maximum size"));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-
-        info!("Downloaded image: {} bytes", total);
-
-        // 4. validate image format and dimensions
-        let img = image::load_from_memory(&bytes)
-            .map_err(|e| {
-                error!("Image decode error: {}", e);
-                anyhow!("invalid image format")
-            })?;
-
-        let (width, height) = img.dimensions();
-        let format = image::guess_format(&bytes)
-            .map_err(|e| {
-                error!("Format detection error: {}", e);
-                anyhow!("unsupported image format")
-            })?;
-
-        match format {
-            ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP => {},
-            _ => return Err(anyhow!("only png/jpg/webp formats supported")),
-        }
-
-        if width < cfg.adapter.image.min_dimension || height < cfg.adapter.image.min_dimension {
-            return Err(anyhow!(
-                "image too small (min {}x{})",
-                cfg.adapter.image.min_dimension,
-                cfg.adapter.image.min_dimension
-            ));
-        }
-
-        if width > cfg.adapter.image.max_dimension || height > cfg.adapter.image.max_dimension {
-            return Err(anyhow!(
-                "image too large (max {}x{})",
-                cfg.adapter.image.max_dimension,
-                cfg.adapter.image.max_dimension
-            ));
-        }
-
-        info!(
-            "Image validated: {}x{}, format: {:?}",
-            width,
-            height,
-            format
-        );
-
-        // 5. NSFW detection (temporarily disabled due to dependency conflict)
-        // TODO: re-enable when nsfw crate is updated or alternative found
-        error!("Image verification attempted but NSFW detection temporarily disabled");
-        error!("Dependency conflict: nsfw crate requires old tract (time v0.3.23), matrix-sdk requires time >= 0.3.42");
-        return Err(anyhow!(
-            "Image verification temporarily unavailable due to dependency conflict"
-        ));
-
-        // TODO: Uncomment below when NSFW is re-enabled
-        // let pg_conn = PostgresConnection::default().await?;
-        // pg_conn
-        //     .store_image_verification(
-        //         &request.account,
-        //         &request.network,
-        //         cid_str,
-        //         format!("{:?}", format),
-        //         width,
-        //         height,
-        //         bytes.len() as i32,
-        //         alt_text.as_deref(),
-        //         &metadata,
-        //     )
-        //     .await?;
-        //
-        // let mut redis = RedisConnection::get_connection().await?;
-        // redis
-        //     .update_challenge_status(&request.network, &request.account, &AccountType::Image)
-        //     .await?;
-        //
-        // info!("Image verification successful for {}", request.account);
-        //
-        // Ok(serde_json::json!({
-        //     "type": "JsonResult",
-        //     "payload": {
-        //         "type": "ok",
-        //         "message": {
-        //             "verified": true,
-        //             "cid": cid_str,
-        //             "metadata": metadata
-        //         }
-        //     }
-        // }))
-    }
+    // image verification disabled until nsfw detection dependency conflict resolved
+    // see src/adapter/image.rs for details on re-enabling
 
     // TODO: implement smart contract for settings control once polkadot asset hub supports contracts
     // This would eliminate the need for manual signature verification on every settings update
