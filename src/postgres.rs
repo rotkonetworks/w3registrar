@@ -868,7 +868,7 @@ $$;";
 
         let query = Ratelimit::from(ip);
         let rows = query.exec().await?;
-        let limit = ratelimiter.ip_requests_hour_limit as i64;
+        let limit = ratelimiter.ip_requests_per_second as i64;
 
         Ok(rows < limit)
     }
@@ -885,7 +885,7 @@ $$;";
 
         let query = Ratelimit::from((wallet_id, network));
         let rows = query.exec().await?;
-        let limit = ratelimiter.wallet_requests_hour_limit as i64;
+        let limit = ratelimiter.wallet_requests_per_second as i64;
 
         Ok(rows < limit)
     }
@@ -939,7 +939,7 @@ impl Query for Ratelimit {
             }
         }
 
-        statement.push_str("AND timestamp > NOW() - INTERVAL '1 hour'");
+        statement.push_str("AND timestamp > NOW() - INTERVAL '1 second'");
         statement
     }
 

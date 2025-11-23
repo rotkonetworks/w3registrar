@@ -35,8 +35,8 @@ pub struct Config {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Ratelimit {
-    pub wallet_requests_hour_limit: u64,
-    pub ip_requests_hour_limit: u64,
+    pub wallet_requests_per_second: u64,
+    pub ip_requests_per_second: u64,
     exceptions: Option<Exceptions>,
 }
 
@@ -61,8 +61,8 @@ impl Ratelimit {
 impl Default for Ratelimit {
     fn default() -> Self {
         Self {
-            wallet_requests_hour_limit: 60,
-            ip_requests_hour_limit: 120,
+            wallet_requests_per_second: 5,
+            ip_requests_per_second: 5,
             exceptions: None,
         }
     }

@@ -1,25 +1,15 @@
-mod adapter;
-mod api;
-mod config;
-mod indexer;
-mod node;
-mod postgres;
-mod redis;
-mod runner;
-mod token;
-
 use anyhow::{Context as _, Result};
-use api::{spawn_http_serv, spawn_identity_indexer};
-use postgres::PostgresConnection;
 use std::panic;
 use tracing::{error, info, instrument};
 use tracing_subscriber::EnvFilter;
 
-use crate::{
+use w3registrar::{
     adapter::{dns::watch_dns, mail::watch_mailserver, matrix},
-    api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv},
+    api::{spawn_http_serv, spawn_identity_indexer, spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv},
     config::Config,
+    postgres::PostgresConnection,
     redis::RedisConnection,
+    runner,
 };
 
 #[instrument(skip_all)]

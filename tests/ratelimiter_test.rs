@@ -8,7 +8,8 @@ use w3registrar::config::{
 use std::collections::HashMap;
 use subxt::utils::AccountId32;
 
-fn setup_test_config_with_limits(wallet_limit: u64, ip_limit: u64) {
+#[allow(dead_code)]
+fn setup_test_config_with_limits(_wallet_limit: u64, _ip_limit: u64) {
     let config = Config {
         websocket: WebsocketConfig::default(),
         registrar: RegistrarConfigs {
@@ -40,11 +41,7 @@ fn setup_test_config_with_limits(wallet_limit: u64, ip_limit: u64) {
             image: ImageConfig::default(),
         },
         postgres: PostgresConfig::default(),
-        ratelimit: Ratelimit {
-            wallet_requests_hour_limit: wallet_limit,
-            ip_requests_hour_limit: ip_limit,
-            ..Default::default()
-        },
+        ratelimit: Ratelimit::default(),
     };
 
     let _ = Config::load_cell().set(config);
@@ -55,12 +52,12 @@ fn test_ratelimit_default_values() {
     let ratelimit = Ratelimit::default();
 
     assert_eq!(
-        ratelimit.wallet_requests_hour_limit, 60,
-        "default wallet limit should be 60 per hour"
+        ratelimit.wallet_requests_per_second, 5,
+        "default wallet limit should be 5 per second"
     );
     assert_eq!(
-        ratelimit.ip_requests_hour_limit, 120,
-        "default ip limit should be 120 per hour"
+        ratelimit.ip_requests_per_second, 5,
+        "default ip limit should be 5 per second"
     );
 }
 
@@ -84,24 +81,24 @@ fn test_ratelimit_exception_ip() {
 fn test_ratelimit_limits_are_reasonable() {
     let ratelimit = Ratelimit::default();
 
-    // limits should be high enough for normal usage
+    // limits should be reasonable for normal usage
     assert!(
-        ratelimit.wallet_requests_hour_limit >= 10,
+        ratelimit.wallet_requests_per_second >= 1,
         "wallet limit too low for normal usage"
     );
     assert!(
-        ratelimit.ip_requests_hour_limit >= 10,
+        ratelimit.ip_requests_per_second >= 1,
         "ip limit too low for normal usage"
     );
 
-    // but not so high they're meaningless
+    // sanity check - not unlimited
     assert!(
-        ratelimit.wallet_requests_hour_limit <= 1000,
-        "wallet limit suspiciously high"
+        ratelimit.wallet_requests_per_second <= 100,
+        "wallet limit seems too high"
     );
     assert!(
-        ratelimit.ip_requests_hour_limit <= 1000,
-        "ip limit suspiciously high"
+        ratelimit.ip_requests_per_second <= 100,
+        "ip limit seems too high"
     );
 }
 
