@@ -11,7 +11,6 @@ use crate::{
 
 pub mod dns;
 pub mod github;
-pub mod image;
 pub mod mail;
 pub mod matrix;
 pub mod pgp;

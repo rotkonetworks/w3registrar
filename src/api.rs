@@ -43,7 +43,6 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use subxt::events::EventDetails;
 use subxt::utils::AccountId32;
 use subxt::SubstrateConfig;
-use tokio::time::Instant;
 use tokio::{net::TcpStream, sync::Mutex};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
@@ -63,7 +62,10 @@ use crate::{
     indexer::Indexer,
     node::{
         self, filter_accounts, get_judgement,
-        identity::events::{JudgementGiven, JudgementRequested, JudgementUnrequested},
+        identity::events::{
+            IdentityCleared, IdentityKilled, JudgementGiven, JudgementRequested,
+            JudgementUnrequested, SubIdentityAdded, SubIdentityRemoved, SubIdentityRevoked,
+        },
         substrate::runtime_types::{
             pallet_identity::types::Registration,
             pallet_identity::types::{Data as IdentityData, Judgement},
@@ -72,8 +74,8 @@ use crate::{
         Block, Client as NodeClient,
     },
     postgres::{
-        DisplayedInfo, PostgresConnection, RegistrationCondition, RegistrationDisplayed,
-        RegistrationQuery, RegistrationRecord, SearchInfo, TimelineQuery,
+        DisplayedInfo, IdentityEvent, IdentityEventType, PostgresConnection, RegistrationCondition,
+        RegistrationDisplayed, RegistrationQuery, RegistrationRecord, SearchInfo, TimelineQuery,
     },
     token::{AuthToken, Token},
 };
@@ -432,9 +434,10 @@ impl<'de> Deserialize<'de> for Account {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, Hash, ToSql)]
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, Hash, ToSql, Default)]
 #[serde(rename_all(serialize = "lowercase"))]
 pub enum Network {
+    #[default]
     #[serde(alias = "paseo", alias = "PASEO")]
     Paseo,
     #[serde(alias = "polkadot", alias = "POLKADOT")]
@@ -447,7 +450,6 @@ pub enum Network {
 
 impl Display for Network {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // NOTE: this is done for compatibility reasons
         match self {
             Network::Paseo => write!(f, "paseo"),
             Network::Polkadot => write!(f, "polkadot"),
@@ -457,11 +459,6 @@ impl Display for Network {
     }
 }
 
-impl Default for Network {
-    fn default() -> Self {
-        Self::Rococo // hmmm?
-    }
-}
 
 impl<'a> FromSql<'a> for Network {
     fn from_sql(
@@ -564,27 +561,24 @@ pub struct IncomingUpdateRemailerSettingsRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct IncomingVerifyImageRequest {
-    pub network: Network,
-    #[serde(deserialize_with = "ss58_to_account_id32")]
-    pub account: AccountId32,
-    pub image_url: String,
-    // Note: alt_text is NOT provided by user
-    // We generate it (future: using BLIP/CLIP) and provide it to them for accessibility
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IncomingSearchRequest {
     pub network: Option<Network>,
     pub outputs: Vec<DisplayedInfo>,
     pub filters: Filter,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IncomingAccountHistoryRequest {
+    pub account: String,
+    pub network: Option<Network>,
+    pub limit: Option<i64>,
+}
+
 mod date_format {
     use chrono::NaiveDate;
     use serde::{self, Deserialize, Deserializer, Serializer};
 
-    const FORMAT: &'static str = "%Y-%m-%d";
+    const FORMAT: &str = "%Y-%m-%d";
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<NaiveDate>, D::Error>
     where
@@ -776,8 +770,8 @@ pub enum WebSocketMessage {
     UploadPGPKey(IncomingUploadPGPKeyRequest),
     FetchPGPKey(IncomingFetchPGPKeyRequest),
     UpdateRemailerSettings(IncomingUpdateRemailerSettingsRequest),
-    VerifyImage(IncomingVerifyImageRequest),
     SearchRegistration(IncomingSearchRequest),
+    GetAccountHistory(IncomingAccountHistoryRequest),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -796,8 +790,8 @@ impl VersionedMessage {
             WebSocketMessage::UploadPGPKey(_) => "UploadPGPKey",
             WebSocketMessage::FetchPGPKey(_) => "FetchPGPKey",
             WebSocketMessage::UpdateRemailerSettings(_) => "UpdateRemailerSettings",
-            WebSocketMessage::VerifyImage(_) => "VerifyImage",
             WebSocketMessage::SearchRegistration(_) => "SearchRegistration",
+            WebSocketMessage::GetAccountHistory(_) => "GetAccountHistory",
         }
     }
 }
@@ -1074,11 +1068,11 @@ impl SocketListener {
             WebSocketMessage::UpdateRemailerSettings(incoming) => {
                 self.handle_update_remailer_settings_request(incoming).await
             }
-            WebSocketMessage::VerifyImage(incoming) => {
-                self.handle_image_verification_request(incoming).await
-            }
             WebSocketMessage::SearchRegistration(incoming) => {
                 self.handle_search_request(incoming).await
+            }
+            WebSocketMessage::GetAccountHistory(incoming) => {
+                self.handle_account_history_request(incoming).await
             }
         }
     }
@@ -1518,7 +1512,13 @@ impl SocketListener {
     /// Handles incoming websocket connection
     #[instrument(skip_all, parent = &self.span)]
     pub async fn handle_connection(&mut self, stream: std::net::TcpStream) {
-        let ip_addr = stream.peer_addr().map(|v| v.ip()).unwrap();
+        let ip_addr = match stream.peer_addr() {
+            Ok(addr) => addr.ip(),
+            Err(e) => {
+                error!(error = %e, "Failed to get peer address");
+                return;
+            }
+        };
 
         let peer_addr = stream
             .peer_addr()
@@ -1579,7 +1579,10 @@ impl SocketListener {
                     info!(peer_addr = %addr, "Incoming websocket connection");
                     let mut clone = self.clone();
                     tokio::spawn(async move {
-                        clone.handle_connection(stream.into_std().unwrap()).await;
+                        match stream.into_std() {
+                            Ok(std_stream) => clone.handle_connection(std_stream).await,
+                            Err(e) => error!(error = %e, "Failed to convert stream to std"),
+                        }
                     });
                     info!("Connection handler spawned");
                 }
@@ -1928,175 +1931,6 @@ impl SocketListener {
         }))
     }
 
-    /// Handles image verification with mandatory NSFW detection
-    async fn handle_image_verification_request(
-        &self,
-        request: IncomingVerifyImageRequest,
-    ) -> anyhow::Result<serde_json::Value> {
-        use cid::Cid;
-        use futures::StreamExt;
-        use image::{GenericImageView, ImageFormat};
-
-        // NOTE: rolling in for testing the viablity of this approach
-        let pg_conn = PostgresConnection::default().await?;
-
-        if !pg_conn
-            .is_allowed(&request.account, &request.network)
-            .await?
-        {
-            return Err(anyhow!("rate limit exceeded, try again later"));
-        } else {
-            pg_conn
-                .register_requester(&request.account, &request.network)
-                .await?;
-        }
-
-        let cfg = Config::load_static();
-
-        // filter only supported networks
-        if !cfg.registrar.is_network_supported(&request.network) {
-            return Err(anyhow!("Network {} not supported", request.network));
-        }
-
-        // 1. validate IPFS CID format
-        if !request.image_url.starts_with("ipfs://") {
-            return Err(anyhow!("only ipfs:// urls supported"));
-        }
-
-        let cid_str = &request.image_url[7..];
-        let cid = Cid::try_from(cid_str)
-            .map_err(|_| anyhow!("invalid CID format"))?;
-
-        // require CIDv1 with SHA-256 for security
-        if cid.version() != cid::Version::V1 {
-            return Err(anyhow!("CIDv1 required"));
-        }
-
-        if cid.hash().code() != 0x12 {
-            return Err(anyhow!("SHA-256 hash required"));
-        }
-
-        info!("Validating image from IPFS CID: {}", cid_str);
-
-        // 2. fetch image from IPFS gateway
-        let gateway = &cfg.adapter.image.ipfs_gateway;
-        let fetch_url = format!("{}/ipfs/{}", gateway, cid_str);
-
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(cfg.adapter.image.timeout_seconds))
-            .build()?;
-
-        let response = client.get(&fetch_url)
-            .send()
-            .await
-            .map_err(|e| {
-                error!("IPFS gateway error: {}", e);
-                anyhow!("unable to fetch image")
-            })?;
-
-        // 3. validate size with streaming (prevent TOCTOU)
-        let max_size = cfg.adapter.image.max_size_bytes as usize;
-        let mut bytes = Vec::with_capacity(std::cmp::min(max_size, 8192));
-        let mut total = 0usize;
-        let mut stream = response.bytes_stream();
-
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|_| anyhow!("failed to read image data"))?;
-            total += chunk.len();
-            if total > max_size {
-                return Err(anyhow!("image exceeds maximum size"));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-
-        info!("Downloaded image: {} bytes", total);
-
-        // 4. validate image format and dimensions
-        let img = image::load_from_memory(&bytes)
-            .map_err(|e| {
-                error!("Image decode error: {}", e);
-                anyhow!("invalid image format")
-            })?;
-
-        let (width, height) = img.dimensions();
-        let format = image::guess_format(&bytes)
-            .map_err(|e| {
-                error!("Format detection error: {}", e);
-                anyhow!("unsupported image format")
-            })?;
-
-        match format {
-            ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP => {},
-            _ => return Err(anyhow!("only png/jpg/webp formats supported")),
-        }
-
-        if width < cfg.adapter.image.min_dimension || height < cfg.adapter.image.min_dimension {
-            return Err(anyhow!(
-                "image too small (min {}x{})",
-                cfg.adapter.image.min_dimension,
-                cfg.adapter.image.min_dimension
-            ));
-        }
-
-        if width > cfg.adapter.image.max_dimension || height > cfg.adapter.image.max_dimension {
-            return Err(anyhow!(
-                "image too large (max {}x{})",
-                cfg.adapter.image.max_dimension,
-                cfg.adapter.image.max_dimension
-            ));
-        }
-
-        info!(
-            "Image validated: {}x{}, format: {:?}",
-            width,
-            height,
-            format
-        );
-
-        // 5. NSFW detection (temporarily disabled due to dependency conflict)
-        // TODO: re-enable when nsfw crate is updated or alternative found
-        error!("Image verification attempted but NSFW detection temporarily disabled");
-        error!("Dependency conflict: nsfw crate requires old tract (time v0.3.23), matrix-sdk requires time >= 0.3.42");
-        return Err(anyhow!(
-            "Image verification temporarily unavailable due to dependency conflict"
-        ));
-
-        // TODO: Uncomment below when NSFW is re-enabled
-        // let pg_conn = PostgresConnection::default().await?;
-        // pg_conn
-        //     .store_image_verification(
-        //         &request.account,
-        //         &request.network,
-        //         cid_str,
-        //         format!("{:?}", format),
-        //         width,
-        //         height,
-        //         bytes.len() as i32,
-        //         alt_text.as_deref(),
-        //         &metadata,
-        //     )
-        //     .await?;
-        //
-        // let mut redis = RedisConnection::get_connection().await?;
-        // redis
-        //     .update_challenge_status(&request.network, &request.account, &AccountType::Image)
-        //     .await?;
-        //
-        // info!("Image verification successful for {}", request.account);
-        //
-        // Ok(serde_json::json!({
-        //     "type": "JsonResult",
-        //     "payload": {
-        //         "type": "ok",
-        //         "message": {
-        //             "verified": true,
-        //             "cid": cid_str,
-        //             "metadata": metadata
-        //         }
-        //     }
-        // }))
-    }
-
     // TODO: implement smart contract for settings control once polkadot asset hub supports contracts
     // This would eliminate the need for manual signature verification on every settings update
     async fn handle_update_remailer_settings_request(
@@ -2227,6 +2061,21 @@ impl SocketListener {
     ) -> anyhow::Result<serde_json::Value> {
         let query: Vec<RegistrationRecord> = request.search().await?;
         Ok(serde_json::to_value(query)?)
+    }
+
+    async fn handle_account_history_request(
+        &self,
+        request: IncomingAccountHistoryRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        let pog_connection = PostgresConnection::default().await?;
+        let events = pog_connection
+            .get_identity_events(
+                &request.account,
+                request.network.as_ref(),
+                request.limit,
+            )
+            .await?;
+        Ok(serde_json::to_value(events)?)
     }
 }
 
@@ -2423,70 +2272,226 @@ impl NodeListener {
         block: &Block,
         network: &Network,
     ) {
+        let block_number = block.number();
+        let block_hash = hex::encode(block.hash().0);
+
         for event_result in events.iter() {
-            if let Ok(event) = event_result {
-                if let Ok(Some(req)) = event.as_event::<JudgementRequested>() {
-                    info!(requester = %req.who, "Judgement requested");
+            let Ok(event) = event_result else { continue };
 
-                    match self
-                        .handle_registration(&req.who, req.registrar_index, network)
-                        .await
-                    {
-                        Ok(_) => {
-                            info!(requester = %req.who, "Successfully processed registration request")
-                        }
-                        Err(e) => {
-                            error!(error = %e, requester = %req.who, "Failed to process registration request")
-                        }
-                    }
-                } else if let Ok(Some(req)) = event.as_event::<JudgementUnrequested>() {
-                    info!(requester = %req.who, "Judgement unrequested");
+            // JudgementRequested - handle verification flow + store event
+            if let Ok(Some(req)) = event.as_event::<JudgementRequested>() {
+                info!(requester = %req.who, "Judgement requested");
 
-                    match self
-                        .cancel_registration(&req.who, req.registrar_index, network)
-                        .await
-                    {
-                        Ok(_) => {
-                            info!(requester = %req.who, "Successfully cancelled registration")
-                        }
-                        Err(e) => {
-                            error!(error = %e, requester = %req.who, "Failed to cancel registration")
-                        }
-                    }
-                } else if let Ok(Some(jud)) = event.as_event::<JudgementGiven>() {
-                    // check if judgement is reasonable
-                    if let Ok(Some(judgement)) = get_judgement(&jud.target, network).await {
-                        if matches!(judgement, Judgement::Reasonable) {
-                            // construct a record
-                            let cfg = Config::load_static();
-                            let pog_config = cfg.postgres.clone();
-                            let mut pog_connection =
-                                PostgresConnection::new(&pog_config).await.unwrap();
-                            if let Some(record) =
-                                RegistrationRecord::from_judgement(&jud).await.unwrap()
+                // Store event
+                self.store_identity_event(
+                    &req.who,
+                    network,
+                    IdentityEventType::JudgementRequested,
+                    block_number,
+                    &block_hash,
+                    Some(req.registrar_index),
+                    None,
+                )
+                .await;
+
+                // Handle verification flow
+                if let Err(e) = self
+                    .handle_registration(&req.who, req.registrar_index, network)
+                    .await
+                {
+                    error!(error = %e, requester = %req.who, "Failed to process registration request");
+                }
+                continue;
+            }
+
+            // JudgementUnrequested - cancel verification + store event
+            if let Ok(Some(req)) = event.as_event::<JudgementUnrequested>() {
+                info!(requester = %req.who, "Judgement unrequested");
+
+                self.store_identity_event(
+                    &req.who,
+                    network,
+                    IdentityEventType::JudgementUnrequested,
+                    block_number,
+                    &block_hash,
+                    Some(req.registrar_index),
+                    None,
+                )
+                .await;
+
+                if let Err(e) = self
+                    .cancel_registration(&req.who, req.registrar_index, network)
+                    .await
+                {
+                    error!(error = %e, requester = %req.who, "Failed to cancel registration");
+                }
+                continue;
+            }
+
+            // JudgementGiven - index positive judgements + store event
+            if let Ok(Some(jud)) = event.as_event::<JudgementGiven>() {
+                info!(target = %jud.target, registrar = jud.registrar_index, "Judgement given");
+
+                self.store_identity_event(
+                    &jud.target,
+                    network,
+                    IdentityEventType::JudgementGiven,
+                    block_number,
+                    &block_hash,
+                    Some(jud.registrar_index),
+                    None,
+                )
+                .await;
+
+                // Index positive judgements
+                if let Ok(Some(judgement)) = get_judgement(&jud.target, network).await {
+                    if matches!(judgement, Judgement::Reasonable | Judgement::KnownGood) {
+                        if let Some(client) = self.clients.get(network) {
+                            if let Ok(Some(record)) =
+                                RegistrationRecord::from_judgement(&jud, network, client).await
                             {
-                                info!(who = ?jud.target.to_string(), "Jugdement saved to DB");
-                                info!("Writing registration record to dB after");
-                                // write the record
-                                pog_connection.save_registration(&record).await.unwrap();
-                                let block_index = block.number();
-                                let block_hash = block.hash();
-                                // mark block
-                                pog_connection
-                                    .update_indexer_state(
-                                        &network,
-                                        &block_hash,
-                                        &(block_index as i64),
-                                    )
-                                    .await
-                                    .unwrap();
+                                if let Err(e) = self.save_registration_and_update_state(
+                                    &record,
+                                    network,
+                                    block_number,
+                                    &block.hash(),
+                                )
+                                .await
+                                {
+                                    error!(error = %e, "Failed to save registration");
+                                }
                             }
-                            info!(who = ?jud.target.to_string(), "Jugdement saved to DB");
                         }
                     }
                 }
+                continue;
+            }
+
+            // IdentityCleared
+            if let Ok(Some(evt)) = event.as_event::<IdentityCleared>() {
+                info!(who = %evt.who, "Identity cleared");
+                self.store_identity_event(
+                    &evt.who,
+                    network,
+                    IdentityEventType::IdentityCleared,
+                    block_number,
+                    &block_hash,
+                    None,
+                    None,
+                )
+                .await;
+                continue;
+            }
+
+            // IdentityKilled
+            if let Ok(Some(evt)) = event.as_event::<IdentityKilled>() {
+                info!(who = %evt.who, "Identity killed");
+                self.store_identity_event(
+                    &evt.who,
+                    network,
+                    IdentityEventType::IdentityKilled,
+                    block_number,
+                    &block_hash,
+                    None,
+                    None,
+                )
+                .await;
+                continue;
+            }
+
+            // SubIdentityAdded
+            if let Ok(Some(evt)) = event.as_event::<SubIdentityAdded>() {
+                info!(sub = %evt.sub, main = %evt.main, "Sub identity added");
+                self.store_identity_event(
+                    &evt.sub,
+                    network,
+                    IdentityEventType::SubIdentityAdded,
+                    block_number,
+                    &block_hash,
+                    None,
+                    Some(serde_json::json!({"main": evt.main.to_string()})),
+                )
+                .await;
+                continue;
+            }
+
+            // SubIdentityRemoved
+            if let Ok(Some(evt)) = event.as_event::<SubIdentityRemoved>() {
+                info!(sub = %evt.sub, main = %evt.main, "Sub identity removed");
+                self.store_identity_event(
+                    &evt.sub,
+                    network,
+                    IdentityEventType::SubIdentityRemoved,
+                    block_number,
+                    &block_hash,
+                    None,
+                    Some(serde_json::json!({"main": evt.main.to_string()})),
+                )
+                .await;
+                continue;
+            }
+
+            // SubIdentityRevoked
+            if let Ok(Some(evt)) = event.as_event::<SubIdentityRevoked>() {
+                info!(sub = %evt.sub, "Sub identity revoked");
+                self.store_identity_event(
+                    &evt.sub,
+                    network,
+                    IdentityEventType::SubIdentityRevoked,
+                    block_number,
+                    &block_hash,
+                    None,
+                    None,
+                )
+                .await;
+                continue;
             }
         }
+    }
+
+    /// Store an identity event to postgres
+    async fn store_identity_event(
+        &self,
+        who: &AccountId32,
+        network: &Network,
+        event_type: IdentityEventType,
+        block_number: u32,
+        block_hash: &str,
+        registrar_index: Option<u32>,
+        data: Option<serde_json::Value>,
+    ) {
+        let Ok(conn) = PostgresConnection::default().await else {
+            error!("Failed to connect to postgres for event storage");
+            return;
+        };
+
+        let mut event = IdentityEvent::new(who, network, event_type, block_number, block_hash);
+        if let Some(idx) = registrar_index {
+            event = event.with_registrar(idx);
+        }
+        if let Some(d) = data {
+            event = event.with_data(d);
+        }
+
+        if let Err(e) = conn.store_identity_event(&event).await {
+            error!(error = %e, "Failed to store identity event");
+        }
+    }
+
+    /// Save registration and update indexer state
+    async fn save_registration_and_update_state(
+        &self,
+        record: &RegistrationRecord,
+        network: &Network,
+        block_number: u32,
+        block_hash: &sp_core::H256,
+    ) -> anyhow::Result<()> {
+        let mut conn = PostgresConnection::default().await?;
+        info!(who = ?record.wallet_id(), registrar = ?record.judgement_by, "Saving judgement to DB");
+        conn.save_registration(record).await?;
+        conn.update_indexer_state(network, block_hash, &(block_number as i64))
+            .await?;
+        Ok(())
     }
 
     /// Handles incoming registration request via the `JudgementRequested` event by first checking
@@ -2847,7 +2852,7 @@ pub async fn spawn_identity_indexer() -> anyhow::Result<()> {
 }
 
 mod test {
-
+    #[allow(unused_imports)]
     use super::*;
     #[allow(unused_imports)]
     use crate::postgres::Query;

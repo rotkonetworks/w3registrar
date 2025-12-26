@@ -35,7 +35,8 @@ use crate::{
         self,
         identity::events::JudgementGiven,
         runtime_types::{
-            pallet_identity::types::Registration, people_paseo_runtime::people::IdentityInfo,
+            pallet_identity::types::{Judgement, Registration},
+            people_paseo_runtime::people::IdentityInfo,
         },
         Client as NodeClient,
     },
@@ -47,45 +48,44 @@ pub struct PostgresConnection {
 }
 
 impl PostgresConnection {
+    /// Execute SQL with debug logging
+    async fn exec(&self, name: &str, sql: &str) -> anyhow::Result<()> {
+        tracing::debug!(name, "executing SQL");
+        self.client.simple_query(sql).await?;
+        Ok(())
+    }
+
     /// Creates all necessary `types` to handle long term registration process
     async fn init_types(&mut self) -> anyhow::Result<()> {
-        info!("Ceating `EVENT` enum type");
+        info!("Creating enum types");
 
-        let create_acctype_enum = "
-DO $$
-BEGIN
-    IF NOT EXISTS ( SELECT 1 FROM pg_type WHERE typname='event' )
-    THEN CREATE TYPE EVENT AS ENUM (
-            'verified', 'created', 'discord', 'twitter', 'matrix',
-            'email', 'display', 'github', 'legal', 'web', 'pgp_fingerprint', 'image'
-    );
-    END IF;
-END
-$$;";
+        self.exec("event_enum", "
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname='event')
+                THEN CREATE TYPE EVENT AS ENUM (
+                    'verified', 'created', 'discord', 'twitter', 'matrix',
+                    'email', 'display', 'github', 'legal', 'web', 'pgp_fingerprint', 'image'
+                );
+                END IF;
+            END $$;").await?;
 
-        info!("QUERY");
-        info!("{create_acctype_enum}");
+        self.exec("network_enum", "
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname='network')
+                THEN CREATE TYPE NETWORK AS ENUM ('paseo', 'polkadot', 'kusama', 'rococo');
+                END IF;
+            END $$;").await?;
 
-        self.client.simple_query(create_acctype_enum).await?;
-        info!("Enum type `EVENT` created");
-
-        info!("Ceating `NETWORK` enum type");
-
-        let create_network_enum = "
-DO $$
-BEGIN
-    IF NOT EXISTS ( SELECT 1 from pg_type WHERE typname='network' )
-    THEN CREATE TYPE NETWORK AS ENUM ('paseo', 'polkadot', 'kusama', 'rococo');
-    END IF;
-END
-$$;";
-
-        info!("QUERY");
-        info!("{create_network_enum}");
-
-        self.client.simple_query(create_network_enum).await?;
-
-        info!("Enum type `NETWORK` created");
+        self.exec("identity_event_type_enum", "
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname='identity_event_type')
+                THEN CREATE TYPE IDENTITY_EVENT_TYPE AS ENUM (
+                    'identity_set', 'identity_cleared', 'identity_killed',
+                    'judgement_requested', 'judgement_unrequested', 'judgement_given',
+                    'registrar_added', 'sub_identity_added', 'sub_identity_removed', 'sub_identity_revoked'
+                );
+                END IF;
+            END $$;").await?;
 
         Ok(())
     }
@@ -124,205 +124,105 @@ $$;";
 
     /// Creates all necessary `tables` to handle long term registration process
     async fn init_tables(&mut self) -> anyhow::Result<()> {
-        // TODO: parametarize table name?
-        info!("Creating `registration` table");
+        info!("Creating tables and indexes");
 
-        let create_reg_record = "CREATE TABLE IF NOT EXISTS registration (
-            wallet_id       VARCHAR (48),
-            network         NETWORK,
-            discord         TEXT,
-            twitter         TEXT,
-            matrix          TEXT,
-            email           TEXT,
-            display_name    TEXT,
-            github          TEXT,
-            legal           TEXT,
-            web             TEXT,
-            pgp_fingerprint VARCHAR(40),
-            search_text     TEXT,
-            PRIMARY KEY     (wallet_id, network)
-        )";
+        // Core tables
+        self.exec("registration", "
+            CREATE TABLE IF NOT EXISTS registration (
+                wallet_id VARCHAR(48), network NETWORK,
+                discord TEXT, twitter TEXT, matrix TEXT, email TEXT,
+                display_name TEXT, github TEXT, legal TEXT, web TEXT,
+                pgp_fingerprint VARCHAR(40), search_text TEXT,
+                judgement_by INTEGER, judgement_at TIMESTAMP,
+                PRIMARY KEY (wallet_id, network)
+            )").await?;
 
-        info!("QUERY");
-        info!("{create_reg_record}");
+        self.exec("timeline_elem", "
+            CREATE TABLE IF NOT EXISTS timeline_elem (
+                wallet_id VARCHAR(48) NOT NULL, network TEXT NOT NULL,
+                event EVENT NOT NULL, date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (wallet_id, network, event)
+            )").await?;
 
-        self.client.simple_query(create_reg_record).await?;
-        info!("Table `registration` created");
+        self.exec("indexer_state", "
+            CREATE TABLE IF NOT EXISTS indexer_state (
+                network NETWORK PRIMARY KEY,
+                last_block_index BIGINT NOT NULL DEFAULT 0,
+                last_block_hash VARCHAR(66) NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )").await?;
 
-        info!("Creating `timeline_elem` table");
+        self.exec("pgp_keys", "
+            CREATE TABLE IF NOT EXISTS pgp_keys (
+                fingerprint VARCHAR(40) PRIMARY KEY,
+                address VARCHAR(48) NOT NULL, network NETWORK NOT NULL,
+                armored_key TEXT NOT NULL, uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                verified BOOLEAN DEFAULT FALSE, remailer_enabled BOOLEAN DEFAULT FALSE,
+                remailer_registered_only BOOLEAN DEFAULT TRUE, require_verified_pgp BOOLEAN DEFAULT TRUE,
+                UNIQUE(address, network)
+            )").await?;
 
-        let create_timeline_elem = "CREATE TABLE IF NOT EXISTS timeline_elem (
-            wallet_id       VARCHAR (48) NOT NULL,
-            network         TEXT NOT NULL,
-            event           EVENT NOT NULL,
-            date            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY     (wallet_id, network, event)
-        );";
+        self.exec("ip_ratelimiter", "
+            CREATE TABLE IF NOT EXISTS ip_ratelimiter (
+                ip cidr NOT NULL, timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (ip, timestamp)
+            )").await?;
 
-        info!("QUERY");
-        info!("{create_timeline_elem}");
+        self.exec("wallet_ratelimiter", "
+            CREATE TABLE IF NOT EXISTS wallet_and_network_ratelimiter (
+                address VARCHAR(48) NOT NULL, network NETWORK,
+                timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (address, network, timestamp)
+            )").await?;
 
-        self.client.simple_query(create_timeline_elem).await?;
+        self.exec("identity_events", "
+            CREATE TABLE IF NOT EXISTS identity_events (
+                id BIGSERIAL PRIMARY KEY,
+                wallet_id VARCHAR(48) NOT NULL, network NETWORK NOT NULL,
+                event_type IDENTITY_EVENT_TYPE NOT NULL,
+                block_number BIGINT NOT NULL, block_hash VARCHAR(66) NOT NULL,
+                registrar_index INTEGER, data JSONB,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )").await?;
 
-        info!("Table `timeline_elem` created");
+        // Extensions and indexes
+        self.exec("pg_trgm", "CREATE EXTENSION IF NOT EXISTS pg_trgm").await?;
 
-        let create_indexer_state = "CREATE TABLE IF NOT EXISTS indexer_state (
-            network          NETWORK PRIMARY KEY,
-            last_block_index BIGINT NOT NULL DEFAULT 0,
-            last_block_hash  VARCHAR(66) NOT NULL,
-            updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );";
+        self.exec("idx_search_text", "
+            CREATE INDEX IF NOT EXISTS idx_search_text_trgm ON registration USING gin (search_text gin_trgm_ops)
+        ").await?;
 
-        info!("QUERY");
-        info!("{create_indexer_state}");
+        self.exec("idx_pgp", "CREATE INDEX IF NOT EXISTS idx_pgp_address_network ON pgp_keys(address, network)").await?;
 
-        self.client.simple_query(create_indexer_state).await?;
+        self.exec("idx_events_wallet", "
+            CREATE INDEX IF NOT EXISTS idx_identity_events_wallet ON identity_events(wallet_id, network, created_at DESC)
+        ").await?;
 
-        info!("Table `indexer_state` created");
+        self.exec("idx_events_block", "
+            CREATE INDEX IF NOT EXISTS idx_identity_events_block ON identity_events(network, block_number)
+        ").await?;
 
-        let update_search_text = "UPDATE registration
-            SET search_text = CONCAT_WS(' ',
-                wallet_id,
-                COALESCE(display_name, ''),
-                network,
-                COALESCE(discord, ''),
-                COALESCE(twitter, ''),
-                COALESCE(matrix, ''),
-                COALESCE(email, ''),
-                COALESCE(pgp_fingerprint, ''));";
-        info!("QUERY");
-        info!("{update_search_text}");
-
-        self.client.simple_query(update_search_text).await?;
-
-        let enable_gin_index = "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
-        info!("Enabling extension pg_trgm");
-        info!("{enable_gin_index}");
-
-        self.client.simple_query(enable_gin_index).await?;
-
-        let enable_gin_index = "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
-        info!("Enabling extension pg_trgm");
-        info!("{enable_gin_index}");
-
-        self.client.simple_query(enable_gin_index).await?;
-
-        let enable_gin_index = "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
-        info!("Enabling extension pg_trgm");
-        info!("{enable_gin_index}");
-
-        self.client.simple_query(enable_gin_index).await?;
-
-        let enable_gin_index = "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
-        info!("Enabling extension pg_trgm");
-        info!("{enable_gin_index}");
-
-        self.client.simple_query(enable_gin_index).await?;
-
-        let enable_gin_index = "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
-        info!("Enabling extension pg_trgm");
-        info!("{enable_gin_index}");
-
-        self.client.simple_query(enable_gin_index).await?;
-
-        // Create GIN index for efficient trigram similarity search
-        let create_gin_index = "CREATE INDEX IF NOT EXISTS idx_search_text_trgm
-            ON registration USING gin (search_text gin_trgm_ops);";
-        info!("Creating GIN index for search_text");
-        info!("{create_gin_index}");
-
-        self.client.simple_query(create_gin_index).await?;
-
-        info!("Creating `pgp_keys` table");
-
-        let create_pgp_keys = "CREATE TABLE IF NOT EXISTS pgp_keys (
-            fingerprint     VARCHAR(40) PRIMARY KEY,
-            address         VARCHAR(48) NOT NULL,
-            network         NETWORK NOT NULL,
-            armored_key     TEXT NOT NULL,
-            uploaded_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            verified        BOOLEAN DEFAULT FALSE,
-            remailer_enabled BOOLEAN DEFAULT FALSE,
-            remailer_registered_only BOOLEAN DEFAULT TRUE,
-            require_verified_pgp BOOLEAN DEFAULT TRUE,
-            UNIQUE(address, network)
-        );";
-
-        info!("QUERY");
-        info!("{create_pgp_keys}");
-
-        self.client.simple_query(create_pgp_keys).await?;
-        info!("Table `pgp_keys` created");
-
-        // Migrate existing tables
-        let add_remailer_columns = "
+        // Migrations
+        self.exec("migrate_remailer", "
             ALTER TABLE pgp_keys
             ADD COLUMN IF NOT EXISTS remailer_enabled BOOLEAN DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS remailer_registered_only BOOLEAN DEFAULT TRUE,
-            ADD COLUMN IF NOT EXISTS require_verified_pgp BOOLEAN DEFAULT TRUE;
-        ";
-        info!("Adding remailer columns if not exists");
-        self.client.simple_query(add_remailer_columns).await?;
+            ADD COLUMN IF NOT EXISTS require_verified_pgp BOOLEAN DEFAULT TRUE
+        ").await?;
 
-        let create_index_address_network = "CREATE INDEX IF NOT EXISTS idx_pgp_address_network
-            ON pgp_keys(address, network);";
-        info!("Creating index for pgp_keys (address, network)");
-        info!("{create_index_address_network}");
+        self.exec("migrate_judgement", "
+            ALTER TABLE registration
+            ADD COLUMN IF NOT EXISTS judgement_by INTEGER,
+            ADD COLUMN IF NOT EXISTS judgement_at TIMESTAMP
+        ").await?;
 
-        self.client.simple_query(create_index_address_network).await?;
-
-        let create_image_verifications = "CREATE TABLE IF NOT EXISTS image_verifications (
-            address         VARCHAR(48) NOT NULL,
-            network         NETWORK NOT NULL,
-            ipfs_cid        VARCHAR(100) NOT NULL,
-            format          VARCHAR(10) NOT NULL,
-            width           INTEGER NOT NULL,
-            height          INTEGER NOT NULL,
-            size_bytes      INTEGER NOT NULL,
-            alt_text        TEXT,  -- AI-generated description for accessibility (future: BLIP/CLIP)
-            metadata        JSONB,
-            verified_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (address, network)
-        );";
-
-        info!("QUERY");
-        info!("{create_image_verifications}");
-
-        self.client.simple_query(create_image_verifications).await?;
-        info!("Table `image_verifications` created");
-
-        let create_index_image_metadata = "CREATE INDEX IF NOT EXISTS idx_image_metadata
-            ON image_verifications USING gin(metadata);";
-        info!("Creating GIN index for image_verifications metadata");
-        info!("{create_index_image_metadata}");
-
-        self.client
-            .simple_query(create_index_image_metadata)
-            .await?;
-
-        let create_ip_ratlimitaer = "CREATE TABLE IF NOT EXISTS ip_ratelimiter (
-            ip               cidr NOT NULL,
-            timestamp        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (ip, timestamp)
-        );";
-        info!("Creating ip_ratelimiter table");
-        info!("{create_ip_ratlimitaer}");
-
-        self.client.simple_query(create_ip_ratlimitaer).await?;
-
-        let create_wallet_and_network_ratlimitaer =
-            "CREATE TABLE IF NOT EXISTS wallet_and_network_ratelimiter (
-            address          VARCHAR(48) NOT NULL,
-            network          NETWORK,
-            timestamp        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (address, network, timestamp)
-        );";
-        info!("Creating wallet_and_network_ratelimiter  table");
-        info!("{create_wallet_and_network_ratlimitaer}");
-
-        self.client
-            .simple_query(create_wallet_and_network_ratlimitaer)
-            .await?;
+        // Update search text for existing records
+        self.exec("update_search_text", "
+            UPDATE registration SET search_text = CONCAT_WS(' ',
+                wallet_id, COALESCE(display_name, ''), network,
+                COALESCE(discord, ''), COALESCE(twitter, ''),
+                COALESCE(matrix, ''), COALESCE(email, ''), COALESCE(pgp_fingerprint, ''))
+        ").await?;
 
         Ok(())
     }
@@ -420,9 +320,9 @@ $$;";
     pub async fn save_registration(&mut self, record: &RegistrationRecord) -> anyhow::Result<()> {
         info!(who = ?record.wallet_id(), "Writing record");
         let insert_reg_record = format!("
-            INSERT INTO registration(wallet_id, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint, network)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '{}') 
-            ON CONFLICT (wallet_id, network) DO UPDATE SET 
+            INSERT INTO registration(wallet_id, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint, network, judgement_by, judgement_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '{}', $11, $12)
+            ON CONFLICT (wallet_id, network) DO UPDATE SET
                 discord = EXCLUDED.discord,
                 twitter = EXCLUDED.twitter,
                 matrix = EXCLUDED.matrix,
@@ -431,7 +331,9 @@ $$;";
                 github = EXCLUDED.github,
                 legal = EXCLUDED.legal,
                 web = EXCLUDED.web,
-                pgp_fingerprint = EXCLUDED.pgp_fingerprint",
+                pgp_fingerprint = EXCLUDED.pgp_fingerprint,
+                judgement_by = COALESCE(EXCLUDED.judgement_by, registration.judgement_by),
+                judgement_at = COALESCE(EXCLUDED.judgement_at, registration.judgement_at)",
             record.network());
 
         info!(query=?insert_reg_record,"QUERY");
@@ -451,6 +353,8 @@ $$;";
                     &record.legal(),
                     &record.web(),
                     &record.pgp_fingerprint(),
+                    &record.judgement_by,
+                    &record.judgement_at,
                 ],
             )
             .await?;
@@ -483,6 +387,76 @@ $$;";
         self.client.query(&query, values).await?;
 
         Ok(())
+    }
+
+    /// Store an on-chain identity event
+    pub async fn store_identity_event(&self, event: &IdentityEvent) -> anyhow::Result<()> {
+        info!(
+            wallet = %event.wallet_id,
+            network = %event.network,
+            event_type = %event.event_type,
+            block = event.block_number,
+            "Storing identity event"
+        );
+
+        let query = format!(
+            "INSERT INTO identity_events (wallet_id, network, event_type, block_number, block_hash, registrar_index, data)
+             VALUES ($1, '{}', $2, $3, $4, $5, $6)",
+            event.network
+        );
+
+        self.client
+            .execute(
+                &query,
+                &[
+                    &event.wallet_id,
+                    &event.event_type,
+                    &event.block_number,
+                    &event.block_hash,
+                    &event.registrar_index,
+                    &event.data,
+                ],
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    /// Get event history for a wallet
+    pub async fn get_identity_events(
+        &self,
+        wallet_id: &str,
+        network: Option<&Network>,
+        limit: Option<i64>,
+    ) -> anyhow::Result<Vec<IdentityEventRecord>> {
+        let limit = limit.unwrap_or(100);
+
+        let (query, params): (String, Vec<&(dyn ToSql + Sync)>) = if let Some(net) = network {
+            (
+                format!(
+                    "SELECT wallet_id, network::TEXT, event_type::TEXT, block_number, block_hash, registrar_index, data, created_at
+                     FROM identity_events
+                     WHERE wallet_id = $1 AND network = '{}'
+                     ORDER BY block_number DESC, created_at DESC
+                     LIMIT $2",
+                    net
+                ),
+                vec![&wallet_id, &limit],
+            )
+        } else {
+            (
+                "SELECT wallet_id, network::TEXT, event_type::TEXT, block_number, block_hash, registrar_index, data, created_at
+                 FROM identity_events
+                 WHERE wallet_id = $1
+                 ORDER BY block_number DESC, created_at DESC
+                 LIMIT $2".to_string(),
+                vec![&wallet_id, &limit],
+            )
+        };
+
+        let rows = self.client.query(&query, &params).await?;
+
+        Ok(rows.iter().map(IdentityEventRecord::from).collect())
     }
 
     pub async fn search_registration_records(
@@ -706,61 +680,6 @@ $$;";
         Ok(())
     }
 
-    /// Store image verification metadata
-    /// Note: alt_text is AI-generated (future: BLIP/CLIP), not user-provided
-    #[instrument(skip_all, parent = &self.span)]
-    pub async fn store_image_verification(
-        &self,
-        account: &AccountId32,
-        network: &Network,
-        ipfs_cid: &str,
-        format: String,
-        width: u32,
-        height: u32,
-        size_bytes: i32,
-        alt_text: Option<&str>,  // AI-generated for accessibility
-        metadata: &serde_json::Value,
-    ) -> anyhow::Result<()> {
-        let query = "
-            INSERT INTO image_verifications
-            (address, network, ipfs_cid, format, width, height, size_bytes, alt_text, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            ON CONFLICT (address, network)
-            DO UPDATE SET
-                ipfs_cid = EXCLUDED.ipfs_cid,
-                format = EXCLUDED.format,
-                width = EXCLUDED.width,
-                height = EXCLUDED.height,
-                size_bytes = EXCLUDED.size_bytes,
-                alt_text = EXCLUDED.alt_text,
-                metadata = EXCLUDED.metadata,
-                verified_at = CURRENT_TIMESTAMP
-        ";
-
-        self.client
-            .execute(
-                query,
-                &[
-                    &account.to_string(),
-                    &network.to_string(),
-                    &ipfs_cid,
-                    &format,
-                    &(width as i32),
-                    &(height as i32),
-                    &size_bytes,
-                    &alt_text,
-                    &metadata,
-                ],
-            )
-            .await?;
-
-        info!(
-            "Stored image verification for address {} on network {}: CID {}",
-            account, network, ipfs_cid
-        );
-        Ok(())
-    }
-
     /// Update remailer settings for a PGP key
     #[instrument(skip_all, parent = &self.span)]
     pub async fn update_remailer_settings(
@@ -863,24 +782,14 @@ $$;";
         Ok(())
     }
 
-    // NOTE: experimenting with ip blocking
     pub async fn is_allowed_ip(&self, ip: &IpAddr) -> anyhow::Result<bool> {
         let ratelimiter = &Config::load_static().ratelimit;
         if ratelimiter.is_exception_ip(ip) {
-            info!(ip=?ip,"IP is an exception");
+            info!(ip=?ip, "IP is an exception");
             return Ok(true);
-        } else {
-            let query = Ratelimit::from(ip);
-            let rows = query.exec().await?;
-
-            let limit = ratelimiter.wallet_requests_hour_limit as i64;
-
-            if rows > limit {
-                Ok(false)
-            } else {
-                Ok(true)
-            }
         }
+        let rows = Ratelimit::from(ip).exec().await?;
+        Ok(rows <= ratelimiter.wallet_requests_hour_limit as i64)
     }
 
     pub async fn is_allowed(
@@ -891,18 +800,9 @@ $$;";
         let ratelimiter = &Config::load_static().ratelimit;
         if ratelimiter.is_exception(wallet_id, network) {
             return Ok(true);
-        } else {
-            let query = Ratelimit::from((wallet_id, network));
-            let rows = query.exec().await?;
-
-            let limit = ratelimiter.wallet_requests_hour_limit as i64;
-
-            if rows >= limit {
-                Ok(false)
-            } else {
-                Ok(true)
-            }
         }
+        let rows = Ratelimit::from((wallet_id, network)).exec().await?;
+        Ok(rows < ratelimiter.wallet_requests_hour_limit as i64)
     }
 
     async fn get_rate(&self, arg: &Ratelimit) -> anyhow::Result<i64> {
@@ -983,7 +883,7 @@ impl From<&IpAddr> for Ratelimit {
     fn from(value: &IpAddr) -> Self {
         Self {
             is_ip: true,
-            ip: Some(value.clone()),
+            ip: Some(*value),
             wallet_id: None,
             network: None,
         }
@@ -1016,8 +916,8 @@ impl From<&tokio_postgres::Row> for TimelineRecord {
         let event: TimelineEvent = value.get("event");
         let wid: String = value.get("wallet_id");
 
-        // TODO: handle unwrap?
-        let wallet_id: AccountId32 = AccountId32::from_str(&wid).unwrap();
+        let wallet_id: AccountId32 = AccountId32::from_str(&wid)
+            .expect("invalid wallet_id in database - data corruption");
         Self {
             event,
             date: date.to_string(),
@@ -1030,7 +930,6 @@ impl TimelineRecord {}
 
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct RegistrationRecord {
-    // NOTE: should network and wallet_id bet Option?
     pub wallet_id: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1065,6 +964,14 @@ pub struct RegistrationRecord {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeline: Option<Vec<TimelineRecord>>,
+
+    /// Registrar index that verified this identity (None = not verified)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judgement_by: Option<i32>,
+
+    /// When the judgement was given
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judgement_at: Option<chrono::NaiveDateTime>,
 }
 
 impl RegistrationRecord {
@@ -1090,7 +997,15 @@ impl RegistrationRecord {
             web: identity_data_tostring(&registration.info.web),
             pgp_fingerprint,
             timeline: None,
+            judgement_by: None,
+            judgement_at: None,
         }
+    }
+
+    pub fn with_judgement(mut self, registrar_index: i32) -> Self {
+        self.judgement_by = Some(registrar_index);
+        self.judgement_at = Some(chrono::Utc::now().naive_utc());
+        self
     }
 
     pub async fn from_storage_pairs(
@@ -1111,6 +1026,15 @@ impl RegistrationRecord {
             None => None,
         };
 
+        // Extract first positive judgement (Reasonable or KnownGood) from any registrar
+        let judgement_by = pairs
+            .value
+            .judgements
+            .0
+            .iter()
+            .find(|(_, j)| matches!(j, Judgement::Reasonable | Judgement::KnownGood))
+            .map(|(reg_idx, _)| *reg_idx as i32);
+
         Ok(Some(Self {
             network: Some(network.to_owned()),
             wallet_id: account_id.to_string().to_owned(),
@@ -1124,25 +1048,22 @@ impl RegistrationRecord {
             web: identity_data_tostring(&pairs.value.info.web),
             pgp_fingerprint,
             timeline: None,
+            judgement_by,
+            judgement_at: None, // We don't have timestamp from chain storage
         }))
     }
 
-    // TODO: return None if judgement is not set correctly
-    pub async fn from_judgement(jud: &JudgementGiven) -> anyhow::Result<Option<Self>> {
-        let cfg = Config::load_static();
-
-        let (network, reg_config) = match cfg.registrar.registrar_config(jud.registrar_index) {
-            Some(v) => v,
-            None => return Ok(None),
-        };
-
-        let client = NodeClient::from_url(&reg_config.endpoint).await?;
-        let registration = node::get_registration(&client, &jud.target).await?;
-        Ok(Some(Self::from_registration(
-            &jud.target,
-            &registration,
-            Some(network),
-        )))
+    /// Creates a RegistrationRecord from a JudgementGiven event.
+    /// Works for ANY registrar's judgement, not just ours.
+    pub async fn from_judgement(
+        jud: &JudgementGiven,
+        network: &Network,
+        client: &NodeClient,
+    ) -> anyhow::Result<Option<Self>> {
+        let registration = node::get_registration(client, &jud.target).await?;
+        let record = Self::from_registration(&jud.target, &registration, Some(network.clone()))
+            .with_judgement(jud.registrar_index as i32);
+        Ok(Some(record))
     }
 
     pub fn wallet_id(&self) -> String {
@@ -1452,7 +1373,10 @@ impl TimelineQuery {
                 condition = condition.network(&network);
             };
 
-            condition = condition.wallet_id(AccountId32::from_str(&record.wallet_id).unwrap());
+            condition = condition.wallet_id(
+                AccountId32::from_str(&record.wallet_id)
+                    .expect("invalid wallet_id in record - data corruption"),
+            );
 
             let selected = TimelineDisplayed::default().wallet_id().event().date();
             timeline_query = timeline_query.condition(condition).selected(selected);
@@ -1561,8 +1485,28 @@ impl Query for RegistrationQuery {
             None => {}
         }
 
-        if let Some(space) = &self.space {
-            statement.push_str(&format!(" ORDER BY sim DESC"));
+        // Order by: our verification first, then any verification, then similarity
+        // judgement_by matching our registrar = priority 0
+        // judgement_by not null (others verified) = priority 1
+        // judgement_by null (not verified) = priority 2
+        let our_registrar_indices = Config::load_static()
+            .registrar
+            .networks
+            .values()
+            .map(|c| c.registrar_index.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        if let Some(_space) = &self.space {
+            statement.push_str(&format!(
+                " ORDER BY CASE WHEN judgement_by IN ({}) THEN 0 WHEN judgement_by IS NOT NULL THEN 1 ELSE 2 END, sim DESC",
+                our_registrar_indices
+            ));
+        } else {
+            statement.push_str(&format!(
+                " ORDER BY CASE WHEN judgement_by IN ({}) THEN 0 WHEN judgement_by IS NOT NULL THEN 1 ELSE 2 END",
+                our_registrar_indices
+            ));
         }
 
         if let Some(result_size) = self.displayed.result_size {
@@ -2372,6 +2316,122 @@ impl From<&AccountType> for TimelineEvent {
 impl Display for TimelineEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", format!("{:#?}", self).to_lowercase())
+    }
+}
+
+/// On-chain identity event types for event history tracking
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[derive(postgres_types::ToSql)]
+#[postgres(name = "identity_event_type")]
+pub enum IdentityEventType {
+    #[postgres(name = "identity_set")]
+    IdentitySet,
+    #[postgres(name = "identity_cleared")]
+    IdentityCleared,
+    #[postgres(name = "identity_killed")]
+    IdentityKilled,
+    #[postgres(name = "judgement_requested")]
+    JudgementRequested,
+    #[postgres(name = "judgement_unrequested")]
+    JudgementUnrequested,
+    #[postgres(name = "judgement_given")]
+    JudgementGiven,
+    #[postgres(name = "registrar_added")]
+    RegistrarAdded,
+    #[postgres(name = "sub_identity_added")]
+    SubIdentityAdded,
+    #[postgres(name = "sub_identity_removed")]
+    SubIdentityRemoved,
+    #[postgres(name = "sub_identity_revoked")]
+    SubIdentityRevoked,
+}
+
+impl Display for IdentityEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::IdentitySet => "identity_set",
+            Self::IdentityCleared => "identity_cleared",
+            Self::IdentityKilled => "identity_killed",
+            Self::JudgementRequested => "judgement_requested",
+            Self::JudgementUnrequested => "judgement_unrequested",
+            Self::JudgementGiven => "judgement_given",
+            Self::RegistrarAdded => "registrar_added",
+            Self::SubIdentityAdded => "sub_identity_added",
+            Self::SubIdentityRemoved => "sub_identity_removed",
+            Self::SubIdentityRevoked => "sub_identity_revoked",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+/// Record for on-chain identity event
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IdentityEvent {
+    pub wallet_id: String,
+    pub network: String,
+    pub event_type: IdentityEventType,
+    pub block_number: i64,
+    pub block_hash: String,
+    pub registrar_index: Option<i32>,
+    pub data: Option<serde_json::Value>,
+}
+
+impl IdentityEvent {
+    pub fn new(
+        wallet_id: &AccountId32,
+        network: &Network,
+        event_type: IdentityEventType,
+        block_number: u32,
+        block_hash: &str,
+    ) -> Self {
+        Self {
+            wallet_id: wallet_id.to_string(),
+            network: network.to_string(),
+            event_type,
+            block_number: block_number as i64,
+            block_hash: block_hash.to_string(),
+            registrar_index: None,
+            data: None,
+        }
+    }
+
+    pub fn with_registrar(mut self, index: u32) -> Self {
+        self.registrar_index = Some(index as i32);
+        self
+    }
+
+    pub fn with_data(mut self, data: serde_json::Value) -> Self {
+        self.data = Some(data);
+        self
+    }
+}
+
+/// Record returned from identity_events queries
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IdentityEventRecord {
+    pub wallet_id: String,
+    pub network: String,
+    pub event_type: String,
+    pub block_number: i64,
+    pub block_hash: String,
+    pub registrar_index: Option<i32>,
+    pub data: Option<serde_json::Value>,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+impl From<&tokio_postgres::Row> for IdentityEventRecord {
+    fn from(row: &tokio_postgres::Row) -> Self {
+        Self {
+            wallet_id: row.get("wallet_id"),
+            network: row.get("network"),
+            event_type: row.get("event_type"),
+            block_number: row.get("block_number"),
+            block_hash: row.get("block_hash"),
+            registrar_index: row.get("registrar_index"),
+            data: row.get("data"),
+            created_at: row.get("created_at"),
+        }
     }
 }
 

@@ -46,15 +46,8 @@ openssl = "0.10.73"
 postgres-types = { version = "0.2.9", features = ["derive"] }
 mobc = "0.9.0"
 
-# Image verification dependencies
-image = { version = "0.24", default-features = false, features = ["jpeg", "png", "webp"] }
-cid = "0.11"
-# TODO: nsfw crate has dependency conflict with matrix-sdk (time version)
-# nsfw = { version = "0.1", optional = true, default-features = false, features = ["jpeg", "png", "webp"] }
-
 [features]
 default = []
-# nsfw-detection = ["nsfw"]  # disabled due to dependency conflict
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

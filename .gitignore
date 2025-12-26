@@ -13,3 +13,7 @@ config.staging.toml
 config.development.toml
 secrets/
 models/
+cert.crt
+key.pem
+*.pem
+*.crt

@@ -143,11 +143,7 @@ impl RedisConnection {
         Ok(pending)
     }
 
-    /// Get all pending challenges of `wallet_id` as a [Vec<Vec<String>>]
-    /// Returns pairs of [account_type, challenge_token]
-
-    /// constructing [VerificationFields] object from the registration done of all the accounts
-    /// under `wallet_id`
+    /// Construct [VerificationFields] from the registration done of all accounts under `wallet_id`
     #[instrument(skip_all, parent = &self.span)]
     pub async fn extract_info(
         &mut self,
