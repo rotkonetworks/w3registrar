@@ -371,20 +371,13 @@ impl PostgresConnection {
     ) -> anyhow::Result<()> {
         // FIXME: update time should be also be changed
 
-        let query = format!(
-            "INSERT INTO indexer_state (network, last_block_hash, last_block_index)
-            VALUES ('{}',$1, $2)
-            ON CONFLICT (network)
-            DO UPDATE SET
-                last_block_hash = EXCLUDED.last_block_hash,
-                last_block_index = EXCLUDED.last_block_index;
-        ",
-            network
-        );
+        let query = "INSERT INTO indexer_state (network, last_block_hash, last_block_index) \
+            VALUES ($1, $2, $3) ON CONFLICT (network) DO UPDATE SET \
+            last_block_hash = EXCLUDED.last_block_hash, last_block_index = EXCLUDED.last_block_index";
 
-        let values: &[&(dyn ToSql + Sync)] = &[&hex::encode(hash.as_bytes()), &index];
+        let values: &[&(dyn ToSql + Sync)] = &[&network.to_string(), &hex::encode(hash.as_bytes()), &index];
 
-        self.client.query(&query, values).await?;
+        self.client.query(query, values).await?;
 
         Ok(())
     }
@@ -724,28 +717,16 @@ impl PostgresConnection {
     }
 
     pub async fn get_indexer_state(&self, network: &Network) -> anyhow::Result<IndexerState> {
-        let query = format!("SELECT network::text, last_block_index, last_block_hash, updated_at FROM indexer_state WHERE network='{}'", network);
-        let row = self.client.query_one(&query, &[]).await?;
+        let query = "SELECT network::text, last_block_index, last_block_hash, updated_at FROM indexer_state WHERE network=$1";
+        let row = self.client.query_one(query, &[&network.to_string()]).await?;
         IndexerState::try_from(&row)
     }
 
     pub async fn register_requester_ip(&self, ip: &IpAddr) -> anyhow::Result<()> {
-        let query = format!(
-            "
-            INSERT INTO ip_ratelimiter
-            (ip)
-            VALUES ('{}')
-            ON CONFLICT (ip, timestamp)
-            DO UPDATE SET
-                ip = EXCLUDED.ip,
-                timestamp = CURRENT_TIMESTAMP
-        ",
-            ip
-        );
+        let query = "INSERT INTO ip_ratelimiter (ip) VALUES ($1) \
+            ON CONFLICT (ip, timestamp) DO UPDATE SET ip = EXCLUDED.ip, timestamp = CURRENT_TIMESTAMP";
 
-        let mut v = BytesMut::default();
-
-        self.client.execute(&query, &[]).await?;
+        self.client.execute(query, &[&ip.to_string()]).await?;
 
         info!(ip=?ip, "Updating ratelimit");
         Ok(())
@@ -756,24 +737,12 @@ impl PostgresConnection {
         wallet_id: &AccountId32,
         network: &Network,
     ) -> anyhow::Result<()> {
-        let query = format!(
-            "
-            INSERT INTO wallet_and_network_ratelimiter
-            (address, network)
-            VALUES ($1, '{}')
-            ON CONFLICT (address, network, timestamp)
-            DO UPDATE SET
-                address = EXCLUDED.address,
-                network = EXCLUDED.network,
-                timestamp = CURRENT_TIMESTAMP
-        ",
-            network
-        );
-
-        let mut v = BytesMut::default();
+        let query = "INSERT INTO wallet_and_network_ratelimiter (address, network) \
+            VALUES ($1, $2) ON CONFLICT (address, network, timestamp) DO UPDATE SET \
+            address = EXCLUDED.address, network = EXCLUDED.network, timestamp = CURRENT_TIMESTAMP";
 
         self.client
-            .execute(&query, &[&wallet_id.to_string()])
+            .execute(query, &[&wallet_id.to_string(), &network.to_string()])
             .await?;
 
         info!(wallet_id=?wallet_id, network=?network,"Updating ratelimit");
@@ -841,15 +810,9 @@ impl Query for Ratelimit {
         let mut statement = String::from("SELECT COUNT(*) FROM ");
 
         if self.is_ip_query() {
-            statement.push_str("ip_ratelimiter ");
-            if let Some(ip) = &self.ip {
-                statement.push_str(&format!("WHERE ip = '{}' ", ip));
-            }
+            statement.push_str("ip_ratelimiter WHERE ip = $1 ");
         } else {
-            statement.push_str("wallet_and_network_ratelimiter ");
-            if let Some(network) = &self.network {
-                statement.push_str(&format!("WHERE address = $1 AND network = '{}' ", network));
-            }
+            statement.push_str("wallet_and_network_ratelimiter WHERE address = $1 AND network = $2 ");
         }
 
         statement.push_str("AND timestamp > NOW() - INTERVAL '1 hour'");
@@ -857,12 +820,19 @@ impl Query for Ratelimit {
     }
 
     fn params(&self) -> Vec<Self::PARAM> {
-        match (&self.wallet_id, &self.network) {
-            (Some(wallet_id), Some(_)) if !self.is_ip_query() => {
-                vec![wallet_id.to_string()]
+        if self.is_ip_query() {
+            if let Some(ip) = &self.ip {
+                return vec![ip.to_string()];
             }
-            _ => vec![],
+        } else {
+            match (&self.wallet_id, &self.network) {
+                (Some(wallet_id), Some(network)) => {
+                    return vec![wallet_id.to_string(), network.to_string()];
+                }
+                _ => {}
+            }
         }
+        vec![]
     }
 }
 

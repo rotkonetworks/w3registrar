@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![allow(async_fn_in_trait)]
 
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,18 @@ impl Token {
             expected_message: token,
         }
     }
+
+    /// Synchronous token generation of specified length
+    pub fn generate_sync(length: usize) -> String {
+        let alphabet = OLC_ALPHABET.as_bytes();
+        let mut rng = rand::rng();
+        (0..length)
+            .map(|_| {
+                let idx = rng.random_range(0..alphabet.len());
+                alphabet[idx] as char
+            })
+            .collect()
+    }
 }
 
 impl From<String> for Token {
@@ -46,16 +59,8 @@ impl<'a> From<&'a str> for Token {
 impl AuthToken for Token {
     /// Generates a [Token] as a [String] 8 characters long, using the base-20 `OLC_ALPHABET`.
     async fn generate() -> Token {
-        let alphabet = OLC_ALPHABET.as_bytes();
-        let mut rng = rand::rng();
-        let s: String = (0..8)
-            .map(|_| {
-                let idx = rng.random_range(0..alphabet.len());
-                alphabet[idx] as char
-            })
-            .collect();
         Token {
-            expected_message: s,
+            expected_message: Self::generate_sync(8),
         }
     }
 

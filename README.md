@@ -4,8 +4,8 @@
 
 Lightweight Substrate registrar microservice that automates identity verification.
 It listens for `JudgementRequested` events, manages verification tokens in Redis,
-indexes identity data in PostgreSQL, and issues final on-chain judgements once all fields 
-(email, Matrix, Discord, GitHub, PGP, etc.) are confirmed.
+indexes identity data in PostgreSQL, and issues final on-chain judgements once all fields
+(email, Matrix, Discord, GitHub, PGP, web domains, etc.) are confirmed.
 
 ---
 
@@ -106,6 +106,9 @@ mailbox = "INBOX"
 server = "mail.rotko.net"
 port = 143
 checking_frequency = 500
+# Optional: For JMAP protocol with bidirectional support
+# protocol = "jmap"
+# mode = "bidirectional"  # receive | send | bidirectional
 
 [adapter.github]
 client_id = "your_github_client_id"
@@ -137,14 +140,20 @@ redirect_url = "http://your-domain.com/oauth/callback/github"
   - Accepts JSON messages of type `SubscribeAccountState` (to watch an account's fields), `VerifyPGPKey` (to verify a PGP key), `SearchRegistration` (to search for registration)
   - On changes, pushes updated state back to any subscribed clients.
 - **Email**:
-  - If any `fields` contains `"email"`, w3registrar spawns one IMAP loop that watches a single mailbox.  
-  - Unread emails are parsed; if a message body matches the token in Redis, we mark `email` done.
+  - Supports both IMAP (receive-only) and JMAP (bidirectional) protocols.
+  - IMAP: Watches a mailbox for verification tokens in email bodies.
+  - JMAP: Can both send challenge emails and receive responses (when configured).
 - **Matrix**:
-  - If any `fields` is among `"matrix","discord","twitter"`, a single Matrix client logs in, listens for messages.  
+  - If any `fields` is among `"matrix","discord","twitter"`, a single Matrix client logs in, listens for messages.
   - If a user posts a token that matches the Redis challenge, we mark that done.
 - **GitHub**:
   - OAuth-based verification for GitHub accounts when `"github"` field is included.
   - Users authenticate via GitHub OAuth flow to verify ownership.
+- **Web Domain Verification**:
+  - Supports both HTTP and DNS verification methods for the `"web"` field.
+  - HTTP: Checks `https://domain/.well-known/w3registrar/{challenge}` or `https://domain/w3registrar-verify.txt`
+  - DNS: Verifies TXT records containing the challenge token.
+  - Automatically tries HTTP first (faster), then falls back to DNS if needed.
 
 Once all fields for a network are done, w3registrar calls `provide_judgement` with `Judgement::Reasonable`.
 
@@ -202,7 +211,40 @@ You can test with [`websocat`](https://github.com/vi/websocat) or a custom clien
 
 ---
 
-### Returned Objets
+### Web Domain Verification
+
+The web adapter supports two verification methods for proving domain ownership. For detailed API documentation and examples, see [Web Verification Documentation](docs/WEB_VERIFICATION.md).
+
+#### HTTP Verification (Recommended - Faster)
+Place the challenge token at one of these locations on your web server:
+1. **Standard path**: `https://yourdomain.com/.well-known/w3registrar/{challenge_token}`
+   - Create a file named with your challenge token containing the token itself
+   - Example: File at `/.well-known/w3registrar/8ABR4K13` containing `8ABR4K13`
+
+2. **Alternative path**: `https://yourdomain.com/w3registrar-verify.txt`
+   - Create a single file containing your challenge token
+   - Example: File `w3registrar-verify.txt` containing `8ABR4K13`
+
+The verifier will check HTTPS first, then fall back to HTTP if HTTPS is unavailable.
+
+#### DNS Verification (Alternative)
+Add a TXT record to your domain's DNS:
+- Record: `TXT`
+- Host: `@` or your subdomain
+- Value: Your challenge token (e.g., `8ABR4K13`)
+
+DNS verification may take longer due to propagation delays (typically 5-60 minutes).
+
+#### Verification Priority
+1. HTTPS with `.well-known` path
+2. HTTPS with alternative path
+3. HTTP with `.well-known` path
+4. HTTP with alternative path
+5. DNS TXT record
+
+---
+
+### Returned Objects
 #### SearchRegistration
 TODO
 #### SubscribeAccountState

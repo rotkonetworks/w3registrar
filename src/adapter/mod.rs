@@ -1,21 +1,48 @@
+use std::cmp::Ordering;
 use std::fmt::Display;
 use subxt::utils::AccountId32;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::api::{Account, Network};
 
 pub mod context;
-pub mod dns;
 pub mod github;
 pub mod pgp;
+pub mod web;
 
-#[cfg(feature = "mail")]
-pub mod mail;
+#[cfg(feature = "jmap")]
+pub mod email;
 
 #[cfg(feature = "matrix")]
 pub mod matrix;
 
 pub use context::{ChainRegistrar, TimelineStore, VerificationStore};
+
+/// Constant-time string comparison to prevent timing attacks
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+
+    // Always compare the same number of bytes to prevent length-based timing attacks
+    let max_len = std::cmp::max(a_bytes.len(), b_bytes.len());
+
+    // Pad shorter string with zeros conceptually
+    let mut result = 0u8;
+
+    for i in 0..max_len {
+        let a_byte = a_bytes.get(i).copied().unwrap_or(0);
+        let b_byte = b_bytes.get(i).copied().unwrap_or(0);
+        result |= a_byte ^ b_byte;
+    }
+
+    // Also check if lengths are equal in constant time
+    let len_match = match a_bytes.len().cmp(&b_bytes.len()) {
+        Ordering::Equal => 0,
+        _ => 1,
+    };
+
+    result == 0 && len_match == 0
+}
 
 #[derive(Debug, Clone)]
 pub enum RegistrationError<'a> {
@@ -124,8 +151,12 @@ where
         }
     };
 
-    // check if the message matches the token
-    if text_content != *token {
+    // use constant-time comparison to prevent timing attacks
+    if !constant_time_eq(text_content, token) {
+        warn!(
+            "Invalid token attempt for {}/{}/{}",
+            network, account_id, account_type
+        );
         return Err(anyhow::anyhow!(
             "{}",
             RegistrationError::WrongChallenge(text_content)
@@ -170,6 +201,7 @@ where
 }
 
 /// Adapter trait - now uses the abstracted handle_verification function
+#[allow(async_fn_in_trait)]
 pub trait Adapter {
     /// Handle content using real Redis, Postgres, and chain connections
     async fn handle_content(
@@ -213,6 +245,8 @@ mod tests {
                 account_name: "test@example.com".to_string(),
                 done,
                 token: Some(token.to_string()),
+                inbound_token: None,
+                outbound_token: None,
             },
         );
         AccountVerification {
@@ -222,6 +256,15 @@ mod tests {
             challenges,
             completed: done,
         }
+    }
+
+    #[test]
+    fn test_constant_time_eq() {
+        assert!(constant_time_eq("hello", "hello"));
+        assert!(!constant_time_eq("hello", "world"));
+        assert!(!constant_time_eq("hello", "hello!"));
+        assert!(!constant_time_eq("", "a"));
+        assert!(constant_time_eq("", ""));
     }
 
     #[tokio::test]
