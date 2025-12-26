@@ -128,3 +128,10 @@ mod tests {
         }
     }
 }
+    #[tokio::test]
+    async fn test_http_verify_nonexistent() {
+        use super::*;
+        // Test with a domain that won't have our verification file
+        let result = verify_http("example.com", "w3r-test-token-xyz").await;
+        assert!(!result, "Should fail for domain without verification file");
+    }

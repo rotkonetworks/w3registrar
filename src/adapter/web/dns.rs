@@ -62,3 +62,24 @@ pub async fn verify_txt(domain: &str, challenge: &str) -> bool {
         }
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_dns_lookup_real_domain() {
+        // Test with a real domain - google.com has TXT records
+        let records = lookup_txt_records("google.com").await;
+        assert!(records.is_ok(), "Should be able to lookup TXT records");
+        let records = records.unwrap();
+        println!("Found {} TXT records for google.com", records.len());
+        assert!(!records.is_empty(), "google.com should have TXT records");
+    }
+
+    #[tokio::test]
+    async fn test_dns_verify_nonexistent_token() {
+        // Verify that a random token doesn't match
+        let result = verify_txt("google.com", "w3r-test-nonexistent-token-12345").await;
+        assert!(!result, "Random token should not match any TXT record");
+    }
+}
