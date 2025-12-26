@@ -423,7 +423,7 @@ impl RedisConnection {
     pub async fn del(&mut self, key: &str) -> anyhow::Result<()> {
         self.manager
             .0
-            .del(&key)
+            .del(key)
             .await
             .map_err(|e| anyhow!("Failed to remove state from Redis: {}", e))
     }

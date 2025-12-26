@@ -1427,43 +1427,39 @@ impl Query for RegistrationQuery {
             statement.push_str("registration");
         }
 
-        match &self.condition {
-            Some(v) => {
-                if !v.filters.is_empty() || v.network.is_some() || self.space.is_some() {
-                    statement.push_str(" WHERE ");
-                }
-
-                for filter in v.filters.iter() {
-                    if let Some(table_name) = filter.field.table_column_name() {
-                        if filter.strict {
-                            statement.push_str(&format!("{} = ${}", table_name, index));
-                        } else {
-                            statement.push_str(&format!(
-                                "{} ILIKE ${}", // Postgres uses ILIKE for case-insensitive matching,
-                                //  LIKE is case-sensitive.
-                                table_name,
-                                index
-                            ));
-                        }
-                        index += 1;
-                        statement.push_str(" AND ");
-                    }
-                }
-
-                if let Some(network) = &v.network {
-                    statement.push_str(&format!("network = ${} AND ", index));
-                    index += 1;
-                }
-
-                if self.space.is_some() {
-                    statement.push_str("sim > 0 AND");
-                }
-
-                statement = statement
-                    .trim_end_matches([' ', ',', 'A', 'N', 'D', 'O', 'R'])
-                    .to_owned();
+        if let Some(v) = &self.condition {
+            if !v.filters.is_empty() || v.network.is_some() || self.space.is_some() {
+                statement.push_str(" WHERE ");
             }
-            None => {}
+
+            for filter in v.filters.iter() {
+                if let Some(table_name) = filter.field.table_column_name() {
+                    if filter.strict {
+                        statement.push_str(&format!("{} = ${}", table_name, index));
+                    } else {
+                        statement.push_str(&format!(
+                            "{} ILIKE ${}", // Postgres uses ILIKE for case-insensitive matching,
+                            //  LIKE is case-sensitive.
+                            table_name, index
+                        ));
+                    }
+                    index += 1;
+                    statement.push_str(" AND ");
+                }
+            }
+
+            if let Some(network) = &v.network {
+                statement.push_str(&format!("network = ${} AND ", index));
+                index += 1;
+            }
+
+            if self.space.is_some() {
+                statement.push_str("sim > 0 AND");
+            }
+
+            statement = statement
+                .trim_end_matches([' ', ',', 'A', 'N', 'D', 'O', 'R'])
+                .to_owned();
         }
 
         // Order by: our verification first, then any verification, then similarity
@@ -1506,7 +1502,7 @@ impl Query for RegistrationQuery {
             // Then the rest of the params
             for filter in condition.filters.iter() {
                 if filter.strict && !matches!(filter.field, SearchInfo::Generic(_)) {
-                    params.push(format!("{}", filter.field.inner())) // exact match, e.g. display_name = 'Jow'
+                    params.push(filter.field.inner().to_string()) // exact match, e.g. display_name = 'Jow'
                 } else if !filter.strict && !matches!(filter.field, SearchInfo::Generic(_)) {
                     params.push(format!("%{}%", filter.field.inner())) // e.g. display_name ILIKE '%Jow%'
                 }
@@ -1555,14 +1551,14 @@ impl RegistrationQuery {
     }
 }
 
-impl Into<RegistrationQuery> for &IncomingSearchRequest {
-    fn into(self) -> RegistrationQuery {
-        if self.outputs.contains(&DisplayedInfo::Timeline) {
+impl From<&IncomingSearchRequest> for RegistrationQuery {
+    fn from(value: &IncomingSearchRequest) -> RegistrationQuery {
+        if value.outputs.contains(&DisplayedInfo::Timeline) {
             let mut registration_query = RegistrationQuery::default();
-            let displayed = RegistrationDisplayed::from(self);
-            let condition = RegistrationCondition::from(self);
+            let displayed = RegistrationDisplayed::from(value);
+            let condition = RegistrationCondition::from(value);
             // search space, Option<SearchSpace>
-            let space = SearchSpace::construct_space(&self);
+            let space = SearchSpace::construct_space(value);
 
             registration_query
                 .selected(displayed)
@@ -1572,23 +1568,23 @@ impl Into<RegistrationQuery> for &IncomingSearchRequest {
             let mut registration_query = RegistrationQuery::default();
             let mut displayed = RegistrationDisplayed::default();
             let mut condition = RegistrationCondition::default();
-            let space = SearchSpace::construct_space(&self);
+            let space = SearchSpace::construct_space(value);
 
-            for filter in self.filters.fields.iter() {
+            for filter in value.filters.fields.iter() {
                 condition = condition.filter(filter);
             }
 
-            if let Some(network) = &self.network {
-                condition = condition.network(&network);
+            if let Some(network) = &value.network {
+                condition = condition.network(network);
             }
 
-            for output in &self.outputs {
+            for output in &value.outputs {
                 if let Ok(output) = output.try_into() {
                     displayed.push(output);
                 }
             }
 
-            if let Some(result_size) = self.filters.result_size {
+            if let Some(result_size) = value.filters.result_size {
                 displayed = displayed.result_size(result_size);
             }
 
@@ -1726,7 +1722,7 @@ impl From<&IncomingSearchRequest> for RegistrationCondition {
         }
 
         if let Some(network) = &value.network {
-            condition = condition.network(&network);
+            condition = condition.network(network);
         }
         condition
     }
@@ -2255,9 +2251,9 @@ impl<'a> FromSql<'a> for TimelineEvent {
         if ty.name().to_lowercase() == "event" {
             let res: TimelineEvent = serde_json::from_slice(&v)?;
             return Ok(res);
-        };
+        }
 
-        return Err(anyhow!("error {:?} raw {:?}", ty, v).into());
+        Err(anyhow!("error {:?} raw {:?}", ty, v).into())
     }
 
     fn accepts(ty: &postgres_types::Type) -> bool {
