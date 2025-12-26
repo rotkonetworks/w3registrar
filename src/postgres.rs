@@ -2237,6 +2237,16 @@ pub enum TimelineEvent {
     #[postgres(name = "pgp_fingerprint")]
     #[serde(alias = "pgp_fingerprint")]
     PGPFingerprint,
+    // Admin events
+    #[postgres(name = "admin_approved")]
+    #[serde(alias = "admin_approved")]
+    AdminApproved,
+    #[postgres(name = "admin_rejected")]
+    #[serde(alias = "admin_rejected")]
+    AdminRejected,
+    #[postgres(name = "admin_judgement")]
+    #[serde(alias = "admin_judgement")]
+    AdminJudgementProvided,
 }
 
 impl<'a> FromSql<'a> for TimelineEvent {

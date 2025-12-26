@@ -135,6 +135,46 @@ std Rust on PolkaVM. This may simplify porting by:
 3. **State**: Redis/Postgres must be replaced with on-chain storage
 4. **Randomness**: Token generation needs deterministic entropy source
 
+## Multi-Network Runtime Support
+
+### Current Limitation
+
+The application currently uses compile-time generated types from `people_paseo.scale`
+metadata. While it can connect to any People chain endpoint at runtime, the
+transaction construction uses Paseo-specific types.
+
+### Metadata Files
+
+```
+metadata/
+├── people_kusama.scale
+├── people_paseo.scale
+└── people_polkadot.scale
+```
+
+### Future Options
+
+1. **Dynamic Subxt**: Use `subxt::OnlineClient::from_url()` with runtime metadata
+   fetched at connection time. Requires using dynamic APIs instead of generated types.
+
+2. **Feature Flags Per Network**: Generate separate modules for each chain:
+   ```rust
+   #[cfg(feature = "kusama")]
+   #[subxt::subxt(runtime_metadata_path = "./metadata/people_kusama.scale")]
+   pub mod substrate {}
+   ```
+
+3. **Shared Types**: People chains use identical identity pallet types, so a
+   single metadata file may work for all networks if the identity-related
+   types are compatible.
+
+### Recommended Approach
+
+For production multi-network support:
+1. Use dynamic subxt for storage queries and event decoding
+2. Use static types only for common pallet calls (identity judgement)
+3. Add runtime version checks to validate compatibility
+
 ### Benefits
 
 1. **Trustless**: Verification runs on-chain, no trusted operators

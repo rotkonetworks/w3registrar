@@ -29,6 +29,15 @@ pub struct Config {
     pub adapter: Adapter,
     pub postgres: PostgresConfig,
     pub ratelimit: Ratelimit,
+    #[serde(default)]
+    pub admin: AdminConfig,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct AdminConfig {
+    /// List of SS58 addresses that can perform admin actions
+    #[serde(default)]
+    pub allowed_accounts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

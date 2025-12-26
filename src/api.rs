@@ -766,6 +766,45 @@ pub struct VerifyIdentityRequest {
     pub payload: ChallengedAccount,
 }
 
+/// Admin request to manually approve a verification challenge
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AdminApproveRequest {
+    pub network: Network,
+    pub account: AccountId32,
+    pub account_type: AccountType,
+    /// Admin's SS58 address
+    pub admin_account: AccountId32,
+    /// Signature of "approve:{network}:{account}:{account_type}:{timestamp}" by admin
+    pub signature: String,
+    pub timestamp: u64,
+}
+
+/// Admin request to manually reject a verification
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AdminRejectRequest {
+    pub network: Network,
+    pub account: AccountId32,
+    /// Optional reason for rejection
+    pub reason: Option<String>,
+    /// Admin's SS58 address
+    pub admin_account: AccountId32,
+    /// Signature of "reject:{network}:{account}:{timestamp}" by admin
+    pub signature: String,
+    pub timestamp: u64,
+}
+
+/// Admin request to force provide judgement on-chain
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AdminProvideJudgementRequest {
+    pub network: Network,
+    pub account: AccountId32,
+    /// Admin's SS58 address
+    pub admin_account: AccountId32,
+    /// Signature of "judge:{network}:{account}:{timestamp}" by admin
+    pub signature: String,
+    pub timestamp: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", content = "payload")]
 pub enum WebSocketMessage {
@@ -777,6 +816,10 @@ pub enum WebSocketMessage {
     UpdateRemailerSettings(IncomingUpdateRemailerSettingsRequest),
     SearchRegistration(IncomingSearchRequest),
     GetAccountHistory(IncomingAccountHistoryRequest),
+    // Admin actions
+    AdminApprove(AdminApproveRequest),
+    AdminReject(AdminRejectRequest),
+    AdminProvideJudgement(AdminProvideJudgementRequest),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -797,6 +840,9 @@ impl VersionedMessage {
             WebSocketMessage::UpdateRemailerSettings(_) => "UpdateRemailerSettings",
             WebSocketMessage::SearchRegistration(_) => "SearchRegistration",
             WebSocketMessage::GetAccountHistory(_) => "GetAccountHistory",
+            WebSocketMessage::AdminApprove(_) => "AdminApprove",
+            WebSocketMessage::AdminReject(_) => "AdminReject",
+            WebSocketMessage::AdminProvideJudgement(_) => "AdminProvideJudgement",
         }
     }
 }
@@ -1079,6 +1125,15 @@ impl SocketListener {
             }
             WebSocketMessage::GetAccountHistory(incoming) => {
                 self.handle_account_history_request(incoming).await
+            }
+            WebSocketMessage::AdminApprove(incoming) => {
+                self.handle_admin_approve_request(incoming).await
+            }
+            WebSocketMessage::AdminReject(incoming) => {
+                self.handle_admin_reject_request(incoming).await
+            }
+            WebSocketMessage::AdminProvideJudgement(incoming) => {
+                self.handle_admin_provide_judgement_request(incoming).await
             }
         }
     }
@@ -2070,6 +2125,188 @@ impl SocketListener {
             )
             .await?;
         Ok(serde_json::to_value(events)?)
+    }
+
+    /// Verify admin is authorized and signature is valid
+    fn verify_admin_auth(
+        &self,
+        admin_account: &AccountId32,
+        message: &str,
+        signature: &str,
+        timestamp: u64,
+    ) -> anyhow::Result<()> {
+        let cfg = Config::load_static();
+
+        // Check if admin is in allowed list
+        let admin_str = admin_account.to_string();
+        if !cfg.admin.allowed_accounts.contains(&admin_str) {
+            return Err(anyhow!("Account {} is not an authorized admin", admin_str));
+        }
+
+        // Verify timestamp is recent (5 minute window)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| anyhow!("System time error"))?
+            .as_millis() as u64;
+
+        let age_ms = now.saturating_sub(timestamp);
+        const MAX_AGE_MS: u64 = 5 * 60 * 1000;
+
+        if age_ms > MAX_AGE_MS {
+            return Err(anyhow!(
+                "Admin signature timestamp too old: {} ms (max {} ms)",
+                age_ms,
+                MAX_AGE_MS
+            ));
+        }
+
+        // Verify signature
+        verify_signature(admin_account, message.as_bytes(), signature)?;
+
+        Ok(())
+    }
+
+    /// Handle admin request to manually approve a verification challenge
+    async fn handle_admin_approve_request(
+        &self,
+        request: AdminApproveRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        let message = format!(
+            "approve:{}:{}:{}:{}",
+            request.network, request.account, request.account_type, request.timestamp
+        );
+
+        self.verify_admin_auth(
+            &request.admin_account,
+            &message,
+            &request.signature,
+            request.timestamp,
+        )?;
+
+        info!(
+            admin = %request.admin_account,
+            account = %request.account,
+            account_type = %request.account_type,
+            network = %request.network,
+            "Admin approved verification"
+        );
+
+        // Update verification state in Redis
+        let mut redis_conn = RedisConnection::get_connection().await?;
+        redis_conn
+            .update_challenge_status(&request.network, &request.account, &request.account_type)
+            .await?;
+
+        // Update timeline in Postgres
+        let pg_conn = PostgresConnection::default().await?;
+        pg_conn
+            .update_timeline(
+                crate::postgres::TimelineEvent::AdminApproved,
+                &request.account,
+                &request.network,
+            )
+            .await?;
+
+        Ok(json!({
+            "type": "AdminApproveResponse",
+            "success": true,
+            "message": format!("Verification for {} approved by admin", request.account_type)
+        }))
+    }
+
+    /// Handle admin request to reject a verification
+    async fn handle_admin_reject_request(
+        &self,
+        request: AdminRejectRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        let message = format!(
+            "reject:{}:{}:{}",
+            request.network, request.account, request.timestamp
+        );
+
+        self.verify_admin_auth(
+            &request.admin_account,
+            &message,
+            &request.signature,
+            request.timestamp,
+        )?;
+
+        info!(
+            admin = %request.admin_account,
+            account = %request.account,
+            network = %request.network,
+            reason = ?request.reason,
+            "Admin rejected verification"
+        );
+
+        // Clear verification state in Redis
+        let mut redis_conn = RedisConnection::get_connection().await?;
+        redis_conn.clear_verification_state(&request.network, &request.account).await?;
+
+        // Update timeline
+        let pg_conn = PostgresConnection::default().await?;
+        pg_conn
+            .update_timeline(
+                crate::postgres::TimelineEvent::AdminRejected,
+                &request.account,
+                &request.network,
+            )
+            .await?;
+
+        Ok(json!({
+            "type": "AdminRejectResponse",
+            "success": true,
+            "message": "Verification rejected by admin"
+        }))
+    }
+
+    /// Handle admin request to force provide judgement on-chain
+    async fn handle_admin_provide_judgement_request(
+        &self,
+        request: AdminProvideJudgementRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        let message = format!(
+            "judge:{}:{}:{}",
+            request.network, request.account, request.timestamp
+        );
+
+        self.verify_admin_auth(
+            &request.admin_account,
+            &message,
+            &request.signature,
+            request.timestamp,
+        )?;
+
+        info!(
+            admin = %request.admin_account,
+            account = %request.account,
+            network = %request.network,
+            "Admin forcing judgement provision"
+        );
+
+        // Provide judgement on-chain
+        node::provide_judgement(
+            &request.account,
+            node::substrate::runtime_types::pallet_identity::types::Judgement::Reasonable,
+            &request.network,
+        )
+        .await?;
+
+        // Update timeline
+        let pg_conn = PostgresConnection::default().await?;
+        pg_conn
+            .update_timeline(
+                crate::postgres::TimelineEvent::AdminJudgementProvided,
+                &request.account,
+                &request.network,
+            )
+            .await?;
+
+        Ok(json!({
+            "type": "AdminProvideJudgementResponse",
+            "success": true,
+            "message": format!("Judgement provided for {} by admin", request.account)
+        }))
     }
 }
 

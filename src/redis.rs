@@ -319,6 +319,19 @@ impl RedisConnection {
         return Ok(false);
     }
 
+    /// Clear verification state for an account (used by admin reject)
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn clear_verification_state(
+        &mut self,
+        network: &Network,
+        account_id: &AccountId32,
+    ) -> anyhow::Result<()> {
+        let key = format!("{account_id}|{network}");
+        info!(account_id = ?account_id.to_string(), network = ?network, "Clearing verification state");
+        let _: () = self.manager.0.del(&key).await?;
+        Ok(())
+    }
+
     #[instrument(skip_all, parent = &self.span)]
     pub async fn build_account_state_message(
         &mut self,
