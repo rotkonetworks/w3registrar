@@ -130,6 +130,7 @@ pub mod mock {
             self.updates.lock().unwrap().clone()
         }
 
+        #[allow(dead_code)]
         pub fn get_finalized(&self) -> Vec<(AccountId32, Network)> {
             self.finalized.lock().unwrap().clone()
         }
@@ -177,6 +178,7 @@ pub mod mock {
             }
         }
 
+        #[allow(dead_code)]
         pub fn failing() -> Self {
             Self {
                 registered: Arc::new(Mutex::new(Vec::new())),
@@ -184,6 +186,7 @@ pub mod mock {
             }
         }
 
+        #[allow(dead_code)]
         pub fn get_registered(&self) -> Vec<(AccountId32, Network)> {
             self.registered.lock().unwrap().clone()
         }
