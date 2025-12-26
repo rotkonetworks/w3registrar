@@ -248,7 +248,7 @@ impl PostgresConnection {
         network: &Network,
     ) -> anyhow::Result<()> {
         info!(network=?network, wallet_id=?wallet_id.to_string(),"Initiating timeline info");
-        self.delete_timelines(&wallet_id, &network).await?;
+        self.delete_timelines(wallet_id, network).await?;
         self.update_timeline(TimelineEvent::Created, wallet_id, network)
             .await
     }
@@ -592,8 +592,8 @@ impl PostgresConnection {
 
     pub async fn default() -> anyhow::Result<Self> {
         let cfg = Config::load_static();
-        let pog_config = cfg.postgres.clone();
-        PostgresConnection::new(&pog_config).await
+        let pg_config = cfg.postgres.clone();
+        PostgresConnection::new(&pg_config).await
     }
 
     /// Store a PGP public key in the database
@@ -725,10 +725,8 @@ impl PostgresConnection {
 
     pub async fn get_indexer_state(&self, network: &Network) -> anyhow::Result<IndexerState> {
         let query = format!("SELECT network::text, last_block_index, last_block_hash, updated_at FROM indexer_state WHERE network='{}'", network);
-        let postgres_connection = PostgresConnection::default().await?;
-        Ok(IndexerState::try_from(
-            &self.client.query_one(&query, &[]).await?,
-        )?)
+        let row = self.client.query_one(&query, &[]).await?;
+        IndexerState::try_from(&row)
     }
 
     pub async fn register_requester_ip(&self, ip: &IpAddr) -> anyhow::Result<()> {
@@ -860,18 +858,18 @@ impl Query for Ratelimit {
 
     fn params(&self) -> Vec<Self::PARAM> {
         if !self.is_ip_query() && self.wallet_id.is_some() && self.network.is_some() {
-            return vec![self.wallet_id.clone().unwrap().to_string()];
+            vec![self.wallet_id.clone().unwrap().to_string()]
         } else {
-            return vec![];
+            vec![]
         }
     }
 }
 
 impl Ratelimit {
     async fn exec(&self) -> anyhow::Result<i64> {
-        let mut pog_connection = PostgresConnection::default().await?;
+        let mut pg_conn = PostgresConnection::default().await?;
         info!("Registration search query");
-        pog_connection.get_rate(self).await
+        pg_conn.get_rate(self).await
     }
 
     fn is_ip_query(&self) -> bool {
@@ -980,10 +978,7 @@ impl RegistrationRecord {
         registration: &Registration<u128, IdentityInfo>,
         network: Option<Network>,
     ) -> Self {
-        let pgp_fingerprint = match registration.info.pgp_fingerprint {
-            Some(bytes) => Some(hex::encode(bytes)),
-            None => None,
-        };
+        let pgp_fingerprint = registration.info.pgp_fingerprint.map(hex::encode);
         Self {
             network,
             wallet_id: acc.to_string(),
@@ -1021,10 +1016,7 @@ impl RegistrationRecord {
 
         let account_id = AccountId32::from(account_bytes);
 
-        let pgp_fingerprint = match pairs.value.info.pgp_fingerprint {
-            Some(bytes) => Some(hex::encode(bytes)),
-            None => None,
-        };
+        let pgp_fingerprint = pairs.value.info.pgp_fingerprint.map(hex::encode);
 
         // Extract first positive judgement (Reasonable or KnownGood) from any registrar
         let judgement_by = pairs
@@ -1143,7 +1135,7 @@ impl From<&tokio_postgres::Row> for RegistrationRecord {
             }
         }
 
-        return record;
+        record
     }
 }
 
@@ -1233,27 +1225,24 @@ impl Query for TimelineQuery {
 
     fn params(&self) -> Vec<String> {
         let mut params = vec![];
-        match &self.condition {
-            Some(condition) => {
-                if let Some(wallet_id) = &condition.wallet_id {
-                    params.push(wallet_id.to_string());
+        if let Some(condition) = &self.condition {
+            if let Some(wallet_id) = &condition.wallet_id {
+                params.push(wallet_id.to_string());
+            }
+
+            if let Some(date) = &condition.date {
+                if let Some(lt) = date.lt {
+                    params.push(lt.to_string());
                 }
 
-                if let Some(date) = &condition.date {
-                    if let Some(lt) = date.lt {
-                        params.push(format!("{}", lt));
-                    }
-
-                    if let Some(gt) = date.gt {
-                        params.push(format!("{}", gt));
-                    }
-                }
-
-                if let Some(network) = &condition.network {
-                    params.push(format!("{}", network));
+                if let Some(gt) = date.gt {
+                    params.push(gt.to_string());
                 }
             }
-            None => {}
+
+            if let Some(network) = &condition.network {
+                params.push(network.to_string());
+            }
         }
         params
     }
@@ -1271,7 +1260,7 @@ impl Query for TimelineQuery {
                     statement.push_str(&format!(" {},", displayed.column_name()));
                 }
             }
-            statement = statement.trim_end_matches(|c| c == ',').to_owned();
+            statement = statement.trim_end_matches(',').to_owned();
         }
 
         statement.push_str(&format!(" FROM {} ", self.table_name));
@@ -1282,30 +1271,30 @@ impl Query for TimelineQuery {
             if !v.all_none() {
                 statement.push_str("WHERE ");
                 // naive approach
-                if let Some(_) = &v.wallet_id {
+                if v.wallet_id.is_some() {
                     statement.push_str(&format!("wallet_id = ${} AND ", index));
                     index += 1;
                 }
 
                 if let Some(date) = &v.date {
-                    if let Some(_) = date.lt {
+                    if date.lt.is_some() {
                         statement.push_str(&format!("date < ${} AND ", index));
                         index += 1;
                     }
 
-                    if let Some(_) = date.gt {
+                    if date.gt.is_some() {
                         statement.push_str(&format!("date > ${} AND", index));
                         index += 1;
                     }
                 }
 
-                if let Some(network) = &v.network {
+                if v.network.is_some() {
                     statement.push_str(&format!("network = ${} ", index));
                     index += 1;
                 }
 
                 statement = statement
-                    .trim_end_matches(|c| c == ' ' || c == ',' || c == 'A' || c == 'N' || c == 'D')
+                    .trim_end_matches([' ', ',', 'A', 'N', 'D'])
                     .to_owned();
             }
         }
@@ -1318,7 +1307,7 @@ impl TimelineQuery {
     /// supplies a [Vec<RegistrationRecord>] by [TimelineRecord]. This usually is done
     /// when a search request fields includes [DisplayedInfo::Timeline]
     pub async fn supply(
-        rec: &mut Vec<RegistrationRecord>,
+        rec: &mut [RegistrationRecord],
         size: Option<usize>,
         time: Option<TimeFilter>,
     ) -> anyhow::Result<()> {
@@ -1327,11 +1316,11 @@ impl TimelineQuery {
             let mut condition = TimelineCondition::default();
 
             if let Some(network) = &record.network {
-                condition = condition.network(&network);
+                condition = condition.network(network);
             };
 
             if let Some(time) = &time {
-                condition = condition.date(&time);
+                condition = condition.date(time);
             }
 
             if let Ok(wallet_id) = AccountId32::from_str(&record.wallet_id.clone()) {
@@ -1356,13 +1345,13 @@ impl TimelineQuery {
     }
 
     pub async fn exec(&self) -> anyhow::Result<Vec<TimelineRecord>> {
-        let mut pog_connection = PostgresConnection::default().await?;
+        let mut pg_conn = PostgresConnection::default().await?;
         info!("Timeline search query");
-        pog_connection.search_timeline_records(&self).await
+        pg_conn.search_timeline_records(self).await
     }
 
     pub fn derive_timeline_queries(
-        rec: &Vec<RegistrationRecord>,
+        rec: &[RegistrationRecord],
     ) -> Vec<(RegistrationRecord, TimelineQuery)> {
         let mut res = vec![];
         for record in rec.iter() {
@@ -1370,7 +1359,7 @@ impl TimelineQuery {
             let mut condition = TimelineCondition::default();
 
             if let Some(network) = &record.network {
-                condition = condition.network(&network);
+                condition = condition.network(network);
             };
 
             condition = condition.wallet_id(
@@ -1418,7 +1407,7 @@ impl Query for RegistrationQuery {
         let mut index = 1;
 
         if self.displayed.len() == 0 {
-            statement.push_str("*");
+            statement.push('*');
         } else {
             for (index, displayed) in self.displayed.iter().enumerate() {
                 if index == 0 {
@@ -1427,7 +1416,7 @@ impl Query for RegistrationQuery {
                     statement.push_str(&format!(" {},", displayed.table_field_name()));
                 }
             }
-            statement = statement.trim_end_matches(|c| c == ',').to_owned();
+            statement = statement.trim_end_matches(',').to_owned();
         }
 
         statement.push_str(" FROM ");
@@ -1467,19 +1456,11 @@ impl Query for RegistrationQuery {
                 }
 
                 if self.space.is_some() {
-                    statement.push_str(&format!("sim > 0 AND"));
+                    statement.push_str("sim > 0 AND");
                 }
 
                 statement = statement
-                    .trim_end_matches(|c| {
-                        c == ' '
-                            || c == ','
-                            || c == 'A'
-                            || c == 'N'
-                            || c == 'D'
-                            || c == 'O'
-                            || c == 'R'
-                    })
+                    .trim_end_matches([' ', ',', 'A', 'N', 'D', 'O', 'R'])
                     .to_owned();
             }
             None => {}
@@ -1532,7 +1513,7 @@ impl Query for RegistrationQuery {
             }
 
             if let Some(network) = &condition.network {
-                params.push(format!("{}", network));
+                params.push(network.to_string());
             }
         }
 
@@ -1543,9 +1524,9 @@ impl Query for RegistrationQuery {
 impl RegistrationQuery {
     /// Executes the [RegistrationQuery]
     pub async fn exec(&self) -> anyhow::Result<Vec<RegistrationRecord>> {
-        let mut pog_connection = PostgresConnection::default().await?;
+        let mut pg_conn = PostgresConnection::default().await?;
         info!("Registration search query");
-        pog_connection.search_registration_records(self).await
+        pg_conn.search_registration_records(self).await
     }
 
     pub fn selected(mut self, displayed: RegistrationDisplayed) -> Self {
@@ -1715,7 +1696,7 @@ impl Query for SearchSpace {
     type PARAM = String;
 
     fn statement(&self) -> Self::STATEMENT {
-        format!("(SELECT similarity($1, search_text) AS sim, * FROM registration)")
+        "(SELECT similarity($1, search_text) AS sim, * FROM registration)".to_owned()
     }
 
     fn params(&self) -> Vec<Self::PARAM> {
@@ -1774,19 +1755,7 @@ impl ConditionTrait for TimelineCondition {}
 
 impl TimelineCondition {
     fn all_none(&self) -> bool {
-        if self.date.is_some() {
-            return false;
-        }
-
-        if self.network.is_some() {
-            return false;
-        }
-
-        if self.wallet_id.is_some() {
-            return false;
-        }
-
-        return true;
+        self.date.is_none() && self.network.is_none() && self.wallet_id.is_none()
     }
 
     fn network(mut self, network: &Network) -> TimelineCondition {
@@ -1950,30 +1919,30 @@ impl Query for DeleteQuery<TimelineCondition> {
         if let Some(v) = &self.condition {
             if !v.all_none() {
                 statement.push_str("WHERE ");
-                if let Some(_) = &v.wallet_id {
+                if v.wallet_id.is_some() {
                     statement.push_str(&format!("wallet_id = ${} AND ", index));
                     index += 1;
                 }
 
                 if let Some(date) = &v.date {
-                    if let Some(_) = date.lt {
+                    if date.lt.is_some() {
                         statement.push_str(&format!("date < ${} AND ", index));
                         index += 1;
                     }
 
-                    if let Some(_) = date.gt {
+                    if date.gt.is_some() {
                         statement.push_str(&format!("date > ${}", index));
                         index += 1;
                     }
                 }
 
-                if let Some(network) = &v.network {
+                if v.network.is_some() {
                     statement.push_str(&format!("network = ${}", index));
                     index += 1;
                 }
 
                 statement = statement
-                    .trim_end_matches(|c| c == ' ' || c == ',' || c == 'A' || c == 'N' || c == 'D')
+                    .trim_end_matches([' ', ',', 'A', 'N', 'D'])
                     .to_owned();
             }
         }
@@ -2161,23 +2130,23 @@ impl FromStr for DisplayedInfo {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
-            "wallet_id" | "WalletID" | "Wallet_ID" | "walletId" => return Ok(Self::WalletID),
-            "Network" | "network" | "Network" => return Ok(Self::Network),
-            "Discord" | "discord" => return Ok(Self::Discord),
+            "wallet_id" | "WalletID" | "Wallet_ID" | "walletId" => Ok(Self::WalletID),
+            "Network" | "network" => Ok(Self::Network),
+            "Discord" | "discord" => Ok(Self::Discord),
             "Display" | "display" | "display_name" | "Display_Name" | "DisplayName" => {
-                return Ok(Self::Display)
+                Ok(Self::Display)
             }
-            "Email" | "email" => return Ok(Self::Email),
-            "Matrix" | "matrix" => return Ok(Self::Matrix),
-            "Twitter" | "twitter" => return Ok(Self::Twitter),
-            "Github" | "github" => return Ok(Self::Github),
-            "Legal" | "legal" => return Ok(Self::Legal),
-            "Web" | "web" => return Ok(Self::Web),
+            "Email" | "email" => Ok(Self::Email),
+            "Matrix" | "matrix" => Ok(Self::Matrix),
+            "Twitter" | "twitter" => Ok(Self::Twitter),
+            "Github" | "github" => Ok(Self::Github),
+            "Legal" | "legal" => Ok(Self::Legal),
+            "Web" | "web" => Ok(Self::Web),
             "PGPFingerprint" | "pgpfingerprint" | "pgp_fingerprint" | "PGP_Fingerprint" => {
-                return Ok(Self::PGPFingerprint)
+                Ok(Self::PGPFingerprint)
             }
             // TODO: update this to include Date, Wallet ID and Event
-            _ => return Err(anyhow!("Unknown type {s}")),
+            _ => Err(anyhow!("Unknown type {s}")),
         }
     }
 }

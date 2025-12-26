@@ -70,24 +70,21 @@ async fn setup_network(
             "unable to connect to {} network({}) because of {}",
             network,
             network_cfg.endpoint,
-            e.to_string(),
+            e,
         )
     })?;
 
     Ok((client, network_cfg.clone()))
 }
 
-pub async fn get_judgement<'a>(
+pub async fn get_judgement(
     who: &AccountId32,
     network: &Network,
 ) -> Result<Option<Judgement<u128>>> {
     let (client, _) = setup_network(network).await?;
     match get_registration(&client, who).await {
-        Ok(mut registration) => match registration.judgements.0.pop() {
-            Some((_, judgement)) => return Ok(Some(judgement)),
-            None => return Ok(None),
-        },
-        Err(_) => return Ok(None),
+        Ok(mut registration) => Ok(registration.judgements.0.pop().map(|(_, j)| j)),
+        Err(_) => Ok(None),
     }
 }
 
@@ -297,7 +294,7 @@ pub async fn register_identity<'a>(
 ///
 /// - [HashMap] of the account type and registration state if all accounts are supported
 /// - Empty [HashMap] with Erroneous judgment as a side effect if **one or more** account is
-/// **NOT** supported.
+///   **NOT** supported.
 pub async fn filter_accounts(
     info: &IdentityInfo,
     who: &AccountId32,

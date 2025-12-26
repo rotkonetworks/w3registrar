@@ -136,7 +136,7 @@ impl AccountVerification {
     }
 
     pub fn mark_challenge_done(&mut self, account_type: &AccountType) -> anyhow::Result<()> {
-        match self.challenges.get_mut(&account_type) {
+        match self.challenges.get_mut(account_type) {
             Some(challenge) => {
                 challenge.done = true;
                 challenge.token = None;
@@ -1211,9 +1211,9 @@ impl SocketListener {
     /// Compares between the accounts on the idendtity object on the check_node
     /// and the received requests
     /// TODO: migrate this to a common module
-    pub fn is_complete<'a>(
+    pub fn is_complete(
         registration: &Registration<u128, IdentityInfo>,
-        expected: &Vec<Account>,
+        expected: &[Account],
     ) -> anyhow::Result<(), anyhow::Error> {
         for acc in expected {
             let (stored_acc, expected_acc) = match acc {
@@ -2067,8 +2067,8 @@ impl SocketListener {
         &self,
         request: IncomingAccountHistoryRequest,
     ) -> anyhow::Result<serde_json::Value> {
-        let pog_connection = PostgresConnection::default().await?;
-        let events = pog_connection
+        let pg_conn = PostgresConnection::default().await?;
+        let events = pg_conn
             .get_identity_events(
                 &request.account,
                 request.network.as_ref(),
@@ -2176,8 +2176,8 @@ impl NodeListener {
             .await?;
 
         // clears all "timelines" related to this requester and reconstruct a new one
-        let pog_connection = PostgresConnection::default().await?;
-        pog_connection.init_timeline(&who, &network).await?;
+        let pg_conn = PostgresConnection::default().await?;
+        pg_conn.init_timeline(who, network).await?;
 
         Ok(())
     }
@@ -2558,8 +2558,8 @@ impl NodeListener {
         let mut conn = RedisConnection::get_connection().await?;
         conn.clear_all_related_to(network, who).await?;
 
-        let pog_connection = PostgresConnection::default().await?;
-        pog_connection.delete_timelines(&who, &network).await?;
+        let pg_conn = PostgresConnection::default().await?;
+        pg_conn.delete_timelines(who, network).await?;
 
         Ok(())
     }

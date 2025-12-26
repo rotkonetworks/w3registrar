@@ -61,7 +61,7 @@ pub trait Adapter {
         account: &Account,
     ) -> anyhow::Result<()> {
         let account_type = &account.account_type();
-        let pog_connection = PostgresConnection::default().await?;
+        let pg_conn = PostgresConnection::default().await?;
 
         // get the current state
         let state = match redis_connection
@@ -78,7 +78,7 @@ pub trait Adapter {
         };
 
         // get the challenge for the account type
-        let challenge = match state.challenges.get(&account_type) {
+        let challenge = match state.challenges.get(account_type) {
             Some(challenge) => challenge,
             None => {
                 return Err(anyhow::anyhow!(
@@ -123,7 +123,7 @@ pub trait Adapter {
             .await?;
 
         // save timeline info
-        pog_connection
+        pg_conn
             .update_timeline(account_type.into(), account_id, network)
             .await?;
 
@@ -144,7 +144,7 @@ pub trait Adapter {
             info!("Identity registred on chain");
 
             // TODO: finalize when jdugement is given not here
-            pog_connection
+            pg_conn
                 .finalize_timeline(account_id, network)
                 .await?;
             info!("Registration timeline updated");

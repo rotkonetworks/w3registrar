@@ -50,7 +50,7 @@ impl Ratelimit {
 
     pub fn is_exception_ip(&self, ip: &IpAddr) -> bool {
         match &self.exceptions {
-            Some(exceptions) => exceptions.ips.contains(&ip),
+            Some(exceptions) => exceptions.ips.contains(ip),
             None => false,
         }
     }
@@ -133,7 +133,7 @@ impl Config {
         Ok(config)
     }
 
-    pub fn load_cell<'a>() -> OnceCell<Config> {
+    pub fn load_cell() -> OnceCell<Config> {
         CONFIG.clone()
     }
 

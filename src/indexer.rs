@@ -21,9 +21,9 @@ impl Indexer {
 
     #[instrument(skip_all, parent = &self.span)]
     async fn index_identities(self, network: &Network) -> anyhow::Result<()> {
-        let pog_connection = PostgresConnection::default().await?;
+        let pg_conn = PostgresConnection::default().await?;
         let cfg = Config::load_static();
-        match pog_connection.get_indexer_state(network).await {
+        match pg_conn.get_indexer_state(network).await {
             Ok(state) => {
                 let network_cfg = cfg
                     .registrar
@@ -64,7 +64,7 @@ impl Indexer {
             .ok_or_else(|| anyhow::anyhow!("Network {} not configured", network))?;
 
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
-        let mut pog_connection = PostgresConnection::default().await?;
+        let mut pg_conn = PostgresConnection::default().await?;
 
         let mut iter = client
             .storage()
@@ -74,7 +74,7 @@ impl Indexer {
             .await?;
 
         let mut chain_registrations = vec![];
-        let db_registrations = pog_connection
+        let db_registrations = pg_conn
             .search_registration_records(&RegistrationQuery::default())
             .await?;
 
@@ -93,7 +93,7 @@ impl Indexer {
             .iter()
             .filter(|r| !db_wallets.contains(&r.wallet_id()))
         {
-            pog_connection.save_registration(record).await?;
+            pg_conn.save_registration(record).await?;
         }
 
         Ok(())
@@ -109,7 +109,7 @@ impl Indexer {
             .ok_or_else(|| anyhow::anyhow!("Network {} not configured", network))?;
 
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
-        let mut pog_connection = PostgresConnection::default().await?;
+        let mut pg_conn = PostgresConnection::default().await?;
 
         let block = client.blocks().at_latest().await?;
         let block_index = block.number();
@@ -125,11 +125,11 @@ impl Indexer {
         while let Some(Ok(identity)) = iter.next().await {
             if let Some(record) = RegistrationRecord::from_storage_pairs(&identity, network).await?
             {
-                pog_connection.save_registration(&record).await?;
+                pg_conn.save_registration(&record).await?;
             }
         }
 
-        pog_connection
+        pg_conn
             .update_indexer_state(network, &block_hash, &(block_index as i64))
             .await?;
 

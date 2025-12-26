@@ -146,9 +146,9 @@ impl DnsChallenge {
 pub async fn watch_dns() -> anyhow::Result<()> {
     let mut redis_conn = RedisConnection::get_connection().await?;
 
-    let channel = format!("__keyspace@0__:web|*",);
+    let channel = "__keyspace@0__:web|*";
 
-    if let Err(e) = redis_conn.subscribe(&channel).await {
+    if let Err(e) = redis_conn.subscribe(channel).await {
         error!("Unable to subscribe to {} because {:?}", channel, e);
         return Err(anyhow!("adf"));
     };
