@@ -3,7 +3,7 @@
 
 use anyhow::anyhow;
 use hex::ToHex;
-use matrix_sdk::bytes::BytesMut;
+use bytes::BytesMut;
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
 use postgres_types::{to_sql_checked, Kind, ToSql, Type};

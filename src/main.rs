@@ -16,11 +16,17 @@ use tracing::{error, info, instrument};
 use tracing_subscriber::EnvFilter;
 
 use crate::{
-    adapter::{dns::watch_dns, mail::watch_mailserver, matrix},
+    adapter::dns::watch_dns,
     api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv},
     config::Config,
     redis::RedisConnection,
 };
+
+#[cfg(feature = "mail")]
+use crate::adapter::mail::watch_mailserver;
+
+#[cfg(feature = "matrix")]
+use crate::adapter::matrix;
 
 #[instrument(skip_all)]
 fn setup_logging() -> Result<()> {
@@ -116,13 +122,16 @@ async fn main() -> Result<()> {
     runner.spawn(spawn_identity_indexer, None).await;
 
     // check and start singleton services
+    #[allow(unused_variables)]
     let (needs_email, needs_matrix_bot, needs_web) = check_required_services(&config).await;
 
+    #[cfg(feature = "mail")]
     if needs_email {
         info!("starting email service...");
         runner.spawn(watch_mailserver, Some("email_service")).await;
     }
 
+    #[cfg(feature = "matrix")]
     if needs_matrix_bot {
         info!("starting matrix bot service...");
         runner

@@ -7620,6 +7620,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "axum",
+ "bytes",
  "chrono",
  "futures",
  "futures-util",

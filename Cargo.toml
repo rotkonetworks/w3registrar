@@ -19,7 +19,6 @@ uuid = { version = "1.10.0", features = ["v4", "macro-diagnostics"] }
 async-trait = "0.1.81"
 rand = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
-matrix-sdk = "0.14.0"
 tokio-stream = "0.1.16"
 async-stream = "0.3.6"
 sp-core = "38.1.0"
@@ -31,23 +30,31 @@ url = "2"
 once_cell = "1.20"
 tungstenite = "0.26.1"
 strum = { version = "0.26", features = ["derive"] }
-imap = "2.4.1"
-native-tls = "0.2.12"
-mail-parser = "0.10"
 regex = "1.11.1"
 # hickory tls unstable, locking to trust-dns
 trust-dns-resolver = { version = "=0.23.2", features = ["dns-over-rustls"] }
 axum = "0.8.3"
 reqwest = { version = "0.12.15", features = ["json"] }
-sequoia-openpgp = {version = "2.0.0", default-features = false, features = ["compression", "crypto-openssl"]}
 tokio-postgres = { version = "0.7.13", features = ["with-chrono-0_4", "with-serde_json-1"] }
 postgres-openssl = "0.5.1"
 openssl = "0.10.73"
 postgres-types = { version = "0.2.9", features = ["derive"] }
 mobc = "0.9.0"
+bytes = "1"
+
+# pgp is required for core verification
+sequoia-openpgp = { version = "2.0.0", default-features = false, features = ["compression", "crypto-openssl"] }
+
+# optional adapter dependencies
+matrix-sdk = { version = "0.14.0", optional = true }
+imap = { version = "2.4.1", optional = true }
+native-tls = { version = "0.2.12", optional = true }
+mail-parser = { version = "0.10", optional = true }
 
 [features]
-default = []
+default = ["matrix", "mail"]
+matrix = ["dep:matrix-sdk"]
+mail = ["dep:imap", "dep:native-tls", "dep:mail-parser"]
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

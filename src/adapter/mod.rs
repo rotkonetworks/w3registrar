@@ -7,9 +7,13 @@ use crate::api::{Account, Network};
 pub mod context;
 pub mod dns;
 pub mod github;
-pub mod mail;
-pub mod matrix;
 pub mod pgp;
+
+#[cfg(feature = "mail")]
+pub mod mail;
+
+#[cfg(feature = "matrix")]
+pub mod matrix;
 
 pub use context::{ChainRegistrar, TimelineStore, VerificationStore};
 
