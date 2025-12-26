@@ -95,6 +95,11 @@ impl RegistrarConfigs {
         self.networks.get(network)
     }
 
+    pub fn require_network(&self, network: &Network) -> anyhow::Result<&RegistrarConfig> {
+        self.get_network(network)
+            .ok_or_else(|| anyhow::anyhow!("Network {} not configured", network))
+    }
+
     pub fn supported_networks(&self) -> Vec<Network> {
         self.networks.keys().cloned().collect()
     }

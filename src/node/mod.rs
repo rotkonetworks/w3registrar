@@ -62,8 +62,7 @@ async fn setup_network(
 
     let network_cfg = cfg
         .registrar
-        .get_network(network)
-        .ok_or_else(|| anyhow!("Network {} not configured", network))?;
+        .require_network(network)?;
 
     let client = Client::from_url(&network_cfg.endpoint).await.map_err(|e| {
         anyhow!(
@@ -310,8 +309,7 @@ pub async fn filter_accounts(
 
     let network_cfg = cfg
         .registrar
-        .get_network(network)
-        .ok_or_else(|| anyhow!("Network {} not configured", network))?;
+        .require_network(network)?;
 
     let supported = &network_cfg.fields;
     info!(fields=?supported, network=?network,"Supported fields for requested network");

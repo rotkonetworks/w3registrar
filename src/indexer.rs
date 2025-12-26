@@ -27,8 +27,7 @@ impl Indexer {
             Ok(state) => {
                 let network_cfg = cfg
                     .registrar
-                    .get_network(network)
-                    .ok_or_else(|| anyhow::anyhow!("Network {} not configured", network))?;
+                    .require_network(network)?;
 
                 let client = NodeClient::from_url(&network_cfg.endpoint).await?;
 
@@ -59,8 +58,7 @@ impl Indexer {
         let cfg = Config::load_static();
         let network_cfg = cfg
             .registrar
-            .get_network(network)
-            .ok_or_else(|| anyhow::anyhow!("Network {} not configured", network))?;
+            .require_network(network)?;
 
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
         let mut pg_conn = PostgresConnection::default().await?;
@@ -104,8 +102,7 @@ impl Indexer {
         let cfg = Config::load_static();
         let network_cfg = cfg
             .registrar
-            .get_network(network)
-            .ok_or_else(|| anyhow::anyhow!("Network {} not configured", network))?;
+            .require_network(network)?;
 
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
         let mut pg_conn = PostgresConnection::default().await?;

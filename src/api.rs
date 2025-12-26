@@ -971,10 +971,7 @@ impl SocketListener {
             }));
         }
 
-        let network_cfg = cfg
-            .registrar
-            .get_network(&request.network)
-            .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
+        let network_cfg = cfg.registrar.require_network(&request.network)?;
 
         *subscriber = Some(request.account.clone());
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
@@ -1165,8 +1162,7 @@ impl SocketListener {
         let cfg = Config::load_static();
         let network_cfg = cfg
             .registrar
-            .get_network(network)
-            .ok_or_else(|| anyhow!("Network {} not configured", network))?;
+            .require_network(network)?;
 
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
         let registration = node::get_registration(&client, &id).await?;
@@ -1692,10 +1688,7 @@ impl SocketListener {
         }
 
         // get network configuration
-        let network_cfg = cfg
-            .registrar
-            .get_network(&request.network)
-            .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
+        let network_cfg = cfg.registrar.require_network(&request.network)?;
 
         *subscriber = Some(request.account.clone());
 
@@ -1768,10 +1761,7 @@ impl SocketListener {
         }
 
         // get network configuration
-        let network_cfg = cfg
-            .registrar
-            .get_network(&request.network)
-            .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
+        let network_cfg = cfg.registrar.require_network(&request.network)?;
 
         *subscriber = Some(request.account.clone());
 
@@ -1869,10 +1859,7 @@ impl SocketListener {
         }
 
         // get network configuration
-        let network_cfg = cfg
-            .registrar
-            .get_network(&request.network)
-            .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
+        let network_cfg = cfg.registrar.require_network(&request.network)?;
 
         // try to get fingerprint from draft (redis) first
         let mut conn = RedisConnection::get_connection().await?;
@@ -1986,10 +1973,7 @@ impl SocketListener {
         verify_signature(&request.account, message.as_bytes(), &request.signature)?;
 
         // get network configuration
-        let network_cfg = cfg
-            .registrar
-            .get_network(&request.network)
-            .ok_or_else(|| anyhow!("Network {} not configured", request.network))?;
+        let network_cfg = cfg.registrar.require_network(&request.network)?;
 
         // verify account has PGP key in database
         let pg_conn = PostgresConnection::default().await?;
@@ -2139,8 +2123,7 @@ impl NodeListener {
 
         let network_cfg = cfg
             .registrar
-            .get_network(network)
-            .ok_or_else(|| anyhow!("Network {} not configured", network))?;
+            .require_network(network)?;
 
         if network_cfg.registrar_index != index {
             return Err(anyhow!(
@@ -2555,8 +2538,7 @@ impl NodeListener {
 
         let network_cfg = cfg
             .registrar
-            .get_network(network)
-            .ok_or_else(|| anyhow!("Network {} not configured", network))?;
+            .require_network(network)?;
 
         if network_cfg.registrar_index != index {
             return Err(anyhow!(
