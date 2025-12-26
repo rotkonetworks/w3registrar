@@ -457,9 +457,9 @@ impl Manager for RedisManager {
     type Error = anyhow::Error;
 
     async fn connect(&self) -> Result<Self::Connection, Self::Error> {
-        let client = redis::Client::open(self.addr.clone()).unwrap();
-        let pubsub = client.get_async_pubsub().await.unwrap();
-        let manager = ConnectionManager::new(client).await.unwrap();
+        let client = redis::Client::open(self.addr.clone())?;
+        let pubsub = client.get_async_pubsub().await?;
+        let manager = ConnectionManager::new(client).await?;
         Ok((manager, pubsub))
     }
 

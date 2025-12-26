@@ -25,7 +25,7 @@ use futures::stream::SplitSink;
 use futures::stream::SplitStream;
 use futures::StreamExt;
 use futures_util::SinkExt;
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
 use postgres_types::FromSql;
 use postgres_types::ToSql;
 use redis::Msg;
@@ -82,6 +82,12 @@ use crate::{
 
 // TODO: move this to another file?
 static REDIS_CLIENT: OnceCell<Arc<RedisClient>> = OnceCell::new();
+
+/// Matrix ID regex pattern - compiled once at startup
+static MATRIX_ID_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"@(?<name>[a-z0-9][a-z0-9.=/-]*):(?<domain>(?:[a-zA-Z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?)")
+        .expect("invalid matrix id regex pattern")
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountVerification {
@@ -390,9 +396,8 @@ impl FromStr for Account {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let matrix_regex = Regex::new(r"@(?<name>[a-z0-9][a-z0-9.=/-]*):(?<domain>(?:[a-zA-Z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?)").unwrap();
         info!("Checking format for {s}");
-        match matrix_regex.captures(s) {
+        match MATRIX_ID_REGEX.captures(s) {
             Some(account) => {
                 info!(acc_format = %"valid", acc_type = %"matrix", "Account info");
                 let acc_name: &str = &account["name"];
@@ -924,14 +929,18 @@ pub struct SocketListener {
 }
 
 impl SocketListener {
-    pub async fn new() -> Self {
+    pub async fn new() -> anyhow::Result<Self> {
         let cfg = Config::load_static();
         let span = info_span!("socket_listener");
-        Self {
+        let socket_addr = cfg
+            .websocket
+            .socket_addrs()
+            .ok_or_else(|| anyhow!("Failed to resolve websocket address"))?;
+        Ok(Self {
             span,
             redis_cfg: cfg.redis.clone(),
-            socket_addr: cfg.websocket.socket_addrs().unwrap(),
-        }
+            socket_addr,
+        })
     }
 
     #[instrument(skip_all, parent = &self.span, name = "subscription_request")]
@@ -1888,8 +1897,9 @@ impl SocketListener {
             let registration = node::get_registration(&client, &request.account).await?;
 
             if let Some(onchain_fingerprint) = registration.info.pgp_fingerprint {
-                expected_fingerprint = Some(hex::encode(onchain_fingerprint));
-                info!("Using fingerprint from on-chain registration: {}", expected_fingerprint.as_ref().unwrap());
+                let fp = hex::encode(onchain_fingerprint);
+                info!("Using fingerprint from on-chain registration: {}", fp);
+                expected_fingerprint = Some(fp);
             }
         }
 
@@ -2081,7 +2091,7 @@ impl SocketListener {
 
 /// Spawns a websocket server to listen for incoming registration requests
 pub async fn spawn_ws_serv() -> anyhow::Result<()> {
-    let mut listener = SocketListener::new().await;
+    let mut listener = SocketListener::new().await?;
     listener.listen().await
 }
 
@@ -2755,7 +2765,9 @@ pub async fn spawn_http_serv() -> anyhow::Result<()> {
     let cfg = Config::load_static();
     let gh_config = cfg.adapter.github.clone();
     let http_config = cfg.http.clone();
-    let redirect_url = gh_config.redirect_url.unwrap();
+    let redirect_url = gh_config
+        .redirect_url
+        .ok_or_else(|| anyhow!("GitHub redirect_url not configured"))?;
 
     let app = Router::new()
         .route(redirect_url.path(), get(github_oauth_callback))

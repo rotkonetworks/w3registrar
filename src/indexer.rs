@@ -28,8 +28,7 @@ impl Indexer {
                 let network_cfg = cfg
                     .registrar
                     .get_network(network)
-                    .ok_or_else(|| anyhow::anyhow!("Network {} not configured", network))
-                    .unwrap();
+                    .ok_or_else(|| anyhow::anyhow!("Network {} not configured", network))?;
 
                 let client = NodeClient::from_url(&network_cfg.endpoint).await?;
 

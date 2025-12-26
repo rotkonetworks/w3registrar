@@ -857,10 +857,11 @@ impl Query for Ratelimit {
     }
 
     fn params(&self) -> Vec<Self::PARAM> {
-        if !self.is_ip_query() && self.wallet_id.is_some() && self.network.is_some() {
-            vec![self.wallet_id.clone().unwrap().to_string()]
-        } else {
-            vec![]
+        match (&self.wallet_id, &self.network) {
+            (Some(wallet_id), Some(_)) if !self.is_ip_query() => {
+                vec![wallet_id.to_string()]
+            }
+            _ => vec![],
         }
     }
 }

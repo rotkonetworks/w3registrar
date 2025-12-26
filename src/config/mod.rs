@@ -228,7 +228,7 @@ impl WebsocketConfig {
     pub fn socket_addrs(&self) -> Option<SocketAddr> {
         format!("{}:{}", self.host, self.port)
             .to_socket_addrs()
-            .unwrap()
+            .ok()?
             .next()
     }
 }
@@ -251,7 +251,7 @@ impl Default for GithubConfig {
             "https://github.com/login/oauth/authorize",
             &[("client_id", ""), ("redirect_uri", "")],
         )
-        .unwrap();
+        .expect("invalid default github oauth url");
         let client_id = String::new();
         let redirect_uri = None;
         let client_secret = String::new();
