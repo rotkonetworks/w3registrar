@@ -108,6 +108,12 @@ redirect_url = "http://example.com/oauth/callback/github"
 [adapter.pgp]
 keyserver_url = "https://keyserver.ubuntu.com"
 
+# Optional: Cloudflare DNS management for automated TXT record verification
+# Requires a Cloudflare API token with Zone:DNS:Edit permissions
+# [adapter.cloudflare]
+# api_token = "your-cloudflare-api-token"
+# zone_id = "optional-zone-id"  # If not set, will lookup by domain
+
 [ratelimit]
 wallet_requests_hour_limit = 2
 ip_requests_hour_limit = 2
