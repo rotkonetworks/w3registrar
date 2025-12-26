@@ -89,8 +89,6 @@ pub trait Adapter {
         };
 
         info!("Checking if this challenge is already done...");
-        // challenge is already completed
-        // FIXME: 
         if challenge.done {
             return Err(anyhow::anyhow!(
                 "{}",

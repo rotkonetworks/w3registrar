@@ -83,8 +83,7 @@ impl Github {
         let client_id = gh_config.client_id;
         let redirect_uri = gh_config
             .redirect_url
-            // FIXME
-            .unwrap_or(url::Url::parse("https://rotko.net/").unwrap());
+            .unwrap_or_else(|| url::Url::parse("https://rotko.net/").expect("default url"));
 
         // Generate cryptographically secure state token
         let state_token = Token::generate().await.show();
@@ -131,8 +130,6 @@ impl Github {
                 ("client_id", gh_config.client_id.as_str()),
                 ("client_secret", gh_config.client_secret.as_str()),
                 ("code", params.code.as_str()),
-                // TODO: check if this is needed?
-                // ("redirect_uri", String::from("https://app.w3reg.org/").as_str()),
             ],
         )?;
 

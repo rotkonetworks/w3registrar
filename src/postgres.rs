@@ -902,7 +902,6 @@ impl From<(&AccountId32, &Network)> for Ratelimit {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TimelineRecord {
     pub event: TimelineEvent,
-    // FIXME
     pub date: String,
     #[serde(skip_serializing)]
     pub wallet_id: AccountId32,

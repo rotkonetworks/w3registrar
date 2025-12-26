@@ -32,7 +32,6 @@ impl RedisConnection {
     }
 
 
-    // TODO: replace all occurance of .get_connection() to .default()
     #[instrument(skip_all, parent = None)]
     pub async fn initialize_pool(cfg: &RedisConfig) -> anyhow::Result<()> {
         info!("Initializing Redis client");
