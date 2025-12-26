@@ -456,3 +456,18 @@ mod tests {
         Ok(())
     }
 }
+
+/// Default chain registrar using the actual on-chain registration
+pub struct DefaultChainRegistrar;
+
+#[async_trait::async_trait]
+impl crate::adapter::context::ChainRegistrar for DefaultChainRegistrar {
+    async fn register_identity(
+        &self,
+        account_id: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<()> {
+        register_identity(account_id, network).await?;
+        Ok(())
+    }
+}

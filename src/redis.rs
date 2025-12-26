@@ -1,7 +1,9 @@
 use anyhow::anyhow;
 use futures::{Stream, StreamExt};
+use async_trait::async_trait;
 use mobc::Connection;
-use mobc::{async_trait, Manager, Pool};
+use mobc::Manager;
+use mobc::Pool;
 use once_cell::sync::OnceCell;
 use redis::aio::ConnectionManager;
 use redis::aio::PubSub;
@@ -467,5 +469,27 @@ impl Manager for RedisManager {
             Ok(_) => return Ok(conn),
             Err(_) => return Err(anyhow!("Connnection ended")),
         }
+    }
+}
+
+// Implement VerificationStore trait for RedisConnection
+#[async_trait]
+impl crate::adapter::context::VerificationStore for RedisConnection {
+    async fn get_verification_state(
+        &mut self,
+        network: &Network,
+        account_id: &AccountId32,
+    ) -> anyhow::Result<Option<AccountVerification>> {
+        self.get_verification_state(network, account_id).await
+    }
+
+    async fn update_challenge_status(
+        &mut self,
+        network: &Network,
+        account_id: &AccountId32,
+        account_type: &AccountType,
+    ) -> anyhow::Result<()> {
+        self.update_challenge_status(network, account_id, account_type).await?;
+        Ok(())
     }
 }

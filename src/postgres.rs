@@ -2559,3 +2559,24 @@ mod test {
         )
     }
 }
+
+// Implement TimelineStore trait for PostgresConnection
+#[async_trait::async_trait]
+impl crate::adapter::context::TimelineStore for PostgresConnection {
+    async fn update_timeline(
+        &self,
+        event: TimelineEvent,
+        account_id: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<()> {
+        self.update_timeline(event, account_id, network).await
+    }
+
+    async fn finalize_timeline(
+        &self,
+        account_id: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<()> {
+        self.finalize_timeline(account_id, network).await
+    }
+}
