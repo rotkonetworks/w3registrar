@@ -1,18 +1,25 @@
 [registrar]
 
-[registrar.rococo]
-endpoint = "wss://dev.rotko.net/people-rococo/"
-registrar_index = 0
-keystore_path = "./.keyfile.rococo" # IdentityJudgement proxy's mnemonic/private keypath
-registrar_account = "5CiPPseXPECbkjWCa6MnjNokrgYjMqmKndv2rSnekmSK2DjL" # ferdie as registrar
-fields = ["email","matrix", "twitter", "discord", "display_name"]
+[registrar.polkadot]
+endpoint = "wss://people-polkadot.dotters.network"
+registrar_index = 1
+keystore_path = "./.keyfile.polkadot"
+registrar_account = "..."
+fields = ["email", "matrix", "twitter", "discord", "display_name", "web", "github", "pgp_fingerprint"]
+
+[registrar.kusama]
+endpoint = "wss://people-kusama.dotters.network"
+registrar_index = 1
+keystore_path = "./.keyfile.kusama"
+registrar_account = "..."
+fields = ["email", "matrix", "twitter", "discord", "display_name", "web", "github", "pgp_fingerprint"]
 
 [registrar.paseo]
 endpoint = "wss://people-paseo.dotters.network"
 registrar_index = 1
-keystore_path = "./.keyfile.example"
+keystore_path = "./.keyfile.paseo"
 registrar_account = "12BtBrcorHAvSeTLYo6YTq8kdiRG948vkvmxHEmSzZjwZ97u"
-fields = ["email","matrix", "twitter", "discord", "display_name", "pgp_fingerprint", "github"]
+fields = ["email", "matrix", "twitter", "discord", "display_name", "pgp_fingerprint", "github"]
 
 [http]
 host = "0.0.0.0"
@@ -54,15 +61,76 @@ state_dir = "/tmp/matrix_"
 [adapter.email]
 email = "w3reg@rotko.net"
 username = "w3reg"
-password = "pw"
+password = "changeme"                          # Plain text (development only)
 name = "w3registrar"
 mailbox = "INBOX"
 server = "mail.rotko.net"
-port = 143                # IMAPS port
-checking_frequency = 500 # In seconds, Optional
+port = 143                # IMAP port (143 for STARTTLS, 993 for IMAPS)
+checking_frequency = 500  # In seconds, Optional
+# protocol = "imap"      # Default protocol (can be omitted)
+# mode = "receive"       # Default mode: receive | send | bidirectional
+
+# Uncomment below to use JMAP instead of IMAP:
+# protocol = "jmap"
+# server = "https://jmap.fastmail.com/api/"  # Example JMAP endpoint
+# port = 443             # Not typically used for JMAP but required field
+# mode = "bidirectional" # Can send and receive emails (JMAP only)
+
+# Protocol configurations:
+# 1. IMAP receive-only (default):
+#    protocol = "imap"
+#    mode = "receive"
+#    Note: IMAP only supports receiving emails, not sending
+#
+# 2. JMAP send-only (for sending challenge emails):
+#    protocol = "jmap"
+#    mode = "send"
+#    server = "https://your-jmap-server.com/api/"
+#
+# 3. JMAP bidirectional (send challenges and receive responses):
+#    protocol = "jmap"
+#    mode = "bidirectional"
+#    server = "https://your-jmap-server.com/api/"
+#
+# Web Domain Verification:
+# The web field supports both HTTP and DNS verification
+# Users can either:
+# - Host a file at https://domain/.well-known/w3registrar/{challenge}
+# - Create /w3registrar-verify.txt containing the challenge
+# - Add a TXT DNS record with the challenge token
 
 [adapter.github]
 client_id = "..."
 client_secret = "..."
 gh_url = "https://github.com/login/oauth/authorize"
 redirect_url = "http://example.com/oauth/callback/github"
+
+[adapter.pgp]
+keyserver_url = "https://keyserver.ubuntu.com"
+
+[admin]
+# ss58 addresses that can perform admin actions (approve/reject/provide judgement)
+allowed_accounts = []
+
+[ratelimit]
+wallet_requests_hour_limit = 2
+ip_requests_hour_limit = 2
+[ratelimit.exceptions]
+wallets = []
+ips = ["127.0.0.1", "0.0.0.0", "::"]
+
+# Search result ranking configuration
+# Results are ordered by combined score: network_weight + verification_bonus + (similarity * similarity_weight)
+# With default weights, a perfect text match (sim=1.0) dominates over network/verification
+[ranking]
+similarity_weight = 200  # multiplier for text similarity (0-1 range), most important factor
+
+[ranking.network_weights]
+polkadot = 100  # mainnet, highest priority
+kusama = 80     # canary network
+paseo = 20      # testnet
+other = 10      # unknown networks
+
+[ranking.verification]
+our_registrar = 50  # bonus for identities we verified
+any_registrar = 30  # bonus for any verified identity

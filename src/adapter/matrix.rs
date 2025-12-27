@@ -28,7 +28,7 @@ use tracing::{error, info, instrument, warn};
 
 use crate::api::Account;
 use crate::redis::RedisConnection;
-use crate::GLOBAL_CONFIG;
+use crate::config::Config;
 use crate::{adapter::Adapter, api::Network, node::register_identity};
 
 // TODO: move those "independent" functions inside the Matrix struct (handle_content, etc.)
@@ -43,7 +43,7 @@ impl Adapter for Matrix {}
 impl Matrix {
     #[instrument(skip_all)]
     async fn login() -> anyhow::Result<Client> {
-        let cfg = GLOBAL_CONFIG.get().unwrap().adapter.matrix.clone();
+        let cfg = Config::load_static().adapter.matrix.clone();
         let state_dir = Path::new(&cfg.state_dir);
 
         info!("Creating matrix client");
@@ -397,7 +397,7 @@ async fn handle_content(
     };
 
     // get the challenge for the account type
-    let challenge = match state.challenges.get(&account_type) {
+    let challenge = match state.challenges.get(account_type) {
         Some(challenge) => challenge,
         None => return Ok(false),
     };

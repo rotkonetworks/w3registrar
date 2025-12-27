@@ -1,87 +1,28 @@
+pub mod dns;
+pub mod http;
+
 use crate::{
     adapter::Adapter,
-    api::{Account, Network},
+    api::{Account, AccountType, Network},
     redis::RedisConnection,
 };
 use anyhow::{anyhow, Result};
-use once_cell::sync::OnceCell;
 use std::str::FromStr;
-use std::sync::Arc;
 use subxt::utils::AccountId32;
 use tokio_stream::StreamExt;
 use tracing::{error, info, instrument};
-use trust_dns_resolver::{
-    config::{ResolverConfig, ResolverOpts},
-    name_server::TokioConnectionProvider,
-    proto::rr::{RData, RecordType},
-    AsyncResolver,
-};
 
-static DNS_RESOLVER: OnceCell<Arc<AsyncResolver<TokioConnectionProvider>>> = OnceCell::new();
+pub struct WebAdapter;
+impl Adapter for WebAdapter {}
 
-fn get_resolver() -> Arc<AsyncResolver<TokioConnectionProvider>> {
-    DNS_RESOLVER
-        .get_or_init(|| {
-            Arc::new(AsyncResolver::tokio(
-                ResolverConfig::cloudflare_tls(),
-                ResolverOpts::default(),
-            ))
-        })
-        .clone()
-}
-
-#[instrument(skip_all)]
-async fn lookup_txt_records(domain: &str) -> Result<Vec<String>, String> {
-    info!(domain = %domain, "Looking for TXT records");
-    get_resolver()
-        .lookup(domain, RecordType::TXT)
-        .await
-        .map(|response| {
-            response
-                .iter()
-                .filter_map(|record| match record {
-                    RData::TXT(txt_data) => Some(txt_data),
-                    _ => None,
-                })
-                .flat_map(|txt_data| txt_data.iter())
-                .map(|bytes| String::from_utf8_lossy(bytes).to_string())
-                .collect()
-        })
-        .map_err(|e| e.to_string())
-}
-
-#[instrument(skip_all)]
-pub async fn verify_txt(domain: &str, challenge: &str) -> bool {
-    match lookup_txt_records(domain).await {
-        Ok(records) => {
-            for record in &records {
-                info!(domain = %domain, "Found Record: {record}");
-            }
-            if records.contains(&challenge.to_string()) {
-                info!(domain = %domain, "TXT record verification successful");
-                return true;
-            }
-            info!(domain = %domain, "No matching({}) TXT record found", &challenge.to_string());
-            false
-        }
-        Err(err) => {
-            info!(domain = %domain, error = %err, "Record lookup failed");
-            false
-        }
-    }
-}
-
-pub struct DnsAdapter;
-impl Adapter for DnsAdapter {}
-
-struct DnsChallenge {
+struct WebChallenge {
     domain: String,
     network: Network,
     account_id: AccountId32,
     token: String,
 }
 
-impl DnsChallenge {
+impl WebChallenge {
     async fn from_key(key: &str, redis_conn: &mut RedisConnection) -> Result<Option<Self>> {
         let parts: Vec<&str> = key.split('|').collect();
         if parts.len() != 4 {
@@ -106,7 +47,7 @@ impl DnsChallenge {
             None => return Ok(None),
         };
 
-        let token = match state.challenges.get(&crate::api::AccountType::Web) {
+        let token = match state.challenges.get(&AccountType::Web) {
             Some(challenge) if !challenge.done => match &challenge.token {
                 Some(t) => t.clone(),
                 None => return Ok(None),
@@ -123,13 +64,28 @@ impl DnsChallenge {
     }
 
     async fn verify(&self, redis_conn: &mut RedisConnection) -> Result<()> {
-        if !verify_txt(&self.domain, &self.token).await {
+        // Try HTTP verification first (faster, no propagation delay)
+        let http_verified = http::verify_http(&self.domain, &self.token).await;
+
+        // If HTTP fails, try DNS verification
+        let dns_verified = if !http_verified {
+            info!(domain = %self.domain, "HTTP verification failed, trying DNS");
+            dns::verify_txt(&self.domain, &self.token).await
+        } else {
+            false
+        };
+
+        if !http_verified && !dns_verified {
+            info!(domain = %self.domain, "Both HTTP and DNS verification failed");
             return Ok(());
         }
 
+        let verification_method = if http_verified { "HTTP" } else { "DNS" };
+        info!(domain = %self.domain, method = %verification_method, "Domain verification successful");
+
         let account = Account::Web(self.domain.clone());
 
-        <DnsAdapter as Adapter>::handle_content(
+        <WebAdapter as Adapter>::handle_content(
             &self.token,
             redis_conn,
             &self.network,
@@ -143,19 +99,18 @@ impl DnsChallenge {
 }
 
 #[instrument()]
-pub async fn watch_dns() -> anyhow::Result<()> {
-    let mut redis_conn = RedisConnection::get_connection().await?;
+pub async fn watch_web() -> anyhow::Result<()> {
+    info!("Web adapter watcher started (supports both HTTP and DNS verification)");
+    let mut pubsub = RedisConnection::new_pubsub().await?;
 
-    let channel = format!("__keyspace@0__:web|*",);
+    let channel = "__keyspace@0__:web|*";
 
-    if let Err(e) = redis_conn.subscribe(&channel).await {
+    if let Err(e) = pubsub.psubscribe(channel).await {
         error!("Unable to subscribe to {} because {:?}", channel, e);
-        return Err(anyhow!("adf"));
+        return Err(anyhow!("Failed to subscribe to web channel"));
     };
 
-    // TODO: make this kill iteslf when an completed state is true, since we don't want
-    // to listen for events forever!
-    let mut stream = redis_conn.pubsub_stream().await;
+    let mut stream = pubsub.on_message();
 
     while let Some(msg) = stream.next().await {
         let payload: String = msg.get_payload()?;
@@ -181,22 +136,22 @@ pub async fn watch_dns() -> anyhow::Result<()> {
     }
 
     Ok(())
-
 }
-
 
 async fn process_single_challenge(
     challenge_key: &str,
     redis_conn: &mut RedisConnection,
 ) -> Result<()> {
-    if let Some(challenge) = DnsChallenge::from_key(challenge_key, redis_conn).await? {
+    if let Some(challenge) = WebChallenge::from_key(challenge_key, redis_conn).await? {
         challenge.verify(redis_conn).await?;
     }
     Ok(())
 }
 
-/// Function to be used for manual verification of DNS challenge instead of active watching
-pub async fn _verify_dns_challenge(
+/// Function to be used for manual verification of web challenge
+/// Supports both HTTP and DNS verification methods
+#[allow(dead_code)]
+pub async fn verify_web_challenge(
     domain: &str,
     network: &Network,
     account_id: &AccountId32,
@@ -222,7 +177,7 @@ pub async fn _verify_dns_challenge(
         }
     };
 
-    let token = match state.challenges.get(&crate::api::AccountType::Web) {
+    let token = match state.challenges.get(&AccountType::Web) {
         Some(challenge) if !challenge.done => match &challenge.token {
             Some(t) => t.clone(),
             None => {
@@ -238,10 +193,21 @@ pub async fn _verify_dns_challenge(
         }
     };
 
-    if verify_txt(&clean_domain, &token).await {
-        let account = Account::Web(clean_domain);
+    // Try HTTP first, then DNS
+    let http_verified = http::verify_http(&clean_domain, &token).await;
+    let dns_verified = if !http_verified {
+        dns::verify_txt(&clean_domain, &token).await
+    } else {
+        false
+    };
 
-        <DnsAdapter as Adapter>::handle_content(
+    if http_verified || dns_verified {
+        let verification_method = if http_verified { "HTTP" } else { "DNS" };
+        info!(domain = %clean_domain, method = %verification_method, "Manual verification successful");
+
+        let account = Account::Web(clean_domain.clone());
+
+        <WebAdapter as Adapter>::handle_content(
             &token,
             &mut redis_conn,
             network,
@@ -251,8 +217,9 @@ pub async fn _verify_dns_challenge(
         .await
     } else {
         Err(anyhow::anyhow!(
-            "Unable to verify domain {} TXT record",
+            "Unable to verify domain {} via HTTP or DNS",
             domain
         ))
     }
 }
+

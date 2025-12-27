@@ -1,12 +1,14 @@
 #![allow(dead_code)]
+
 use crate::api::Network;
 use crate::node::identity::events::judgement_requested::RegistrarIndex;
 use anyhow::anyhow;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::env;
+use subxt::utils::AccountId32;
+
 use std::fs;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use tokio::sync::OnceCell;
 use url::Url;
@@ -16,6 +18,8 @@ pub struct Adapter {
     pub matrix: MatrixConfig,
     pub email: EmailConfig,
     pub github: GithubConfig,
+    #[serde(default)]
+    pub pgp: PGPConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -26,9 +30,156 @@ pub struct Config {
     pub http: HTTPConfig,
     pub adapter: Adapter,
     pub postgres: PostgresConfig,
+    #[serde(default)]
+    pub ratelimit: Ratelimit,
+    #[serde(default)]
+    pub admin: AdminConfig,
+    #[serde(default)]
+    pub ranking: RankingConfig,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct AdminConfig {
+    /// List of SS58 addresses that can perform admin actions
+    #[serde(default)]
+    pub allowed_accounts: Vec<String>,
+}
+
+/// Search ranking configuration for ordering results
+#[derive(Debug, Deserialize, Clone)]
+pub struct RankingConfig {
+    /// Network weights for ranking (higher = more important)
+    #[serde(default)]
+    pub network_weights: NetworkWeights,
+    /// Verification bonus points
+    #[serde(default)]
+    pub verification: VerificationWeights,
+    /// Similarity score multiplier (0-1 similarity scaled by this)
+    #[serde(default = "default_similarity_weight")]
+    pub similarity_weight: u32,
+}
+
+fn default_similarity_weight() -> u32 {
+    200
+}
+
+impl Default for RankingConfig {
+    fn default() -> Self {
+        Self {
+            network_weights: NetworkWeights::default(),
+            verification: VerificationWeights::default(),
+            similarity_weight: 200,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct NetworkWeights {
+    #[serde(default = "default_polkadot_weight")]
+    pub polkadot: u32,
+    #[serde(default = "default_kusama_weight")]
+    pub kusama: u32,
+    #[serde(default = "default_paseo_weight")]
+    pub paseo: u32,
+    #[serde(default = "default_other_weight")]
+    pub other: u32,
+}
+
+fn default_polkadot_weight() -> u32 { 100 }
+fn default_kusama_weight() -> u32 { 80 }
+fn default_paseo_weight() -> u32 { 20 }
+fn default_other_weight() -> u32 { 10 }
+
+impl Default for NetworkWeights {
+    fn default() -> Self {
+        Self {
+            polkadot: 100,
+            kusama: 80,
+            paseo: 20,
+            other: 10,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct VerificationWeights {
+    /// Bonus for identities verified by our registrar
+    #[serde(default = "default_our_registrar")]
+    pub our_registrar: u32,
+    /// Bonus for identities verified by any registrar
+    #[serde(default = "default_any_registrar")]
+    pub any_registrar: u32,
+}
+
+fn default_our_registrar() -> u32 { 50 }
+fn default_any_registrar() -> u32 { 30 }
+
+impl Default for VerificationWeights {
+    fn default() -> Self {
+        Self {
+            our_registrar: 50,
+            any_registrar: 30,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct Ratelimit {
+    pub wallet_requests_hour_limit: u64,
+    pub ip_requests_hour_limit: u64,
+    exceptions: Option<Exceptions>,
+}
+
+impl Ratelimit {
+    pub fn is_exception(&self, wallet_id: &AccountId32, network: &Network) -> bool {
+        match &self.exceptions {
+            Some(exceptions) => exceptions
+                .wallets
+                .contains(&(wallet_id.clone(), network.clone())),
+            None => false,
+        }
+    }
+
+    pub fn is_exception_ip(&self, ip: &IpAddr) -> bool {
+        match &self.exceptions {
+            Some(exceptions) => exceptions.ips.contains(ip),
+            None => false,
+        }
+    }
+}
+
+impl Default for Ratelimit {
+    fn default() -> Self {
+        Self {
+            wallet_requests_hour_limit: 60,
+            ip_requests_hour_limit: 60,
+            exceptions: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Exceptions {
+    wallets: Vec<(AccountId32, Network)>,
+    ips: Vec<IpAddr>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EmailProtocol {
+    Imap,
+    Jmap,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EmailMode {
+    Receive,      // Only receive and process emails
+    Send,         // Only send challenges via email
+    Bidirectional, // Both send and receive
+}
+
+#[derive(Clone, Deserialize)]
 pub struct EmailConfig {
     pub username: String,
     pub password: String,
@@ -38,6 +189,36 @@ pub struct EmailConfig {
     pub mailbox: String,
     pub server: String,
     pub checking_frequency: Option<u64>,
+    #[serde(default = "default_email_protocol")]
+    pub protocol: EmailProtocol,
+    #[serde(default = "default_email_mode")]
+    pub mode: EmailMode,
+}
+
+// Custom Debug to avoid logging passwords
+impl std::fmt::Debug for EmailConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmailConfig")
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .field("name", &self.name)
+            .field("port", &self.port)
+            .field("email", &self.email)
+            .field("mailbox", &self.mailbox)
+            .field("server", &self.server)
+            .field("checking_frequency", &self.checking_frequency)
+            .field("protocol", &self.protocol)
+            .field("mode", &self.mode)
+            .finish()
+    }
+}
+
+fn default_email_protocol() -> EmailProtocol {
+    EmailProtocol::Imap
+}
+
+fn default_email_mode() -> EmailMode {
+    EmailMode::Receive
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -49,6 +230,11 @@ pub struct RegistrarConfigs {
 impl RegistrarConfigs {
     pub fn get_network(&self, network: &Network) -> Option<&RegistrarConfig> {
         self.networks.get(network)
+    }
+
+    pub fn require_network(&self, network: &Network) -> anyhow::Result<&RegistrarConfig> {
+        self.get_network(network)
+            .ok_or_else(|| anyhow::anyhow!("Network {} not configured", network))
     }
 
     pub fn supported_networks(&self) -> Vec<Network> {
@@ -76,16 +262,28 @@ pub struct RegistrarConfig {
     pub fields: Vec<String>,
 }
 
+static CONFIG: OnceCell<Config> = OnceCell::const_new();
+
+/// Alias for CONFIG for backward compatibility
+pub static GLOBAL_CONFIG: &OnceCell<Config> = &CONFIG;
+
 impl Config {
-    /// Set the [GLOBAL_CONFIG] global variable and return an instance(clone) of it
-    pub fn set_global_config() -> anyhow::Result<Config> {
+    pub fn load() -> anyhow::Result<Config> {
         let config_path =
             std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
         let config = Config::load_from(&config_path)?;
-        GLOBAL_CONFIG
+        CONFIG
             .set(config.clone())
-            .expect("GLOBAL_CONFIG already initialized");
+            .map_err(|_| anyhow!("CONFIG already initialized"))?;
         Ok(config)
+    }
+
+    pub fn load_cell() -> OnceCell<Config> {
+        CONFIG.clone()
+    }
+
+    pub fn load_static<'a>() -> &'a Self {
+        CONFIG.get().expect("CONFIG is not initialized")
     }
 
     pub fn load_from(path: &str) -> anyhow::Result<Self> {
@@ -102,16 +300,6 @@ impl Config {
         toml::from_str(&content)
             .map_err(|err| anyhow!("Failed to parse config at {}: {:?}", path, err))
     }
-}
-
-pub static GLOBAL_CONFIG: OnceCell<Config> = OnceCell::const_new();
-
-pub async fn initialize_config() {
-    let config_path = env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
-    let config = Config::load_from(&config_path).expect("Failed to load config");
-    GLOBAL_CONFIG
-        .set(config)
-        .expect("GLOBAL_CONFIG already initialized");
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -185,7 +373,7 @@ impl WebsocketConfig {
     pub fn socket_addrs(&self) -> Option<SocketAddr> {
         format!("{}:{}", self.host, self.port)
             .to_socket_addrs()
-            .unwrap()
+            .ok()?
             .next()
     }
 }
@@ -208,7 +396,7 @@ impl Default for GithubConfig {
             "https://github.com/login/oauth/authorize",
             &[("client_id", ""), ("redirect_uri", "")],
         )
-        .unwrap();
+        .expect("invalid default github oauth url");
         let client_id = String::new();
         let redirect_uri = None;
         let client_secret = String::new();
@@ -223,6 +411,19 @@ impl Default for GithubConfig {
 }
 
 impl GithubConfig {}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PGPConfig {
+    pub keyserver_url: String,
+}
+
+impl Default for PGPConfig {
+    fn default() -> Self {
+        Self {
+            keyserver_url: "https://keyserver.ubuntu.com".to_string(),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct HTTPConfig {

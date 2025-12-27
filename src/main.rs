@@ -4,6 +4,7 @@ mod config;
 mod indexer;
 mod node;
 mod postgres;
+mod rate_limit;
 mod redis;
 mod runner;
 mod token;
@@ -16,11 +17,20 @@ use tracing::{error, info, instrument};
 use tracing_subscriber::EnvFilter;
 
 use crate::{
-    adapter::{dns::watch_dns, mail::watch_mailserver, matrix},
+    adapter::web::watch_web,
     api::{spawn_node_listener, spawn_redis_subscriber, spawn_ws_serv},
-    config::{Config, GLOBAL_CONFIG},
+    config::Config,
     redis::RedisConnection,
 };
+
+#[cfg(feature = "jmap")]
+use crate::{
+    adapter::email::{initialize_jmap_sender, watch_jmap_server},
+    config::{EmailMode, EmailProtocol},
+};
+
+#[cfg(feature = "matrix")]
+use crate::adapter::matrix;
 
 #[instrument(skip_all)]
 fn setup_logging() -> Result<()> {
@@ -37,8 +47,6 @@ fn setup_logging() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_line_number(true)
-        // .with_thread_ids(true)
-        // .with_thread_names(true)
         .with_target(true)
         .try_init()
         .map_err(|e| anyhow::anyhow!("Failed to initialize logging: {}", e))
@@ -92,8 +100,7 @@ async fn main() -> Result<()> {
     info!("starting w3registrar...");
 
     // load configuration
-    let config =
-        Config::set_global_config().context("failed to load and set global configuration")?;
+    let config = Config::load().context("failed to load and set global configuration")?;
 
     // init redis conn pool
     RedisConnection::initialize_pool(&config.redis).await?;
@@ -103,6 +110,10 @@ async fn main() -> Result<()> {
         .await?
         .init()
         .await?;
+
+    // initialize rate limiter for token validation
+    rate_limit::init_rate_limiter(None);
+    info!("initialized rate limiter for token validation");
 
     // initialize runner
     let mut runner = runner::Runner::new();
@@ -117,13 +128,35 @@ async fn main() -> Result<()> {
     runner.spawn(spawn_identity_indexer, None).await;
 
     // check and start singleton services
+    #[allow(unused_variables)]
     let (needs_email, needs_matrix_bot, needs_web) = check_required_services(&config).await;
 
+    #[cfg(feature = "jmap")]
     if needs_email {
         info!("starting email service...");
-        runner.spawn(watch_mailserver, Some("email_service")).await;
+        match config.adapter.email.protocol {
+            EmailProtocol::Imap => {
+                info!("IMAP protocol requested but not available, email service disabled");
+            }
+            EmailProtocol::Jmap => {
+                info!("using JMAP protocol (mode: {:?})", config.adapter.email.mode);
+
+                // Initialize JMAP sender if needed
+                if matches!(config.adapter.email.mode, EmailMode::Send | EmailMode::Bidirectional) {
+                    if let Err(e) = initialize_jmap_sender().await {
+                        error!("Failed to initialize JMAP sender: {}", e);
+                    }
+                }
+
+                // Start receiver if needed
+                if matches!(config.adapter.email.mode, EmailMode::Receive | EmailMode::Bidirectional) {
+                    runner.spawn(watch_jmap_server, Some("email_service")).await;
+                }
+            }
+        }
     }
 
+    #[cfg(feature = "matrix")]
     if needs_matrix_bot {
         info!("starting matrix bot service...");
         runner
@@ -132,11 +165,20 @@ async fn main() -> Result<()> {
     }
 
     if needs_web {
-        info!("starting dns watch service...");
-        runner.spawn(watch_dns, Some("dns_service")).await;
+        info!("starting web watch service (HTTP + DNS verification)...");
+        runner.spawn(watch_web, Some("web_service")).await;
     }
 
     info!("all services started successfully");
+
+    // spawn periodic rate limiter cleanup task
+    tokio::spawn(async {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            interval.tick().await;
+            rate_limit::get_rate_limiter().cleanup_expired().await;
+        }
+    });
 
     // run until interrupted
     runner.run().await;

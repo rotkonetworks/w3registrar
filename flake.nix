@@ -23,9 +23,9 @@
         ];};
       in
       {
-        defaultPackage = naersk-lib.buildPackage ./.;
-        devShell = with pkgs; mkShell {
-          buildInputs = [ rust pkg-config openssl shim-unsigned subxt redis sqlite polkadot ];
+        packages.default = naersk-lib.buildPackage ./.;
+        devShells.default = with pkgs; mkShell {
+          buildInputs = [ rust pkg-config openssl subxt redis sqlite ];
         };
       });
 }

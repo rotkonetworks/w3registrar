@@ -1,28 +1,124 @@
 use anyhow::anyhow;
 use futures::{Stream, StreamExt};
-use mobc::Connection;
-use mobc::{async_trait, Manager, Pool};
-use once_cell::sync::OnceCell;
-use redis::aio::ConnectionManager;
+use async_trait::async_trait;
+use bb8::{Pool, PooledConnection, ManageConnection};
+use redis::aio::MultiplexedConnection;
 use redis::aio::PubSub;
-use redis::RedisResult;
-use redis::{AsyncCommands, Msg};
+use redis::{AsyncCommands, Msg, RedisResult};
 use std::str::FromStr;
 use std::{collections::HashMap, sync::Arc};
 use subxt::utils::AccountId32;
-use tracing::info;
-use tracing::instrument;
-use tracing::Span;
+use tokio::sync::OnceCell;
+use tracing::{info, instrument, Span};
 
 use crate::api::{Account, AccountVerification, VerificationFields};
 use crate::api::{AccountType, Network};
 use crate::config::RedisConfig;
 
-static REDIS_CLIENT: OnceCell<Arc<Pool<RedisManager>>> = OnceCell::new();
+/// Global Redis pool - initialized once at startup
+static REDIS_POOL: OnceCell<Arc<RedisPool>> = OnceCell::const_new();
 
+/// Redis pool wrapper that separates connection pooling from PubSub
+pub struct RedisPool {
+    pool: Pool<RedisConnectionManager>,
+    url: url::Url,
+}
+
+impl RedisPool {
+    /// Initialize the global Redis pool
+    pub async fn initialize(cfg: &RedisConfig) -> anyhow::Result<()> {
+        let url = cfg.url()?;
+        info!("Initializing Redis pool");
+
+        let manager = RedisConnectionManager::new(url.clone())?;
+        let pool = Pool::builder()
+            .max_size(cfg.max_open_clients as u32)
+            .min_idle(Some(2))
+            .build(manager)
+            .await?;
+
+        let redis_pool = Arc::new(RedisPool { pool, url });
+
+        REDIS_POOL
+            .set(redis_pool)
+            .map_err(|_| anyhow!("Redis pool already initialized"))?;
+
+        info!("Redis pool initialized successfully");
+        Ok(())
+    }
+
+    /// Get the global pool instance
+    pub fn get() -> anyhow::Result<Arc<RedisPool>> {
+        REDIS_POOL
+            .get()
+            .cloned()
+            .ok_or_else(|| anyhow!("Redis pool not initialized"))
+    }
+
+    /// Get a connection from the pool
+    pub async fn connection(&self) -> anyhow::Result<PooledConnection<'_, RedisConnectionManager>> {
+        self.pool
+            .get()
+            .await
+            .map_err(|e| anyhow!("Failed to get Redis connection: {}", e))
+    }
+
+    /// Create a new PubSub connection (not pooled - each subscriber needs its own)
+    pub async fn pubsub(&self) -> anyhow::Result<PubSub> {
+        let client = redis::Client::open(self.url.clone())?;
+        let pubsub = client.get_async_pubsub().await?;
+        Ok(pubsub)
+    }
+
+    /// Enable keyspace notifications on a connection
+    async fn enable_keyspace_notifications(conn: &mut MultiplexedConnection) -> anyhow::Result<()> {
+        info!("Enabling keyspace notifications");
+        conn.send_packed_command(
+            redis::cmd("CONFIG")
+                .arg("SET")
+                .arg("notify-keyspace-events")
+                .arg("KEA"),
+        )
+        .await
+        .map_err(|e| anyhow!("Cannot set notify-keyspace-events: {}", e))?;
+        Ok(())
+    }
+}
+
+/// bb8 connection manager for Redis
+pub struct RedisConnectionManager {
+    client: redis::Client,
+}
+
+impl RedisConnectionManager {
+    pub fn new(url: url::Url) -> anyhow::Result<Self> {
+        let client = redis::Client::open(url)?;
+        Ok(Self { client })
+    }
+}
+
+#[async_trait]
+impl ManageConnection for RedisConnectionManager {
+    type Connection = MultiplexedConnection;
+    type Error = redis::RedisError;
+
+    async fn connect(&self) -> Result<Self::Connection, Self::Error> {
+        self.client.get_multiplexed_async_connection().await
+    }
+
+    async fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
+        redis::cmd("PING").query_async(conn).await
+    }
+
+    fn has_broken(&self, _conn: &mut Self::Connection) -> bool {
+        false
+    }
+}
+
+/// High-level Redis operations wrapper
 pub struct RedisConnection {
     pub span: Span,
-    pub manager: Connection<RedisManager>,
+    conn: MultiplexedConnection,
 }
 
 impl RedisConnection {
@@ -31,123 +127,112 @@ impl RedisConnection {
         Self::get_connection().await
     }
 
-
-    // TODO: replace all occurance of .get_connection() to .default()
     #[instrument(skip_all, parent = None)]
     pub async fn initialize_pool(cfg: &RedisConfig) -> anyhow::Result<()> {
-        info!("Initializing Redis client");
-
-        let pool = Pool::builder()
-            .max_open(cfg.max_open_clients)
-            .build(RedisManager { addr: cfg.url()? });
-
-        REDIS_CLIENT
-            .set(Arc::new(pool))
-            .map_err(|_| anyhow!("Redis client already initialized"))?;
-
-        info!("Redis client initialized successfully");
-        Ok(())
+        RedisPool::initialize(cfg).await
     }
 
     #[instrument(skip_all, name = "redis_connection", parent = None)]
     pub async fn get_connection() -> anyhow::Result<Self> {
         let span = tracing::Span::current();
         info!("Getting redis connection");
-        let client = REDIS_CLIENT
-            .get()
-            .ok_or_else(|| anyhow!("Redis client not initialized"))?;
 
-        let mut manager = client.get().await?;
+        let pool = RedisPool::get()?;
+        let mut conn = pool.connection().await?;
 
-        Self::enable_keyspace_notifications(&mut manager.0).await?;
-        // Self::enable_keyspace_notifications(&mut manager.0).await?;
-        // let pubsub = client.get_async_pubsub().await?;
+        // Enable keyspace notifications
+        RedisPool::enable_keyspace_notifications(&mut conn).await?;
 
         info!("Redis connection successfully established");
-        Ok(Self { manager, span })
+
+        // Clone the connection for our wrapper (MultiplexedConnection is cheap to clone)
+        Ok(Self {
+            conn: conn.clone(),
+            span,
+        })
     }
 
-    #[instrument(skip_all, parent = &self.span)]
-    pub async fn subscribe(&mut self, channel: &str) -> RedisResult<()> {
-        info!(channel = %channel, "Subscribing to pubsub channel");
-        self.manager.1.psubscribe(channel).await
+    /// Create a new PubSub subscriber
+    #[instrument(skip_all, name = "redis_pubsub", parent = None)]
+    pub async fn new_pubsub() -> anyhow::Result<RedisPubSub> {
+        let pool = RedisPool::get()?;
+        let pubsub = pool.pubsub().await?;
+
+        // Enable keyspace notifications on a separate connection
+        let mut conn = pool.connection().await?;
+        RedisPool::enable_keyspace_notifications(&mut conn).await?;
+
+        Ok(RedisPubSub { pubsub })
     }
 
-    #[instrument(skip_all, parent = &self.span)]
-    pub async fn pubsub_stream(&mut self) -> impl Stream<Item = Msg> + '_ {
-        info!("Getting PubSub stream");
-        self.manager.1.on_message()
-    }
-
-    #[instrument(skip_all, name = "keyspace_notification", parent = None)]
-    async fn enable_keyspace_notifications(conn: &mut ConnectionManager) -> anyhow::Result<()> {
-        info!("Enabling keyspace notification");
-
-        match conn
-            .send_packed_command(
-                redis::cmd("CONFIG")
-                    .arg("SET")
-                    .arg("notify-keyspace-events")
-                    .arg("KEA"),
-            )
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(e) => Err(anyhow!("Cannot set notify-keyspace-events: {}", e)),
-        }
-    }
-
-    /// Search through the redis for keys that are similar to the `pattern`
+    /// Search through redis for keys matching pattern
     #[instrument(skip_all, parent = &self.span)]
     pub async fn search(&mut self, pattern: &str) -> anyhow::Result<Vec<String>> {
         info!(pattern, "Searching");
         Ok(self
-            .manager
-            .0
+            .conn
             .scan_match::<&str, String>(pattern)
             .await?
             .collect::<Vec<String>>()
             .await)
     }
 
-    /// Get all pending challenges of `wallet_id` as a [Vec<Vec<String>>]
-    /// Returns pairs of [account_type, challenge_token]
+    /// Get all pending challenges for an account
     #[instrument(skip_all, parent = &self.span)]
     async fn get_challenges(
         &mut self,
         network: &Network,
         account_id: &AccountId32,
     ) -> anyhow::Result<Vec<Challenge>> {
+        use crate::config::{EmailProtocol, EmailMode, GLOBAL_CONFIG};
+        use crate::api::AccountType;
+
         info!(account_id = ?account_id.to_string(), network = ?network, "Getting challenges");
         let state = match self.get_verification_state(network, account_id).await? {
             Some(s) => s,
             None => return Ok(Vec::new()),
         };
 
-        info!(account_id = ?account_id.to_string(), network = ?network, "Filtering pending challenges");
+        let is_automated_email = if let Some(cfg) = GLOBAL_CONFIG.get() {
+            matches!(cfg.adapter.email.protocol, EmailProtocol::Jmap)
+                && matches!(cfg.adapter.email.mode, EmailMode::Send | EmailMode::Bidirectional)
+        } else {
+            false
+        };
+
+        info!(account_id = ?account_id.to_string(), network = ?network, automated_email = ?is_automated_email, "Filtering pending challenges");
         let pending = state
             .challenges
             .iter()
             .filter(|(_, challenge)| !challenge.done)
             .filter_map(|(acc_type, challenge)| {
-                challenge.token.as_ref().map(|token| {
-                    Challenge::new(
-                        acc_type.to_owned(),
-                        challenge.account_name.to_owned(),
-                        token.to_owned(),
-                    )
-                })
+                if matches!(acc_type, AccountType::Email) && is_automated_email {
+                    let cfg = GLOBAL_CONFIG.get().expect("Config not initialized");
+                    let display = match &cfg.adapter.email.mode {
+                        EmailMode::Bidirectional => challenge.inbound_token.as_ref()
+                            .cloned()
+                            .unwrap_or_else(|| "pending".to_string()),
+                        EmailMode::Send => "✉️ Check your email".to_string(),
+                        _ => challenge.inbound_token.as_ref()
+                            .or(challenge.token.as_ref())
+                            .cloned()
+                            .unwrap_or_else(|| "pending".to_string()),
+                    };
+                    Some(Challenge::new(acc_type.to_owned(), challenge.account_name.to_owned(), display))
+                } else {
+                    let token = match acc_type {
+                        AccountType::Email => challenge.inbound_token.as_ref().or(challenge.token.as_ref()),
+                        _ => challenge.token.as_ref(),
+                    }?;
+                    Some(Challenge::new(acc_type.to_owned(), challenge.account_name.to_owned(), token.to_owned()))
+                }
             })
             .collect();
 
         Ok(pending)
     }
 
-    /// Get all pending challenges of `wallet_id` as a [Vec<Vec<String>>]
-    /// Returns pairs of [account_type, challenge_token]
-
-    /// constructing [VerificationFields] object from the registration done of all the accounts
-    /// under `wallet_id`
+    /// Extract verification fields from account state
     #[instrument(skip_all, parent = &self.span)]
     pub async fn extract_info(
         &mut self,
@@ -185,24 +270,29 @@ impl RedisConnection {
         Ok(fields)
     }
 
+    /// Clear all Redis keys related to an account (atomic)
     #[instrument(skip_all, parent = &self.span)]
     pub async fn clear_all_related_to(
         &mut self,
         network: &Network,
         who: &AccountId32,
     ) -> anyhow::Result<()> {
+        let accounts = self.search(&format!("*|{network}|{who}")).await?;
+
+        // Use atomic transaction
         let mut pipe = redis::pipe();
+        pipe.atomic();
         pipe.cmd("DEL").arg(format!("{who}|{network}"));
 
-        let accounts = self.search(&format!("*|{network}|{who}")).await?;
         for account in accounts {
             pipe.cmd("DEL").arg(account);
         }
 
-        pipe.exec_async(&mut self.manager.0).await?;
+        pipe.exec_async(&mut self.conn).await?;
         Ok(())
     }
 
+    /// Save account state (atomic)
     pub async fn save_account(
         &mut self,
         network: &Network,
@@ -211,18 +301,24 @@ impl RedisConnection {
         accounts: &HashMap<Account, bool>,
     ) -> anyhow::Result<()> {
         info!(state = ?state, "Saving account state");
+
         let mut pipe = redis::pipe();
+        pipe.atomic();
+
         for account in accounts.keys() {
             let key = format!("{account}|{network}|{account_id}");
-            let pipe = pipe.cmd("SET").arg(&key);
             if let Some(challenge_info) = state.challenges.get(&account.account_type()) {
-                pipe.arg(&serde_json::to_string(&challenge_info)?);
+                pipe.cmd("SET")
+                    .arg(&key)
+                    .arg(&serde_json::to_string(&challenge_info)?);
             }
         }
-        pipe.exec_async(&mut self.manager.0).await?;
+
+        pipe.exec_async(&mut self.conn).await?;
         Ok(())
     }
 
+    /// Save verification state (atomic)
     #[instrument(skip_all, parent = &self.span)]
     pub async fn save_state(
         &mut self,
@@ -234,16 +330,11 @@ impl RedisConnection {
         info!(state = ?state, "Saving account state");
         let value = serde_json::to_string(&state)?;
 
-        redis::pipe()
-            .cmd("SET")
-            .arg(&key)
-            .arg(value)
-            .exec_async(&mut self.manager.0)
-            .await?;
-
+        let _: () = self.conn.set(&key, value).await?;
         Ok(())
     }
 
+    /// Update verification state with all related keys (atomic transaction)
     #[instrument(skip_all)]
     pub async fn update_verification_state(
         &mut self,
@@ -251,8 +342,13 @@ impl RedisConnection {
         account_id: &AccountId32,
         state: &AccountVerification,
     ) -> anyhow::Result<()> {
-        self.save_state(network, account_id, state).await?;
+        let main_key = format!("{account_id}|{network}");
+        let main_value = serde_json::to_string(&state)?;
+
+        // Use atomic transaction for all updates
         let mut pipe = redis::pipe();
+        pipe.atomic();
+        pipe.cmd("SET").arg(&main_key).arg(&main_value);
 
         for (acc_type, info) in state.challenges.iter() {
             let acc_key =
@@ -263,12 +359,11 @@ impl RedisConnection {
                 .arg(&serde_json::to_string(&info)?);
         }
 
-        pipe.exec_async(&mut self.manager.0).await?;
+        pipe.exec_async(&mut self.conn).await?;
         Ok(())
     }
 
-    // #[instrument(skip_all, parent = &self.span)]
-    // NOTE: don't instrument this
+    /// Initialize verification state (atomic)
     #[instrument(skip_all, parent = &self.span)]
     pub async fn init_verification_state(
         &mut self,
@@ -277,13 +372,29 @@ impl RedisConnection {
         state: &AccountVerification,
         accounts: &HashMap<Account, bool>,
     ) -> anyhow::Result<()> {
-        self.save_state(network, account_id, state).await?;
-        self.save_account(network, account_id, state, accounts)
-            .await?;
+        let main_key = format!("{account_id}|{network}");
+        let main_value = serde_json::to_string(&state)?;
 
+        // Use atomic transaction
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+        pipe.cmd("SET").arg(&main_key).arg(&main_value);
+
+        for account in accounts.keys() {
+            let key = format!("{account}|{network}|{account_id}");
+            if let Some(challenge_info) = state.challenges.get(&account.account_type()) {
+                pipe.cmd("SET")
+                    .arg(&key)
+                    .arg(&serde_json::to_string(&challenge_info)?);
+            }
+        }
+
+        info!(state = ?state, "Saving account state");
+        pipe.exec_async(&mut self.conn).await?;
         Ok(())
     }
 
+    /// Get verification state for an account
     #[instrument(skip_all, parent = &self.span, name = "verification_state")]
     pub async fn get_verification_state(
         &mut self,
@@ -292,7 +403,7 @@ impl RedisConnection {
     ) -> anyhow::Result<Option<AccountVerification>> {
         let key = format!("{account_id}|{network}");
         info!(account_id = ?account_id.to_string(), network = ?network, "Getting verification state");
-        let value: Option<String> = self.manager.0.get(&key).await?;
+        let value: Option<String> = self.conn.get(&key).await?;
 
         match value {
             Some(json) => Ok(Some(serde_json::from_str(&json)?)),
@@ -300,6 +411,7 @@ impl RedisConnection {
         }
     }
 
+    /// Update challenge status (idempotent)
     #[instrument(skip_all, parent = &self.span)]
     pub async fn update_challenge_status(
         &mut self,
@@ -313,21 +425,43 @@ impl RedisConnection {
             account_type = ?account_type,
             "Updating challenge state"
         );
+
         if let Some(mut state) = self.get_verification_state(network, account_id).await? {
+            // Check if already done (idempotent)
+            if let Some(challenge) = state.challenges.get(account_type) {
+                if challenge.done {
+                    info!(account_type = ?account_type, "Challenge already marked done");
+                    return Ok(true);
+                }
+            }
+
             state.mark_challenge_done(account_type)?;
-            self.update_verification_state(network, account_id, &state)
-                .await?;
+            self.update_verification_state(network, account_id, &state).await?;
             return Ok(true);
         }
-        return Ok(false);
+        Ok(false)
     }
 
+    /// Clear verification state for an account
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn clear_verification_state(
+        &mut self,
+        network: &Network,
+        account_id: &AccountId32,
+    ) -> anyhow::Result<()> {
+        let key = format!("{account_id}|{network}");
+        info!(account_id = ?account_id.to_string(), network = ?network, "Clearing verification state");
+        let _: () = self.conn.del(&key).await?;
+        Ok(())
+    }
+
+    /// Build account state message for WebSocket response
     #[instrument(skip_all, parent = &self.span)]
     pub async fn build_account_state_message(
         &mut self,
         network: &Network,
         account_id: &AccountId32,
-        hash: Option<String>, // optional for state updates
+        hash: Option<String>,
     ) -> anyhow::Result<serde_json::Value> {
         let fields = self.extract_info(network, account_id).await?;
         let pending_challenges = self.get_challenges(network, account_id).await?;
@@ -351,7 +485,7 @@ impl RedisConnection {
         }))
     }
 
-
+    /// Process a Redis keyspace change notification
     #[instrument(skip_all)]
     pub async fn process_state_change(
         msg: &redis::Msg,
@@ -362,19 +496,16 @@ impl RedisConnection {
 
         info!(payload = ?payload, channel = ?channel, "Processing Redis message");
 
-        // early returns for unsupported operations
         if !matches!(payload.as_str(), "set" | "del") {
             info!(payload = ?payload, "Ignoring Redis operation");
             return Ok(None);
         }
 
-        // extract key from channel name
         let key = match channel.strip_prefix("__keyspace@0__:") {
             Some(k) => k,
             None => return Ok(None),
         };
 
-        // parse network and account ID
         let (account_id, network) = match key.split_once('|') {
             Some(parts) => parts,
             None => return Ok(None),
@@ -394,21 +525,17 @@ impl RedisConnection {
         Ok(Some((id, account_state)))
     }
 
-    /// Check if a key exist in redis db
-    /// Wrapper for the [redis::commands::AsyncCommands::exists]
+    /// Check if a key exists
     pub async fn exists(&mut self, key: &str) -> anyhow::Result<bool> {
-        self.manager
-            .0
+        self.conn
             .exists(key)
             .await
             .map_err(|e| anyhow!("Failed to check state in Redis: {}", e))
     }
 
-    /// Set the value and expiration of a key.
-    /// Wrapper around [redis::commands::AsyncCommands::set_ex]
+    /// Set key with expiration
     pub async fn set_ex(&mut self, key: &str, value: &str, seconds: u64) -> anyhow::Result<()> {
-        self.manager
-            .0
+        self.conn
             .set_ex(key, value, seconds)
             .await
             .map_err(|e| {
@@ -422,19 +549,37 @@ impl RedisConnection {
             })
     }
 
-    /// Delete one or more keys.
-    /// Wrapper around [redis::commands::AsyncCommands::del]
+    /// Delete a key
     pub async fn del(&mut self, key: &str) -> anyhow::Result<()> {
-        self.manager
-            .0
-            .del(&key)
+        self.conn
+            .del(key)
             .await
             .map_err(|e| anyhow!("Failed to remove state from Redis: {}", e))
     }
 }
 
-pub struct RedisManager {
-    addr: url::Url,
+/// Separate PubSub wrapper for subscription handling
+pub struct RedisPubSub {
+    pubsub: PubSub,
+}
+
+impl RedisPubSub {
+    /// Subscribe to a pattern
+    pub async fn psubscribe(&mut self, pattern: &str) -> RedisResult<()> {
+        info!(pattern = %pattern, "Subscribing to pubsub pattern");
+        self.pubsub.psubscribe(pattern).await
+    }
+
+    /// Subscribe to a channel
+    pub async fn subscribe(&mut self, channel: &str) -> RedisResult<()> {
+        info!(channel = %channel, "Subscribing to pubsub channel");
+        self.pubsub.subscribe(channel).await
+    }
+
+    /// Get the message stream
+    pub fn on_message(&mut self) -> impl Stream<Item = Msg> + '_ {
+        self.pubsub.on_message()
+    }
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -454,23 +599,25 @@ impl Challenge {
     }
 }
 
+// Implement VerificationStore trait for RedisConnection
 #[async_trait]
-impl Manager for RedisManager {
-    type Connection = (ConnectionManager, PubSub);
-    type Error = anyhow::Error;
-
-    async fn connect(&self) -> Result<Self::Connection, Self::Error> {
-        let client = redis::Client::open(self.addr.clone()).unwrap();
-        let pubsub = client.get_async_pubsub().await.unwrap();
-        let manager = ConnectionManager::new(client).await.unwrap();
-        Ok((manager, pubsub))
+impl crate::adapter::context::VerificationStore for RedisConnection {
+    async fn get_verification_state(
+        &mut self,
+        network: &Network,
+        account_id: &AccountId32,
+    ) -> anyhow::Result<Option<AccountVerification>> {
+        self.get_verification_state(network, account_id).await
     }
 
-    async fn check(&self, mut conn: Self::Connection) -> Result<Self::Connection, Self::Error> {
-        let res: Result<(), _> = conn.0.ping().await;
-        match res {
-            Ok(_) => return Ok(conn),
-            Err(_) => return Err(anyhow!("Connnection ended")),
-        }
+    async fn update_challenge_status(
+        &mut self,
+        network: &Network,
+        account_id: &AccountId32,
+        account_type: &AccountType,
+    ) -> anyhow::Result<()> {
+        self.update_challenge_status(network, account_id, account_type).await?;
+        Ok(())
     }
 }
+

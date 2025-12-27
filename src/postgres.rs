@@ -3,6 +3,7 @@
 
 use anyhow::anyhow;
 use hex::ToHex;
+use bytes::BytesMut;
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
 use postgres_types::{to_sql_checked, Kind, ToSql, Type};
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sp_core::H256;
 use std::any::Any;
 use std::fmt::{format, Display};
+use std::net::IpAddr;
 use std::ops::Deref;
 use std::slice::Iter;
 use std::{str::FromStr, time::Duration};
@@ -22,16 +24,19 @@ use tracing::instrument;
 use tracing::{error, info, info_span, Span};
 
 use crate::api::TimeFilter;
+use crate::config::Exceptions;
 use crate::{
     api::{
         identity_data_tostring, AccountType, FieldsFilter, Filter, IncomingSearchRequest, Network,
     },
-    config::{PostgresConfig, GLOBAL_CONFIG},
+    config::Config,
+    config::PostgresConfig,
     node::{
         self,
         identity::events::JudgementGiven,
         runtime_types::{
-            pallet_identity::types::Registration, people_paseo_runtime::people::IdentityInfo,
+            pallet_identity::types::{Judgement, Registration},
+            people_paseo_runtime::people::IdentityInfo,
         },
         Client as NodeClient,
     },
@@ -43,45 +48,46 @@ pub struct PostgresConnection {
 }
 
 impl PostgresConnection {
+    /// Execute SQL with debug logging
+    async fn exec(&self, name: &str, sql: &str) -> anyhow::Result<()> {
+        tracing::debug!(name, "executing SQL");
+        self.client.simple_query(sql).await?;
+        Ok(())
+    }
+
     /// Creates all necessary `types` to handle long term registration process
     async fn init_types(&mut self) -> anyhow::Result<()> {
-        info!("Ceating `EVENT` enum type");
+        info!("Creating enum types");
 
-        let create_acctype_enum = "
-DO $$
-BEGIN
-    IF NOT EXISTS ( SELECT 1 FROM pg_type WHERE typname='event' )
-    THEN CREATE TYPE EVENT AS ENUM (
-            'verified', 'created', 'discord', 'twitter', 'matrix',
-            'email', 'display', 'github', 'legal', 'web', 'pgp_fingerprint', 'image'
-    );
-    END IF;
-END
-$$;";
+        self.exec("event_enum", "
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname='event')
+                THEN CREATE TYPE EVENT AS ENUM (
+                    'verified', 'created', 'discord', 'twitter', 'matrix',
+                    'email', 'display', 'github', 'legal', 'web', 'pgp_fingerprint', 'image'
+                );
+                END IF;
+            END $$;").await?;
 
-        info!("QUERY");
-        info!("{create_acctype_enum}");
+        self.exec("network_enum", "
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname='network')
+                THEN CREATE TYPE NETWORK AS ENUM ('paseo', 'polkadot', 'kusama', 'rococo');
+                END IF;
+            END $$;").await?;
 
-        self.client.simple_query(create_acctype_enum).await?;
-        info!("Enum type `EVENT` created");
-
-        info!("Ceating `NETWORK` enum type");
-
-        let create_network_enum = "
-DO $$
-BEGIN
-    IF NOT EXISTS ( SELECT 1 from pg_type WHERE typname='network' )
-    THEN CREATE TYPE NETWORK AS ENUM ('paseo', 'polkadot', 'kusama', 'rococo');
-    END IF;
-END
-$$;";
-
-        info!("QUERY");
-        info!("{create_network_enum}");
-
-        self.client.simple_query(create_network_enum).await?;
-
-        info!("Enum type `NETWORK` created");
+        self.exec("identity_event_type_enum", "
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname='identity_event_type')
+                THEN CREATE TYPE IDENTITY_EVENT_TYPE AS ENUM (
+                    'identity_set', 'identity_cleared', 'identity_killed',
+                    'judgement_requested', 'judgement_unrequested', 'judgement_given',
+                    'registrar_added', 'sub_identity_added', 'sub_identity_removed', 'sub_identity_revoked',
+                    'authority_added', 'authority_removed', 'username_set', 'username_queued',
+                    'username_killed', 'primary_username_set', 'dangling_username_removed', 'preapproval_expired'
+                );
+                END IF;
+            END $$;").await?;
 
         Ok(())
     }
@@ -120,114 +126,122 @@ $$;";
 
     /// Creates all necessary `tables` to handle long term registration process
     async fn init_tables(&mut self) -> anyhow::Result<()> {
-        // TODO: parametarize table name?
-        info!("Creating `registration` table");
+        info!("Creating tables and indexes");
 
-        let create_reg_record = "CREATE TABLE IF NOT EXISTS registration (
-            wallet_id       VARCHAR (48),
-            network         NETWORK,
-            discord         TEXT,
-            twitter         TEXT,
-            matrix          TEXT,
-            email           TEXT,
-            display_name    TEXT,
-            github          TEXT,
-            legal           TEXT,
-            web             TEXT,
-            pgp_fingerprint VARCHAR(40),
-            search_text     TEXT,
-            PRIMARY KEY     (wallet_id, network)
-        )";
+        // Core tables
+        self.exec("registration", "
+            CREATE TABLE IF NOT EXISTS registration (
+                wallet_id VARCHAR(48), network NETWORK,
+                discord TEXT, twitter TEXT, matrix TEXT, email TEXT,
+                display_name TEXT, github TEXT, legal TEXT, web TEXT,
+                pgp_fingerprint VARCHAR(40), search_text TEXT,
+                judgement_by INTEGER, judgement_at TIMESTAMP,
+                PRIMARY KEY (wallet_id, network)
+            )").await?;
 
-        info!("QUERY");
-        info!("{create_reg_record}");
+        self.exec("timeline_elem", "
+            CREATE TABLE IF NOT EXISTS timeline_elem (
+                wallet_id VARCHAR(48) NOT NULL, network TEXT NOT NULL,
+                event EVENT NOT NULL, date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (wallet_id, network, event)
+            )").await?;
 
-        self.client.simple_query(create_reg_record).await?;
-        info!("Table `registration` created");
+        self.exec("indexer_state", "
+            CREATE TABLE IF NOT EXISTS indexer_state (
+                network NETWORK PRIMARY KEY,
+                last_block_index BIGINT NOT NULL DEFAULT 0,
+                last_block_hash VARCHAR(66) NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )").await?;
 
-        info!("Creating `timeline_elem` table");
+        self.exec("pgp_keys", "
+            CREATE TABLE IF NOT EXISTS pgp_keys (
+                fingerprint VARCHAR(40) PRIMARY KEY,
+                address VARCHAR(48) NOT NULL, network NETWORK NOT NULL,
+                armored_key TEXT NOT NULL, uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                verified BOOLEAN DEFAULT FALSE, remailer_enabled BOOLEAN DEFAULT FALSE,
+                remailer_registered_only BOOLEAN DEFAULT TRUE, require_verified_pgp BOOLEAN DEFAULT TRUE,
+                UNIQUE(address, network)
+            )").await?;
 
-        let create_timeline_elem = "CREATE TABLE IF NOT EXISTS timeline_elem (
-            wallet_id       VARCHAR (48) NOT NULL,
-            network         TEXT NOT NULL,
-            event           EVENT NOT NULL,
-            date            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY     (wallet_id, network, event)
-        );";
+        self.exec("ip_ratelimiter", "
+            CREATE TABLE IF NOT EXISTS ip_ratelimiter (
+                ip inet NOT NULL, timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (ip, timestamp)
+            )").await?;
 
-        info!("QUERY");
-        info!("{create_timeline_elem}");
+        self.exec("wallet_ratelimiter", "
+            CREATE TABLE IF NOT EXISTS wallet_and_network_ratelimiter (
+                address VARCHAR(48) NOT NULL, network NETWORK,
+                timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (address, network, timestamp)
+            )").await?;
 
-        self.client.simple_query(create_timeline_elem).await?;
+        self.exec("identity_events", "
+            CREATE TABLE IF NOT EXISTS identity_events (
+                id BIGSERIAL PRIMARY KEY,
+                wallet_id VARCHAR(48) NOT NULL, network NETWORK NOT NULL,
+                event_type IDENTITY_EVENT_TYPE NOT NULL,
+                block_number BIGINT NOT NULL, block_hash VARCHAR(66) NOT NULL,
+                registrar_index INTEGER, data JSONB,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )").await?;
 
-        info!("Table `timeline_elem` created");
+        // Extensions and indexes
+        self.exec("pg_trgm", "CREATE EXTENSION IF NOT EXISTS pg_trgm").await?;
 
-        let create_indexer_state = "CREATE TABLE IF NOT EXISTS indexer_state (
-            network          NETWORK PRIMARY KEY,
-            last_block_index BIGINT NOT NULL DEFAULT 0,
-            last_block_hash  VARCHAR(66) NOT NULL,
-            updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );";
+        self.exec("idx_search_text", "
+            CREATE INDEX IF NOT EXISTS idx_search_text_trgm ON registration USING gin (search_text gin_trgm_ops)
+        ").await?;
 
-        info!("QUERY");
-        info!("{create_indexer_state}");
+        self.exec("idx_pgp", "CREATE INDEX IF NOT EXISTS idx_pgp_address_network ON pgp_keys(address, network)").await?;
 
-        self.client.simple_query(create_indexer_state).await?;
+        self.exec("idx_events_wallet", "
+            CREATE INDEX IF NOT EXISTS idx_identity_events_wallet ON identity_events(wallet_id, network, created_at DESC)
+        ").await?;
 
-        info!("Table `indexer_state` created");
+        self.exec("idx_events_block", "
+            CREATE INDEX IF NOT EXISTS idx_identity_events_block ON identity_events(network, block_number)
+        ").await?;
 
-        let update_search_text = "UPDATE registration
-            SET search_text = CONCAT_WS(' ',
-                wallet_id,
-                COALESCE(display_name, ''),
-                network,
-                COALESCE(discord, ''),
-                COALESCE(twitter, ''),
-                COALESCE(matrix, ''),
-                COALESCE(email, ''),
-                COALESCE(pgp_fingerprint, ''));";
-        info!("QUERY");
-        info!("{update_search_text}");
+        // Remailer blocked senders - users can block specific addresses from contacting them
+        self.exec("remailer_blocked", "
+            CREATE TABLE IF NOT EXISTS remailer_blocked (
+                id SERIAL PRIMARY KEY,
+                recipient_address VARCHAR(48) NOT NULL,
+                recipient_network NETWORK NOT NULL,
+                blocked_address VARCHAR(48) NOT NULL,
+                blocked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                reason TEXT,
+                UNIQUE(recipient_address, recipient_network, blocked_address)
+            )").await?;
 
-        self.client.simple_query(update_search_text).await?;
+        self.exec("idx_remailer_blocked", "
+            CREATE INDEX IF NOT EXISTS idx_remailer_blocked_recipient
+            ON remailer_blocked(recipient_address, recipient_network)
+        ").await?;
 
-        let enable_gin_index = "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
-        info!("Enabling extension pg_trgm");
-        info!("{enable_gin_index}");
+        // Migrations
+        self.exec("migrate_remailer", "
+            ALTER TABLE pgp_keys
+            ADD COLUMN IF NOT EXISTS remailer_enabled BOOLEAN DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS remailer_registered_only BOOLEAN DEFAULT TRUE,
+            ADD COLUMN IF NOT EXISTS require_verified_pgp BOOLEAN DEFAULT TRUE
+        ").await?;
 
-        self.client.simple_query(enable_gin_index).await?;
+        self.exec("migrate_judgement", "
+            ALTER TABLE registration
+            ADD COLUMN IF NOT EXISTS judgement_by INTEGER,
+            ADD COLUMN IF NOT EXISTS judgement_at TIMESTAMP
+        ").await?;
 
-        let enable_gin_index = "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
-        info!("Enabling extension pg_trgm");
-        info!("{enable_gin_index}");
-
-        self.client.simple_query(enable_gin_index).await?;
-
-        let enable_gin_index = "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
-        info!("Enabling extension pg_trgm");
-        info!("{enable_gin_index}");
-
-        self.client.simple_query(enable_gin_index).await?;
-
-        let enable_gin_index = "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
-        info!("Enabling extension pg_trgm");
-        info!("{enable_gin_index}");
-
-        self.client.simple_query(enable_gin_index).await?;
-
-        let enable_gin_index = "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
-        info!("Enabling extension pg_trgm");
-        info!("{enable_gin_index}");
-
-        self.client.simple_query(enable_gin_index).await?;
-
-        // Create GIN index for efficient trigram similarity search
-        let create_gin_index = "CREATE INDEX IF NOT EXISTS idx_search_text_trgm
-            ON registration USING gin (search_text gin_trgm_ops);";
-        info!("Creating GIN index for search_text");
-        info!("{create_gin_index}");
-
-        self.client.simple_query(create_gin_index).await?;
+        // Update search text for existing records
+        self.exec("update_search_text", "
+            UPDATE registration SET search_text = CONCAT_WS(' ',
+                wallet_id, COALESCE(display_name, ''), network,
+                COALESCE(discord, ''), COALESCE(twitter, ''),
+                COALESCE(matrix, ''), COALESCE(email, ''), COALESCE(pgp_fingerprint, ''))
+        ").await?;
 
         Ok(())
     }
@@ -253,7 +267,7 @@ $$;";
         network: &Network,
     ) -> anyhow::Result<()> {
         info!(network=?network, wallet_id=?wallet_id.to_string(),"Initiating timeline info");
-        self.delete_timelines(&wallet_id, &network).await?;
+        self.delete_timelines(wallet_id, network).await?;
         self.update_timeline(TimelineEvent::Created, wallet_id, network)
             .await
     }
@@ -282,7 +296,7 @@ $$;";
 
         self.client
             .query(
-                "INSERT INTO timeline_elem (wallet_id, network, EVENT) VALUES ($1, $2, $3)",
+                "INSERT INTO timeline_elem (wallet_id, network, EVENT) VALUES ($1, $2::TEXT::network, $3)",
                 &[&wallet_id.to_string(), &network.to_string(), &event_info],
             )
             .await?;
@@ -325,9 +339,9 @@ $$;";
     pub async fn save_registration(&mut self, record: &RegistrationRecord) -> anyhow::Result<()> {
         info!(who = ?record.wallet_id(), "Writing record");
         let insert_reg_record = format!("
-            INSERT INTO registration(wallet_id, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint, network)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '{}') 
-            ON CONFLICT (wallet_id, network) DO UPDATE SET 
+            INSERT INTO registration(wallet_id, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint, network, judgement_by, judgement_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '{}', $11, $12)
+            ON CONFLICT (wallet_id, network) DO UPDATE SET
                 discord = EXCLUDED.discord,
                 twitter = EXCLUDED.twitter,
                 matrix = EXCLUDED.matrix,
@@ -336,7 +350,9 @@ $$;";
                 github = EXCLUDED.github,
                 legal = EXCLUDED.legal,
                 web = EXCLUDED.web,
-                pgp_fingerprint = EXCLUDED.pgp_fingerprint",
+                pgp_fingerprint = EXCLUDED.pgp_fingerprint,
+                judgement_by = COALESCE(EXCLUDED.judgement_by, registration.judgement_by),
+                judgement_at = COALESCE(EXCLUDED.judgement_at, registration.judgement_at)",
             record.network());
 
         info!(query=?insert_reg_record,"QUERY");
@@ -356,6 +372,8 @@ $$;";
                     &record.legal(),
                     &record.web(),
                     &record.pgp_fingerprint(),
+                    &record.judgement_by,
+                    &record.judgement_at,
                 ],
             )
             .await?;
@@ -372,13 +390,98 @@ $$;";
     ) -> anyhow::Result<()> {
         // FIXME: update time should be also be changed
 
-        let query = format!("INSERT INTO indexer_state (network, last_block_hash, last_block_index) VALUES ('{}',$1, $2) ON CONFLICT (network) DO UPDATE SET last_block_hash = EXCLUDED.last_block_hash, last_block_index = EXCLUDED.last_block_index ; ", network);
+        let query = "INSERT INTO indexer_state (network, last_block_hash, last_block_index) \
+            VALUES ($1, $2, $3) ON CONFLICT (network) DO UPDATE SET \
+            last_block_hash = EXCLUDED.last_block_hash, last_block_index = EXCLUDED.last_block_index";
 
-        let values: &[&(dyn ToSql + Sync)] = &[&hex::encode(hash.as_bytes()), &index];
+        let values: &[&(dyn ToSql + Sync)] = &[network, &hex::encode(hash.as_bytes()), &index];
 
-        self.client.query(&query, values).await?;
+        self.client.query(query, values).await?;
 
         Ok(())
+    }
+
+    /// Store an on-chain identity event
+    pub async fn store_identity_event(&self, event: &IdentityEvent) -> anyhow::Result<()> {
+        info!(
+            wallet = %event.wallet_id,
+            network = %event.network,
+            event_type = %event.event_type,
+            block = event.block_number,
+            "Storing identity event"
+        );
+
+        let query = format!(
+            "INSERT INTO identity_events (wallet_id, network, event_type, block_number, block_hash, registrar_index, data)
+             VALUES ($1, '{}', $2, $3, $4, $5, $6)",
+            event.network
+        );
+
+        self.client
+            .execute(
+                &query,
+                &[
+                    &event.wallet_id,
+                    &event.event_type,
+                    &event.block_number,
+                    &event.block_hash,
+                    &event.registrar_index,
+                    &event.data,
+                ],
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    /// Get event history for a wallet
+    pub async fn get_identity_events(
+        &self,
+        wallet_id: &str,
+        network: Option<&Network>,
+        limit: Option<i64>,
+    ) -> anyhow::Result<Vec<IdentityEventRecord>> {
+        let limit = limit.unwrap_or(100);
+
+        let (query, params): (String, Vec<&(dyn ToSql + Sync)>) = if let Some(net) = network {
+            (
+                format!(
+                    "SELECT wallet_id, network::TEXT, event_type::TEXT, block_number, block_hash, registrar_index, data, created_at
+                     FROM identity_events
+                     WHERE wallet_id = $1 AND network = '{}'
+                     ORDER BY block_number DESC, created_at DESC
+                     LIMIT $2",
+                    net
+                ),
+                vec![&wallet_id, &limit],
+            )
+        } else {
+            (
+                "SELECT wallet_id, network::TEXT, event_type::TEXT, block_number, block_hash, registrar_index, data, created_at
+                 FROM identity_events
+                 WHERE wallet_id = $1
+                 ORDER BY block_number DESC, created_at DESC
+                 LIMIT $2".to_string(),
+                vec![&wallet_id, &limit],
+            )
+        };
+
+        let rows = self.client.query(&query, &params).await?;
+
+        Ok(rows.iter().map(IdentityEventRecord::from).collect())
+    }
+
+    /// Get the highest block number for identity events on a network
+    pub async fn get_last_event_block(&self, network: &Network) -> anyhow::Result<i64> {
+        let query = format!(
+            "SELECT COALESCE(MAX(block_number), 0) FROM identity_events WHERE network = '{}'",
+            network
+        );
+
+        let row = self.client.query_one(&query, &[]).await?;
+        let block_number: i64 = row.get(0);
+
+        Ok(block_number)
     }
 
     pub async fn search_registration_records(
@@ -513,24 +616,410 @@ $$;";
     }
 
     pub async fn default() -> anyhow::Result<Self> {
-        let cfg = GLOBAL_CONFIG.get().unwrap();
-        let pog_config = cfg.postgres.clone();
-        PostgresConnection::new(&pog_config).await
+        let cfg = Config::load_static();
+        let pg_config = cfg.postgres.clone();
+        PostgresConnection::new(&pg_config).await
+    }
+
+    /// Store a PGP public key in the database
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn store_pgp_key(
+        &self,
+        fingerprint: &str,
+        address: &AccountId32,
+        network: &Network,
+        armored_key: &str,
+    ) -> anyhow::Result<()> {
+        // FIXME: don't you want to update the address and network here
+        let query = format!(
+            "
+            INSERT INTO pgp_keys (fingerprint, address, network, armored_key, verified)
+            VALUES ($1, $2, '{}', $3, false)
+            ON CONFLICT (address, network)
+            DO UPDATE SET
+                fingerprint = EXCLUDED.fingerprint,
+                armored_key = EXCLUDED.armored_key,
+                uploaded_at = CURRENT_TIMESTAMP,
+                verified = false
+        ",
+            network
+        );
+
+        self.client
+            .execute(&query, &[&fingerprint, &address.to_string(), &armored_key])
+            .await?;
+
+        info!("Stored PGP key for address {} on network {}", address, network);
+        Ok(())
+    }
+
+    /// Fetch a PGP public key from the database by fingerprint
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn get_pgp_key_by_fingerprint(
+        &self,
+        fingerprint: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let query = "SELECT armored_key FROM pgp_keys WHERE fingerprint = $1";
+
+        let rows = self.client.query(query, &[&fingerprint]).await?;
+
+        if rows.is_empty() {
+            Ok(None)
+        } else {
+            let armored_key: String = rows[0].get(0);
+            Ok(Some(armored_key))
+        }
+    }
+
+    /// Fetch a PGP public key from the database by address and network
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn get_pgp_key_by_address(
+        &self,
+        address: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<Option<(String, String)>> {
+        let query = format!(
+            "SELECT fingerprint, armored_key FROM pgp_keys WHERE address = $1 AND network = '{}'",
+            network
+        );
+
+        let rows = self.client.query(&query, &[&address.to_string()]).await?;
+
+        if rows.is_empty() {
+            Ok(None)
+        } else {
+            let fingerprint: String = rows[0].get(0);
+            let armored_key: String = rows[0].get(1);
+            Ok(Some((fingerprint, armored_key)))
+        }
+    }
+
+    /// Mark a PGP key as verified
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn mark_pgp_key_verified(&self, fingerprint: &str) -> anyhow::Result<()> {
+        let query = "UPDATE pgp_keys SET verified = true WHERE fingerprint = $1";
+
+        self.client.execute(query, &[&fingerprint]).await?;
+
+        info!("Marked PGP key {} as verified", fingerprint);
+        Ok(())
+    }
+
+    /// Update remailer settings for a PGP key
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn update_remailer_settings(
+        &self,
+        address: &AccountId32,
+        network: &Network,
+        remailer_enabled: bool,
+        remailer_registered_only: bool,
+        require_verified_pgp: bool,
+    ) -> anyhow::Result<()> {
+        let query = format!(
+            "
+            UPDATE pgp_keys
+            SET remailer_enabled = $1, remailer_registered_only = $2, require_verified_pgp = $3
+            WHERE address = $4 AND network = '{}'
+        ",
+            network
+        );
+
+        let rows_affected = self
+            .client
+            .execute(
+                &query,
+                &[
+                    &remailer_enabled,
+                    &remailer_registered_only,
+                    &require_verified_pgp,
+                    &address.to_string(),
+                ],
+            )
+            .await?;
+
+        if rows_affected == 0 {
+            return Err(anyhow!("No PGP key found for address {} on network {}", address, network));
+        }
+
+        info!(
+            "Updated remailer settings for {} on {}: enabled={}, registered_only={}, verified_only={}",
+            address, network, remailer_enabled, remailer_registered_only, require_verified_pgp
+        );
+        Ok(())
+    }
+
+    /// Block a sender from contacting recipient via remailer
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn remailer_block_sender(
+        &self,
+        recipient: &AccountId32,
+        network: &Network,
+        blocked_address: &str,
+        reason: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let query = format!(
+            "INSERT INTO remailer_blocked (recipient_address, recipient_network, blocked_address, reason)
+             VALUES ($1, '{}'::network, $2, $3)
+             ON CONFLICT (recipient_address, recipient_network, blocked_address) DO UPDATE SET reason = $3",
+            network
+        );
+
+        self.client
+            .execute(&query, &[&recipient.to_string(), &blocked_address, &reason])
+            .await?;
+
+        info!("Blocked {} from contacting {} on {}", blocked_address, recipient, network);
+        Ok(())
+    }
+
+    /// Unblock a sender
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn remailer_unblock_sender(
+        &self,
+        recipient: &AccountId32,
+        network: &Network,
+        blocked_address: &str,
+    ) -> anyhow::Result<()> {
+        let query = format!(
+            "DELETE FROM remailer_blocked
+             WHERE recipient_address = $1 AND recipient_network = '{}'::network AND blocked_address = $2",
+            network
+        );
+
+        self.client
+            .execute(&query, &[&recipient.to_string(), &blocked_address])
+            .await?;
+
+        info!("Unblocked {} for {} on {}", blocked_address, recipient, network);
+        Ok(())
+    }
+
+    /// Get list of blocked senders for a recipient
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn remailer_get_blocked(
+        &self,
+        recipient: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<Vec<RemailerBlockedSender>> {
+        let query = format!(
+            "SELECT blocked_address, blocked_at, reason FROM remailer_blocked
+             WHERE recipient_address = $1 AND recipient_network = '{}'::network
+             ORDER BY blocked_at DESC",
+            network
+        );
+
+        let rows = self.client.query(&query, &[&recipient.to_string()]).await?;
+        let blocked: Vec<RemailerBlockedSender> = rows
+            .iter()
+            .map(|row| RemailerBlockedSender {
+                address: row.get("blocked_address"),
+                blocked_at: row.get("blocked_at"),
+                reason: row.get("reason"),
+            })
+            .collect();
+
+        Ok(blocked)
+    }
+
+    /// Check if a sender is blocked by recipient
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn remailer_is_blocked(
+        &self,
+        recipient: &AccountId32,
+        network: &Network,
+        sender: &str,
+    ) -> anyhow::Result<bool> {
+        let query = format!(
+            "SELECT 1 FROM remailer_blocked
+             WHERE recipient_address = $1 AND recipient_network = '{}'::network AND blocked_address = $2",
+            network
+        );
+
+        let rows = self.client.query(&query, &[&recipient.to_string(), &sender]).await?;
+        Ok(!rows.is_empty())
     }
 
     pub async fn get_indexer_state(&self, network: &Network) -> anyhow::Result<IndexerState> {
-        let query = format!("SELECT network::text, last_block_index, last_block_hash, updated_at FROM indexer_state WHERE network='{}'", network);
-        let postgres_connection = PostgresConnection::default().await?;
-        Ok(IndexerState::try_from(
-            &self.client.query_one(&query, &[]).await?,
-        )?)
+        let query = "SELECT network::text, last_block_index, last_block_hash, updated_at FROM indexer_state WHERE network=$1";
+        let row = self.client.query_one(query, &[network]).await?;
+        IndexerState::try_from(&row)
     }
+
+    pub async fn register_requester_ip(&self, ip: &IpAddr) -> anyhow::Result<()> {
+        let query = "INSERT INTO ip_ratelimiter (ip) VALUES ($1) \
+            ON CONFLICT (ip, timestamp) DO UPDATE SET ip = EXCLUDED.ip, timestamp = CURRENT_TIMESTAMP";
+
+        self.client.execute(query, &[ip]).await?;
+
+        info!(ip=?ip, "Updating ratelimit");
+        Ok(())
+    }
+
+    pub async fn register_requester(
+        &self,
+        wallet_id: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<()> {
+        let query = "INSERT INTO wallet_and_network_ratelimiter (address, network) \
+            VALUES ($1, $2::TEXT::network) ON CONFLICT (address, network, timestamp) DO UPDATE SET \
+            address = EXCLUDED.address, network = EXCLUDED.network, timestamp = CURRENT_TIMESTAMP";
+
+        self.client
+            .execute(query, &[&wallet_id.to_string(), &network.to_string()])
+            .await?;
+
+        info!(wallet_id=?wallet_id, network=?network,"Updating ratelimit");
+        Ok(())
+    }
+
+    pub async fn is_allowed_ip(&self, ip: &IpAddr) -> anyhow::Result<bool> {
+        let ratelimiter = &Config::load_static().ratelimit;
+        if ratelimiter.is_exception_ip(ip) {
+            info!(ip=?ip, "IP is an exception");
+            return Ok(true);
+        }
+        let rows = Ratelimit::from(ip).exec().await?;
+        Ok(rows <= ratelimiter.wallet_requests_hour_limit as i64)
+    }
+
+    pub async fn is_allowed(
+        &self,
+        wallet_id: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<bool> {
+        let ratelimiter = &Config::load_static().ratelimit;
+        if ratelimiter.is_exception(wallet_id, network) {
+            return Ok(true);
+        }
+        let rows = Ratelimit::from((wallet_id, network)).exec().await?;
+        Ok(rows < ratelimiter.wallet_requests_hour_limit as i64)
+    }
+
+    async fn get_rate(&self, arg: &Ratelimit) -> anyhow::Result<i64> {
+        self.client.clear_type_cache();
+
+        let count = if arg.is_ip_query() {
+            if let Some(ip) = &arg.ip {
+                let query = "SELECT COUNT(*) FROM ip_ratelimiter WHERE ip = $1 AND timestamp > NOW() - INTERVAL '1 hour'";
+                let ip_str = ip.to_string();
+                info!(query=?query, ip=?ip_str, "Ratelimit IP request");
+                self.client
+                    .query(query, &[&ip_str])
+                    .await?
+                    .first()
+                    .map(|row| row.get::<_, i64>(0))
+                    .unwrap_or(0)
+            } else {
+                0
+            }
+        } else {
+            match (&arg.wallet_id, &arg.network) {
+                (Some(wallet_id), Some(network)) => {
+                    let query = "SELECT COUNT(*) FROM wallet_and_network_ratelimiter WHERE address = $1 AND network = $2::TEXT::network AND timestamp > NOW() - INTERVAL '1 hour'";
+                    let wallet_str = wallet_id.to_string();
+                    let network_str = network.to_string();
+                    info!(query=?query, wallet=?wallet_str, network=?network, "Ratelimit wallet request");
+                    self.client
+                        .query(query, &[&wallet_str, &network_str])
+                        .await?
+                        .first()
+                        .map(|row| row.get::<_, i64>(0))
+                        .unwrap_or(0)
+                }
+                _ => 0,
+            }
+        };
+
+        Ok(count)
+    }
+}
+
+pub struct Ratelimit {
+    is_ip: bool,
+    ip: Option<IpAddr>,
+    wallet_id: Option<AccountId32>,
+    network: Option<Network>,
+}
+
+impl Query for Ratelimit {
+    type STATEMENT = String;
+    type PARAM = String;
+
+    fn statement(&self) -> Self::STATEMENT {
+        let mut statement = String::from("SELECT COUNT(*) FROM ");
+
+        if self.is_ip_query() {
+            statement.push_str("ip_ratelimiter WHERE ip = $1 ");
+        } else {
+            statement.push_str("wallet_and_network_ratelimiter WHERE address = $1 AND network = $2::TEXT::network ");
+        }
+
+        statement.push_str("AND timestamp > NOW() - INTERVAL '1 hour'");
+        statement
+    }
+
+    fn params(&self) -> Vec<Self::PARAM> {
+        if self.is_ip_query() {
+            if let Some(ip) = &self.ip {
+                return vec![ip.to_string()];
+            }
+        } else {
+            match (&self.wallet_id, &self.network) {
+                (Some(wallet_id), Some(network)) => {
+                    return vec![wallet_id.to_string(), network.to_string()];
+                }
+                _ => {}
+            }
+        }
+        vec![]
+    }
+}
+
+impl Ratelimit {
+    async fn exec(&self) -> anyhow::Result<i64> {
+        let mut pg_conn = PostgresConnection::default().await?;
+        info!("Registration search query");
+        pg_conn.get_rate(self).await
+    }
+
+    fn is_ip_query(&self) -> bool {
+        self.is_ip
+    }
+}
+
+impl From<&IpAddr> for Ratelimit {
+    fn from(value: &IpAddr) -> Self {
+        Self {
+            is_ip: true,
+            ip: Some(*value),
+            wallet_id: None,
+            network: None,
+        }
+    }
+}
+
+impl From<(&AccountId32, &Network)> for Ratelimit {
+    fn from(value: (&AccountId32, &Network)) -> Self {
+        Self {
+            is_ip: false,
+            ip: None,
+            wallet_id: Some(value.0.clone()),
+            network: Some(value.1.clone()),
+        }
+    }
+}
+
+/// Blocked sender entry for remailer
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct RemailerBlockedSender {
+    pub address: String,
+    pub blocked_at: chrono::NaiveDateTime,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TimelineRecord {
     pub event: TimelineEvent,
-    // FIXME
     pub date: String,
     #[serde(skip_serializing)]
     pub wallet_id: AccountId32,
@@ -542,8 +1031,8 @@ impl From<&tokio_postgres::Row> for TimelineRecord {
         let event: TimelineEvent = value.get("event");
         let wid: String = value.get("wallet_id");
 
-        // TODO: handle unwrap?
-        let wallet_id: AccountId32 = AccountId32::from_str(&wid).unwrap();
+        let wallet_id: AccountId32 = AccountId32::from_str(&wid)
+            .expect("invalid wallet_id in database - data corruption");
         Self {
             event,
             date: date.to_string(),
@@ -556,7 +1045,6 @@ impl TimelineRecord {}
 
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct RegistrationRecord {
-    // NOTE: should network and wallet_id bet Option?
     pub wallet_id: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -591,6 +1079,14 @@ pub struct RegistrationRecord {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeline: Option<Vec<TimelineRecord>>,
+
+    /// Registrar index that verified this identity (None = not verified)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judgement_by: Option<i32>,
+
+    /// When the judgement was given
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judgement_at: Option<chrono::NaiveDateTime>,
 }
 
 impl RegistrationRecord {
@@ -599,10 +1095,7 @@ impl RegistrationRecord {
         registration: &Registration<u128, IdentityInfo>,
         network: Option<Network>,
     ) -> Self {
-        let pgp_fingerprint = match registration.info.pgp_fingerprint {
-            Some(bytes) => Some(hex::encode(bytes)),
-            None => None,
-        };
+        let pgp_fingerprint = registration.info.pgp_fingerprint.map(hex::encode);
         Self {
             network,
             wallet_id: acc.to_string(),
@@ -616,7 +1109,15 @@ impl RegistrationRecord {
             web: identity_data_tostring(&registration.info.web),
             pgp_fingerprint,
             timeline: None,
+            judgement_by: None,
+            judgement_at: None,
         }
+    }
+
+    pub fn with_judgement(mut self, registrar_index: i32) -> Self {
+        self.judgement_by = Some(registrar_index);
+        self.judgement_at = Some(chrono::Utc::now().naive_utc());
+        self
     }
 
     pub async fn from_storage_pairs(
@@ -632,10 +1133,16 @@ impl RegistrationRecord {
 
         let account_id = AccountId32::from(account_bytes);
 
-        let pgp_fingerprint = match pairs.value.info.pgp_fingerprint {
-            Some(bytes) => Some(hex::encode(bytes)),
-            None => None,
-        };
+        let pgp_fingerprint = pairs.value.info.pgp_fingerprint.map(hex::encode);
+
+        // Extract first positive judgement (Reasonable or KnownGood) from any registrar
+        let judgement_by = pairs
+            .value
+            .judgements
+            .0
+            .iter()
+            .find(|(_, j)| matches!(j, Judgement::Reasonable | Judgement::KnownGood))
+            .map(|(reg_idx, _)| *reg_idx as i32);
 
         Ok(Some(Self {
             network: Some(network.to_owned()),
@@ -650,27 +1157,22 @@ impl RegistrationRecord {
             web: identity_data_tostring(&pairs.value.info.web),
             pgp_fingerprint,
             timeline: None,
+            judgement_by,
+            judgement_at: None, // We don't have timestamp from chain storage
         }))
     }
 
-    // TODO: return None if judgement is not set correctly
-    pub async fn from_judgement(jud: &JudgementGiven) -> anyhow::Result<Option<Self>> {
-        let cfg = GLOBAL_CONFIG
-            .get()
-            .expect("GLOBAL_CONFIG is not initialized");
-
-        let (network, reg_config) = match cfg.registrar.registrar_config(jud.registrar_index) {
-            Some(v) => v,
-            None => return Ok(None),
-        };
-
-        let client = NodeClient::from_url(&reg_config.endpoint).await?;
-        let registration = node::get_registration(&client, &jud.target).await?;
-        Ok(Some(Self::from_registration(
-            &jud.target,
-            &registration,
-            Some(network),
-        )))
+    /// Creates a RegistrationRecord from a JudgementGiven event.
+    /// Works for ANY registrar's judgement, not just ours.
+    pub async fn from_judgement(
+        jud: &JudgementGiven,
+        network: &Network,
+        client: &NodeClient,
+    ) -> anyhow::Result<Option<Self>> {
+        let registration = node::get_registration(client, &jud.target).await?;
+        let record = Self::from_registration(&jud.target, &registration, Some(network.clone()))
+            .with_judgement(jud.registrar_index as i32);
+        Ok(Some(record))
     }
 
     pub fn wallet_id(&self) -> String {
@@ -750,7 +1252,7 @@ impl From<&tokio_postgres::Row> for RegistrationRecord {
             }
         }
 
-        return record;
+        record
     }
 }
 
@@ -840,27 +1342,24 @@ impl Query for TimelineQuery {
 
     fn params(&self) -> Vec<String> {
         let mut params = vec![];
-        match &self.condition {
-            Some(condition) => {
-                if let Some(wallet_id) = &condition.wallet_id {
-                    params.push(wallet_id.to_string());
+        if let Some(condition) = &self.condition {
+            if let Some(wallet_id) = &condition.wallet_id {
+                params.push(wallet_id.to_string());
+            }
+
+            if let Some(date) = &condition.date {
+                if let Some(lt) = date.lt {
+                    params.push(lt.to_string());
                 }
 
-                if let Some(date) = &condition.date {
-                    if let Some(lt) = date.lt {
-                        params.push(format!("{}", lt));
-                    }
-
-                    if let Some(gt) = date.gt {
-                        params.push(format!("{}", gt));
-                    }
-                }
-
-                if let Some(network) = &condition.network {
-                    params.push(format!("{}", network));
+                if let Some(gt) = date.gt {
+                    params.push(gt.to_string());
                 }
             }
-            None => {}
+
+            if let Some(network) = &condition.network {
+                params.push(network.to_string());
+            }
         }
         params
     }
@@ -878,7 +1377,7 @@ impl Query for TimelineQuery {
                     statement.push_str(&format!(" {},", displayed.column_name()));
                 }
             }
-            statement = statement.trim_end_matches(|c| c == ',').to_owned();
+            statement = statement.trim_end_matches(',').to_owned();
         }
 
         statement.push_str(&format!(" FROM {} ", self.table_name));
@@ -889,30 +1388,30 @@ impl Query for TimelineQuery {
             if !v.all_none() {
                 statement.push_str("WHERE ");
                 // naive approach
-                if let Some(_) = &v.wallet_id {
+                if v.wallet_id.is_some() {
                     statement.push_str(&format!("wallet_id = ${} AND ", index));
                     index += 1;
                 }
 
                 if let Some(date) = &v.date {
-                    if let Some(_) = date.lt {
+                    if date.lt.is_some() {
                         statement.push_str(&format!("date < ${} AND ", index));
                         index += 1;
                     }
 
-                    if let Some(_) = date.gt {
+                    if date.gt.is_some() {
                         statement.push_str(&format!("date > ${} AND", index));
                         index += 1;
                     }
                 }
 
-                if let Some(network) = &v.network {
-                    statement.push_str(&format!("network = ${} ", index));
+                if v.network.is_some() {
+                    statement.push_str(&format!("network = ${}::TEXT::network ", index));
                     index += 1;
                 }
 
                 statement = statement
-                    .trim_end_matches(|c| c == ' ' || c == ',' || c == 'A' || c == 'N' || c == 'D')
+                    .trim_end_matches([' ', ',', 'A', 'N', 'D'])
                     .to_owned();
             }
         }
@@ -925,7 +1424,7 @@ impl TimelineQuery {
     /// supplies a [Vec<RegistrationRecord>] by [TimelineRecord]. This usually is done
     /// when a search request fields includes [DisplayedInfo::Timeline]
     pub async fn supply(
-        rec: &mut Vec<RegistrationRecord>,
+        rec: &mut [RegistrationRecord],
         size: Option<usize>,
         time: Option<TimeFilter>,
     ) -> anyhow::Result<()> {
@@ -934,11 +1433,11 @@ impl TimelineQuery {
             let mut condition = TimelineCondition::default();
 
             if let Some(network) = &record.network {
-                condition = condition.network(&network);
+                condition = condition.network(network);
             };
 
             if let Some(time) = &time {
-                condition = condition.date(&time);
+                condition = condition.date(time);
             }
 
             if let Ok(wallet_id) = AccountId32::from_str(&record.wallet_id.clone()) {
@@ -963,13 +1462,13 @@ impl TimelineQuery {
     }
 
     pub async fn exec(&self) -> anyhow::Result<Vec<TimelineRecord>> {
-        let mut pog_connection = PostgresConnection::default().await?;
+        let mut pg_conn = PostgresConnection::default().await?;
         info!("Timeline search query");
-        pog_connection.search_timeline_records(&self).await
+        pg_conn.search_timeline_records(self).await
     }
 
     pub fn derive_timeline_queries(
-        rec: &Vec<RegistrationRecord>,
+        rec: &[RegistrationRecord],
     ) -> Vec<(RegistrationRecord, TimelineQuery)> {
         let mut res = vec![];
         for record in rec.iter() {
@@ -977,10 +1476,13 @@ impl TimelineQuery {
             let mut condition = TimelineCondition::default();
 
             if let Some(network) = &record.network {
-                condition = condition.network(&network);
+                condition = condition.network(network);
             };
 
-            condition = condition.wallet_id(AccountId32::from_str(&record.wallet_id).unwrap());
+            condition = condition.wallet_id(
+                AccountId32::from_str(&record.wallet_id)
+                    .expect("invalid wallet_id in record - data corruption"),
+            );
 
             let selected = TimelineDisplayed::default().wallet_id().event().date();
             timeline_query = timeline_query.condition(condition).selected(selected);
@@ -1022,7 +1524,7 @@ impl Query for RegistrationQuery {
         let mut index = 1;
 
         if self.displayed.len() == 0 {
-            statement.push_str("*");
+            statement.push('*');
         } else {
             for (index, displayed) in self.displayed.iter().enumerate() {
                 if index == 0 {
@@ -1031,7 +1533,7 @@ impl Query for RegistrationQuery {
                     statement.push_str(&format!(" {},", displayed.table_field_name()));
                 }
             }
-            statement = statement.trim_end_matches(|c| c == ',').to_owned();
+            statement = statement.trim_end_matches(',').to_owned();
         }
 
         statement.push_str(" FROM ");
@@ -1042,55 +1544,76 @@ impl Query for RegistrationQuery {
             statement.push_str("registration");
         }
 
-        match &self.condition {
-            Some(v) => {
-                if !v.filters.is_empty() || v.network.is_some() || self.space.is_some() {
-                    statement.push_str(" WHERE ");
-                }
-
-                for filter in v.filters.iter() {
-                    if let Some(table_name) = filter.field.table_column_name() {
-                        if filter.strict {
-                            statement.push_str(&format!("{} = ${}", table_name, index));
-                        } else {
-                            statement.push_str(&format!(
-                                "{} ILIKE ${}", // Postgres uses ILIKE for case-insensitive matching,
-                                //  LIKE is case-sensitive.
-                                table_name,
-                                index
-                            ));
-                        }
-                        index += 1;
-                        statement.push_str(" AND ");
-                    }
-                }
-
-                if let Some(network) = &v.network {
-                    statement.push_str(&format!("network = ${} AND ", index));
-                    index += 1;
-                }
-
-                if self.space.is_some() {
-                    statement.push_str(&format!("sim > 0 AND"));
-                }
-
-                statement = statement
-                    .trim_end_matches(|c| {
-                        c == ' '
-                            || c == ','
-                            || c == 'A'
-                            || c == 'N'
-                            || c == 'D'
-                            || c == 'O'
-                            || c == 'R'
-                    })
-                    .to_owned();
+        if let Some(v) = &self.condition {
+            if !v.filters.is_empty() || v.network.is_some() || self.space.is_some() {
+                statement.push_str(" WHERE ");
             }
-            None => {}
+
+            for filter in v.filters.iter() {
+                if let Some(table_name) = filter.field.table_column_name() {
+                    if filter.strict {
+                        statement.push_str(&format!("{} = ${}", table_name, index));
+                    } else {
+                        statement.push_str(&format!(
+                            "{} ILIKE ${}", // Postgres uses ILIKE for case-insensitive matching,
+                            //  LIKE is case-sensitive.
+                            table_name, index
+                        ));
+                    }
+                    index += 1;
+                    statement.push_str(" AND ");
+                }
+            }
+
+            if let Some(network) = &v.network {
+                statement.push_str(&format!("network = ${}::TEXT::network AND ", index));
+                index += 1;
+            }
+
+            if self.space.is_some() {
+                statement.push_str("sim > 0 AND");
+            }
+
+            statement = statement
+                .trim_end_matches([' ', ',', 'A', 'N', 'D', 'O', 'R'])
+                .to_owned();
         }
 
-        if let Some(space) = &self.space {
-            statement.push_str(&format!(" ORDER BY sim DESC"));
+        // Combined ranking score from config (higher = better)
+        // All weights are configurable via [ranking] section in config
+        let cfg = Config::load_static();
+        let ranking = &cfg.ranking;
+        let nw = &ranking.network_weights;
+        let vw = &ranking.verification;
+
+        let our_registrar_indices = cfg
+            .registrar
+            .networks
+            .values()
+            .map(|c| c.registrar_index.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        // Combined score: network_weight + verification_bonus (+ similarity if available)
+        let ranking_score = format!(
+            "(CASE network WHEN 'polkadot' THEN {} WHEN 'kusama' THEN {} WHEN 'paseo' THEN {} ELSE {} END \
+             + CASE WHEN judgement_by IN ({}) THEN {} WHEN judgement_by IS NOT NULL THEN {} ELSE 0 END)",
+            nw.polkadot, nw.kusama, nw.paseo, nw.other,
+            our_registrar_indices,
+            vw.our_registrar, vw.any_registrar
+        );
+
+        if let Some(_space) = &self.space {
+            // With similarity: add sim (0-1) scaled by configured weight
+            statement.push_str(&format!(
+                " ORDER BY {} + (sim * {}) DESC",
+                ranking_score, ranking.similarity_weight
+            ));
+        } else {
+            statement.push_str(&format!(
+                " ORDER BY {} DESC",
+                ranking_score
+            ));
         }
 
         if let Some(result_size) = self.displayed.result_size {
@@ -1109,14 +1632,14 @@ impl Query for RegistrationQuery {
             // Then the rest of the params
             for filter in condition.filters.iter() {
                 if filter.strict && !matches!(filter.field, SearchInfo::Generic(_)) {
-                    params.push(format!("{}", filter.field.inner())) // exact match, e.g. display_name = 'Jow'
+                    params.push(filter.field.inner().to_string()) // exact match, e.g. display_name = 'Jow'
                 } else if !filter.strict && !matches!(filter.field, SearchInfo::Generic(_)) {
                     params.push(format!("%{}%", filter.field.inner())) // e.g. display_name ILIKE '%Jow%'
                 }
             }
 
             if let Some(network) = &condition.network {
-                params.push(format!("{}", network));
+                params.push(network.to_string());
             }
         }
 
@@ -1127,9 +1650,9 @@ impl Query for RegistrationQuery {
 impl RegistrationQuery {
     /// Executes the [RegistrationQuery]
     pub async fn exec(&self) -> anyhow::Result<Vec<RegistrationRecord>> {
-        let mut pog_connection = PostgresConnection::default().await?;
+        let mut pg_conn = PostgresConnection::default().await?;
         info!("Registration search query");
-        pog_connection.search_registration_records(self).await
+        pg_conn.search_registration_records(self).await
     }
 
     pub fn selected(mut self, displayed: RegistrationDisplayed) -> Self {
@@ -1158,14 +1681,14 @@ impl RegistrationQuery {
     }
 }
 
-impl Into<RegistrationQuery> for &IncomingSearchRequest {
-    fn into(self) -> RegistrationQuery {
-        if self.outputs.contains(&DisplayedInfo::Timeline) {
+impl From<&IncomingSearchRequest> for RegistrationQuery {
+    fn from(value: &IncomingSearchRequest) -> RegistrationQuery {
+        if value.outputs.contains(&DisplayedInfo::Timeline) {
             let mut registration_query = RegistrationQuery::default();
-            let displayed = RegistrationDisplayed::from(self);
-            let condition = RegistrationCondition::from(self);
+            let displayed = RegistrationDisplayed::from(value);
+            let condition = RegistrationCondition::from(value);
             // search space, Option<SearchSpace>
-            let space = SearchSpace::construct_space(&self);
+            let space = SearchSpace::construct_space(value);
 
             registration_query
                 .selected(displayed)
@@ -1175,23 +1698,23 @@ impl Into<RegistrationQuery> for &IncomingSearchRequest {
             let mut registration_query = RegistrationQuery::default();
             let mut displayed = RegistrationDisplayed::default();
             let mut condition = RegistrationCondition::default();
-            let space = SearchSpace::construct_space(&self);
+            let space = SearchSpace::construct_space(value);
 
-            for filter in self.filters.fields.iter() {
+            for filter in value.filters.fields.iter() {
                 condition = condition.filter(filter);
             }
 
-            if let Some(network) = &self.network {
-                condition = condition.network(&network);
+            if let Some(network) = &value.network {
+                condition = condition.network(network);
             }
 
-            for output in &self.outputs {
+            for output in &value.outputs {
                 if let Ok(output) = output.try_into() {
                     displayed.push(output);
                 }
             }
 
-            if let Some(result_size) = self.filters.result_size {
+            if let Some(result_size) = value.filters.result_size {
                 displayed = displayed.result_size(result_size);
             }
 
@@ -1299,7 +1822,7 @@ impl Query for SearchSpace {
     type PARAM = String;
 
     fn statement(&self) -> Self::STATEMENT {
-        format!("(SELECT similarity($1, search_text) AS sim, * FROM registration)")
+        "(SELECT similarity($1, search_text) AS sim, * FROM registration)".to_owned()
     }
 
     fn params(&self) -> Vec<Self::PARAM> {
@@ -1329,7 +1852,7 @@ impl From<&IncomingSearchRequest> for RegistrationCondition {
         }
 
         if let Some(network) = &value.network {
-            condition = condition.network(&network);
+            condition = condition.network(network);
         }
         condition
     }
@@ -1358,19 +1881,7 @@ impl ConditionTrait for TimelineCondition {}
 
 impl TimelineCondition {
     fn all_none(&self) -> bool {
-        if self.date.is_some() {
-            return false;
-        }
-
-        if self.network.is_some() {
-            return false;
-        }
-
-        if self.wallet_id.is_some() {
-            return false;
-        }
-
-        return true;
+        self.date.is_none() && self.network.is_none() && self.wallet_id.is_none()
     }
 
     fn network(mut self, network: &Network) -> TimelineCondition {
@@ -1534,30 +2045,30 @@ impl Query for DeleteQuery<TimelineCondition> {
         if let Some(v) = &self.condition {
             if !v.all_none() {
                 statement.push_str("WHERE ");
-                if let Some(_) = &v.wallet_id {
+                if v.wallet_id.is_some() {
                     statement.push_str(&format!("wallet_id = ${} AND ", index));
                     index += 1;
                 }
 
                 if let Some(date) = &v.date {
-                    if let Some(_) = date.lt {
+                    if date.lt.is_some() {
                         statement.push_str(&format!("date < ${} AND ", index));
                         index += 1;
                     }
 
-                    if let Some(_) = date.gt {
+                    if date.gt.is_some() {
                         statement.push_str(&format!("date > ${}", index));
                         index += 1;
                     }
                 }
 
-                if let Some(network) = &v.network {
-                    statement.push_str(&format!("network = ${}", index));
+                if v.network.is_some() {
+                    statement.push_str(&format!("network = ${}::TEXT::network", index));
                     index += 1;
                 }
 
                 statement = statement
-                    .trim_end_matches(|c| c == ' ' || c == ',' || c == 'A' || c == 'N' || c == 'D')
+                    .trim_end_matches([' ', ',', 'A', 'N', 'D'])
                     .to_owned();
             }
         }
@@ -1745,23 +2256,23 @@ impl FromStr for DisplayedInfo {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
-            "wallet_id" | "WalletID" | "Wallet_ID" | "walletId" => return Ok(Self::WalletID),
-            "Network" | "network" | "Network" => return Ok(Self::Network),
-            "Discord" | "discord" => return Ok(Self::Discord),
+            "wallet_id" | "WalletID" | "Wallet_ID" | "walletId" => Ok(Self::WalletID),
+            "Network" | "network" => Ok(Self::Network),
+            "Discord" | "discord" => Ok(Self::Discord),
             "Display" | "display" | "display_name" | "Display_Name" | "DisplayName" => {
-                return Ok(Self::Display)
+                Ok(Self::Display)
             }
-            "Email" | "email" => return Ok(Self::Email),
-            "Matrix" | "matrix" => return Ok(Self::Matrix),
-            "Twitter" | "twitter" => return Ok(Self::Twitter),
-            "Github" | "github" => return Ok(Self::Github),
-            "Legal" | "legal" => return Ok(Self::Legal),
-            "Web" | "web" => return Ok(Self::Web),
+            "Email" | "email" => Ok(Self::Email),
+            "Matrix" | "matrix" => Ok(Self::Matrix),
+            "Twitter" | "twitter" => Ok(Self::Twitter),
+            "Github" | "github" => Ok(Self::Github),
+            "Legal" | "legal" => Ok(Self::Legal),
+            "Web" | "web" => Ok(Self::Web),
             "PGPFingerprint" | "pgpfingerprint" | "pgp_fingerprint" | "PGP_Fingerprint" => {
-                return Ok(Self::PGPFingerprint)
+                Ok(Self::PGPFingerprint)
             }
             // TODO: update this to include Date, Wallet ID and Event
-            _ => return Err(anyhow!("Unknown type {s}")),
+            _ => Err(anyhow!("Unknown type {s}")),
         }
     }
 }
@@ -1856,6 +2367,16 @@ pub enum TimelineEvent {
     #[postgres(name = "pgp_fingerprint")]
     #[serde(alias = "pgp_fingerprint")]
     PGPFingerprint,
+    // Admin events
+    #[postgres(name = "admin_approved")]
+    #[serde(alias = "admin_approved")]
+    AdminApproved,
+    #[postgres(name = "admin_rejected")]
+    #[serde(alias = "admin_rejected")]
+    AdminRejected,
+    #[postgres(name = "admin_judgement")]
+    #[serde(alias = "admin_judgement")]
+    AdminJudgementProvided,
 }
 
 impl<'a> FromSql<'a> for TimelineEvent {
@@ -1870,9 +2391,9 @@ impl<'a> FromSql<'a> for TimelineEvent {
         if ty.name().to_lowercase() == "event" {
             let res: TimelineEvent = serde_json::from_slice(&v)?;
             return Ok(res);
-        };
+        }
 
-        return Err(anyhow!("error {:?} raw {:?}", ty, v).into());
+        Err(anyhow!("error {:?} raw {:?}", ty, v).into())
     }
 
     fn accepts(ty: &postgres_types::Type) -> bool {
@@ -1900,6 +2421,146 @@ impl From<&AccountType> for TimelineEvent {
 impl Display for TimelineEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", format!("{:#?}", self).to_lowercase())
+    }
+}
+
+/// On-chain identity event types for event history tracking
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[derive(postgres_types::ToSql)]
+#[postgres(name = "identity_event_type")]
+pub enum IdentityEventType {
+    #[postgres(name = "identity_set")]
+    IdentitySet,
+    #[postgres(name = "identity_cleared")]
+    IdentityCleared,
+    #[postgres(name = "identity_killed")]
+    IdentityKilled,
+    #[postgres(name = "judgement_requested")]
+    JudgementRequested,
+    #[postgres(name = "judgement_unrequested")]
+    JudgementUnrequested,
+    #[postgres(name = "judgement_given")]
+    JudgementGiven,
+    #[postgres(name = "registrar_added")]
+    RegistrarAdded,
+    #[postgres(name = "sub_identity_added")]
+    SubIdentityAdded,
+    #[postgres(name = "sub_identity_removed")]
+    SubIdentityRemoved,
+    #[postgres(name = "sub_identity_revoked")]
+    SubIdentityRevoked,
+    #[postgres(name = "authority_added")]
+    AuthorityAdded,
+    #[postgres(name = "authority_removed")]
+    AuthorityRemoved,
+    #[postgres(name = "username_set")]
+    UsernameSet,
+    #[postgres(name = "username_queued")]
+    UsernameQueued,
+    #[postgres(name = "username_killed")]
+    UsernameKilled,
+    #[postgres(name = "primary_username_set")]
+    PrimaryUsernameSet,
+    #[postgres(name = "dangling_username_removed")]
+    DanglingUsernameRemoved,
+    #[postgres(name = "preapproval_expired")]
+    PreapprovalExpired,
+}
+
+impl Display for IdentityEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::IdentitySet => "identity_set",
+            Self::IdentityCleared => "identity_cleared",
+            Self::IdentityKilled => "identity_killed",
+            Self::JudgementRequested => "judgement_requested",
+            Self::JudgementUnrequested => "judgement_unrequested",
+            Self::JudgementGiven => "judgement_given",
+            Self::RegistrarAdded => "registrar_added",
+            Self::SubIdentityAdded => "sub_identity_added",
+            Self::SubIdentityRemoved => "sub_identity_removed",
+            Self::SubIdentityRevoked => "sub_identity_revoked",
+            Self::AuthorityAdded => "authority_added",
+            Self::AuthorityRemoved => "authority_removed",
+            Self::UsernameSet => "username_set",
+            Self::UsernameQueued => "username_queued",
+            Self::UsernameKilled => "username_killed",
+            Self::PrimaryUsernameSet => "primary_username_set",
+            Self::DanglingUsernameRemoved => "dangling_username_removed",
+            Self::PreapprovalExpired => "preapproval_expired",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+/// Record for on-chain identity event
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IdentityEvent {
+    pub wallet_id: String,
+    pub network: String,
+    pub event_type: IdentityEventType,
+    pub block_number: i64,
+    pub block_hash: String,
+    pub registrar_index: Option<i32>,
+    pub data: Option<serde_json::Value>,
+}
+
+impl IdentityEvent {
+    pub fn new(
+        wallet_id: &AccountId32,
+        network: &Network,
+        event_type: IdentityEventType,
+        block_number: u32,
+        block_hash: &str,
+    ) -> Self {
+        Self {
+            wallet_id: wallet_id.to_string(),
+            network: network.to_string(),
+            event_type,
+            block_number: block_number as i64,
+            block_hash: block_hash.to_string(),
+            registrar_index: None,
+            data: None,
+        }
+    }
+
+    pub fn with_registrar(mut self, index: u32) -> Self {
+        self.registrar_index = Some(index as i32);
+        self
+    }
+
+    pub fn with_data(mut self, data: serde_json::Value) -> Self {
+        self.data = Some(data);
+        self
+    }
+}
+
+/// Record returned from identity_events queries
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IdentityEventRecord {
+    pub wallet_id: String,
+    pub network: String,
+    pub event_type: String,
+    pub block_number: i64,
+    pub block_hash: String,
+    pub registrar_index: Option<i32>,
+    pub data: Option<serde_json::Value>,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+impl From<&tokio_postgres::Row> for IdentityEventRecord {
+    fn from(row: &tokio_postgres::Row) -> Self {
+        Self {
+            wallet_id: row.get("wallet_id"),
+            network: row.get("network"),
+            event_type: row.get("event_type"),
+            block_number: row.get("block_number"),
+            block_hash: row.get("block_hash"),
+            registrar_index: row.get("registrar_index"),
+            data: row.get("data"),
+            created_at: row.get("created_at"),
+        }
     }
 }
 
@@ -2061,5 +2722,26 @@ mod test {
             vec!["5HmLjPdzJQHopPiyz3fF4M4fW3M5EV19sPZUqWRhwA91NPzT", "paseo"],
             delete_query.params()
         )
+    }
+}
+
+// Implement TimelineStore trait for PostgresConnection
+#[async_trait::async_trait]
+impl crate::adapter::context::TimelineStore for PostgresConnection {
+    async fn update_timeline(
+        &self,
+        event: TimelineEvent,
+        account_id: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<()> {
+        self.update_timeline(event, account_id, network).await
+    }
+
+    async fn finalize_timeline(
+        &self,
+        account_id: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<()> {
+        self.finalize_timeline(account_id, network).await
     }
 }
