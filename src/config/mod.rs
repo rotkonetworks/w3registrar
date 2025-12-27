@@ -20,16 +20,6 @@ pub struct Adapter {
     pub github: GithubConfig,
     #[serde(default)]
     pub pgp: PGPConfig,
-    #[serde(default)]
-    pub cloudflare: Option<CloudflareConfig>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct CloudflareConfig {
-    /// Cloudflare API token with DNS edit permissions
-    pub api_token: String,
-    /// Optional: specific zone ID (bypasses domain lookup)
-    pub zone_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

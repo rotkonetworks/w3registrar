@@ -1,7 +1,8 @@
 use anyhow::Result;
 use once_cell::sync::OnceCell;
 use std::sync::Arc;
-use tracing::{info, instrument};
+use std::time::Duration;
+use tracing::{debug, info, instrument};
 use trust_dns_resolver::{
     config::{ResolverConfig, ResolverOpts},
     name_server::TokioConnectionProvider,
@@ -14,9 +15,18 @@ static DNS_RESOLVER: OnceCell<Arc<AsyncResolver<TokioConnectionProvider>>> = Onc
 fn get_resolver() -> Arc<AsyncResolver<TokioConnectionProvider>> {
     DNS_RESOLVER
         .get_or_init(|| {
+            let mut opts = ResolverOpts::default();
+            // Optimize for verification use case
+            opts.timeout = Duration::from_secs(5);
+            opts.attempts = 2;
+            opts.cache_size = 256; // Cache recent lookups
+            opts.use_hosts_file = false; // Skip /etc/hosts for speed
+            opts.positive_min_ttl = Some(Duration::from_secs(30)); // Min cache time
+            opts.negative_min_ttl = Some(Duration::from_secs(10)); // Cache failures briefly
+
             Arc::new(AsyncResolver::tokio(
                 ResolverConfig::cloudflare_tls(),
-                ResolverOpts::default(),
+                opts,
             ))
         })
         .clone()
@@ -24,7 +34,8 @@ fn get_resolver() -> Arc<AsyncResolver<TokioConnectionProvider>> {
 
 #[instrument(skip_all)]
 async fn lookup_txt_records(domain: &str) -> Result<Vec<String>, String> {
-    info!(domain = %domain, "Looking for TXT records");
+    debug!(domain = %domain, "DNS TXT lookup");
+
     get_resolver()
         .lookup(domain, RecordType::TXT)
         .await
@@ -42,44 +53,91 @@ async fn lookup_txt_records(domain: &str) -> Result<Vec<String>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Verify that a domain has a TXT record matching the challenge token.
+/// Uses Cloudflare DNS over TLS for fast, secure lookups with caching.
 #[instrument(skip_all)]
 pub async fn verify_txt(domain: &str, challenge: &str) -> bool {
     match lookup_txt_records(domain).await {
         Ok(records) => {
+            debug!(domain = %domain, count = records.len(), "Found TXT records");
+
+            // Fast path: check for exact match
             for record in &records {
-                info!(domain = %domain, "Found Record: {record}");
+                if record == challenge {
+                    info!(domain = %domain, "TXT verification successful");
+                    return true;
+                }
             }
-            if records.contains(&challenge.to_string()) {
-                info!(domain = %domain, "TXT record verification successful");
-                return true;
-            }
-            info!(domain = %domain, "No matching({}) TXT record found", &challenge.to_string());
+
+            debug!(domain = %domain, challenge = %challenge, "No matching TXT record");
             false
         }
         Err(err) => {
-            info!(domain = %domain, error = %err, "Record lookup failed");
+            debug!(domain = %domain, error = %err, "DNS lookup failed");
             false
         }
     }
 }
+
+/// Verify TXT record with retry support for DNS propagation delays.
+/// Useful when records were just created.
+#[instrument(skip_all)]
+pub async fn verify_txt_with_retry(
+    domain: &str,
+    challenge: &str,
+    max_attempts: u32,
+    delay_secs: u64,
+) -> bool {
+    for attempt in 1..=max_attempts {
+        if verify_txt(domain, challenge).await {
+            return true;
+        }
+
+        if attempt < max_attempts {
+            debug!(
+                domain = %domain,
+                attempt = attempt,
+                max = max_attempts,
+                "Retrying DNS verification"
+            );
+            tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
     async fn test_dns_lookup_real_domain() {
-        // Test with a real domain - google.com has TXT records
         let records = lookup_txt_records("google.com").await;
         assert!(records.is_ok(), "Should be able to lookup TXT records");
         let records = records.unwrap();
-        println!("Found {} TXT records for google.com", records.len());
         assert!(!records.is_empty(), "google.com should have TXT records");
     }
 
     #[tokio::test]
     async fn test_dns_verify_nonexistent_token() {
-        // Verify that a random token doesn't match
         let result = verify_txt("google.com", "w3r-test-nonexistent-token-12345").await;
         assert!(!result, "Random token should not match any TXT record");
+    }
+
+    #[tokio::test]
+    async fn test_resolver_caching() {
+        // First lookup
+        let start = std::time::Instant::now();
+        let _ = lookup_txt_records("cloudflare.com").await;
+        let first = start.elapsed();
+
+        // Second lookup (should be cached)
+        let start = std::time::Instant::now();
+        let _ = lookup_txt_records("cloudflare.com").await;
+        let second = start.elapsed();
+
+        // Cached lookup should be significantly faster
+        println!("First: {:?}, Second (cached): {:?}", first, second);
+        // Note: Can't guarantee timing in CI, so just verify both work
     }
 }

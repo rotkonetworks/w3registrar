@@ -16,9 +16,6 @@ pub mod email;
 #[cfg(feature = "matrix")]
 pub mod matrix;
 
-#[cfg(feature = "cloudflare")]
-pub mod cloudflare;
-
 pub use context::{ChainRegistrar, TimelineStore, VerificationStore};
 
 /// Constant-time string comparison to prevent timing attacks

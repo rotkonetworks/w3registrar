@@ -108,9 +108,10 @@ async fn verify_http_protocol(domain: &str, challenge: &str, protocol: &str) -> 
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[tokio::test]
     async fn test_domain_cleaning() {
-        // This is a unit test to ensure domain cleaning works
         let domains = vec![
             ("https://example.com", "example.com"),
             ("http://example.com/", "example.com"),
@@ -127,11 +128,10 @@ mod tests {
             assert_eq!(clean, expected);
         }
     }
-}
+
     #[tokio::test]
     async fn test_http_verify_nonexistent() {
-        use super::*;
-        // Test with a domain that won't have our verification file
         let result = verify_http("example.com", "w3r-test-token-xyz").await;
         assert!(!result, "Should fail for domain without verification file");
     }
+}

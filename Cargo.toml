@@ -41,7 +41,7 @@ tokio-postgres = { version = "0.7.13", features = ["with-chrono-0_4", "with-serd
 postgres-openssl = "0.5.1"
 openssl = "0.10.73"
 postgres-types = { version = "0.2.9", features = ["derive"] }
-mobc = "0.9.0"
+bb8 = "0.8"
 bytes = "1"
 
 # pgp is required for core verification
@@ -50,16 +50,15 @@ sequoia-openpgp = { version = "2.0.0", default-features = false, features = ["co
 # optional adapter dependencies
 matrix-sdk = { version = "0.14.0", optional = true }
 jmap-client = { version = "0.3.3", features = ["async"], optional = true }
-cloudflare = { version = "0.14.0", optional = true }
 
 [features]
 default = ["matrix", "jmap"]
 matrix = ["dep:matrix-sdk"]
 jmap = ["dep:jmap-client"]
-cloudflare = ["dep:cloudflare"]
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
+cloudflare = "0.14.0"  # Only for testing DNS verification
 
 [patch.crates-io]
 parity-bip39 = { git = "https://github.com/rotkonetworks/rust-bip39" }

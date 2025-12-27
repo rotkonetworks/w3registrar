@@ -101,16 +101,16 @@ impl WebChallenge {
 #[instrument()]
 pub async fn watch_web() -> anyhow::Result<()> {
     info!("Web adapter watcher started (supports both HTTP and DNS verification)");
-    let mut redis_conn = RedisConnection::get_connection().await?;
+    let mut pubsub = RedisConnection::new_pubsub().await?;
 
     let channel = "__keyspace@0__:web|*";
 
-    if let Err(e) = redis_conn.subscribe(channel).await {
+    if let Err(e) = pubsub.psubscribe(channel).await {
         error!("Unable to subscribe to {} because {:?}", channel, e);
         return Err(anyhow!("Failed to subscribe to web channel"));
     };
 
-    let mut stream = redis_conn.pubsub_stream().await;
+    let mut stream = pubsub.on_message();
 
     while let Some(msg) = stream.next().await {
         let payload: String = msg.get_payload()?;

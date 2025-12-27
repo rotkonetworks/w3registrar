@@ -82,7 +82,9 @@ impl PostgresConnection {
                 THEN CREATE TYPE IDENTITY_EVENT_TYPE AS ENUM (
                     'identity_set', 'identity_cleared', 'identity_killed',
                     'judgement_requested', 'judgement_unrequested', 'judgement_given',
-                    'registrar_added', 'sub_identity_added', 'sub_identity_removed', 'sub_identity_revoked'
+                    'registrar_added', 'sub_identity_added', 'sub_identity_removed', 'sub_identity_revoked',
+                    'authority_added', 'authority_removed', 'username_set', 'username_queued',
+                    'username_killed', 'primary_username_set', 'dangling_username_removed', 'preapproval_expired'
                 );
                 END IF;
             END $$;").await?;
@@ -164,7 +166,7 @@ impl PostgresConnection {
 
         self.exec("ip_ratelimiter", "
             CREATE TABLE IF NOT EXISTS ip_ratelimiter (
-                ip cidr NOT NULL, timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                ip inet NOT NULL, timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (ip, timestamp)
             )").await?;
 
@@ -200,6 +202,23 @@ impl PostgresConnection {
 
         self.exec("idx_events_block", "
             CREATE INDEX IF NOT EXISTS idx_identity_events_block ON identity_events(network, block_number)
+        ").await?;
+
+        // Remailer blocked senders - users can block specific addresses from contacting them
+        self.exec("remailer_blocked", "
+            CREATE TABLE IF NOT EXISTS remailer_blocked (
+                id SERIAL PRIMARY KEY,
+                recipient_address VARCHAR(48) NOT NULL,
+                recipient_network NETWORK NOT NULL,
+                blocked_address VARCHAR(48) NOT NULL,
+                blocked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                reason TEXT,
+                UNIQUE(recipient_address, recipient_network, blocked_address)
+            )").await?;
+
+        self.exec("idx_remailer_blocked", "
+            CREATE INDEX IF NOT EXISTS idx_remailer_blocked_recipient
+            ON remailer_blocked(recipient_address, recipient_network)
         ").await?;
 
         // Migrations
@@ -277,7 +296,7 @@ impl PostgresConnection {
 
         self.client
             .query(
-                "INSERT INTO timeline_elem (wallet_id, network, EVENT) VALUES ($1, $2, $3)",
+                "INSERT INTO timeline_elem (wallet_id, network, EVENT) VALUES ($1, $2::TEXT::network, $3)",
                 &[&wallet_id.to_string(), &network.to_string(), &event_info],
             )
             .await?;
@@ -375,7 +394,7 @@ impl PostgresConnection {
             VALUES ($1, $2, $3) ON CONFLICT (network) DO UPDATE SET \
             last_block_hash = EXCLUDED.last_block_hash, last_block_index = EXCLUDED.last_block_index";
 
-        let values: &[&(dyn ToSql + Sync)] = &[&network.to_string(), &hex::encode(hash.as_bytes()), &index];
+        let values: &[&(dyn ToSql + Sync)] = &[network, &hex::encode(hash.as_bytes()), &index];
 
         self.client.query(query, values).await?;
 
@@ -450,6 +469,19 @@ impl PostgresConnection {
         let rows = self.client.query(&query, &params).await?;
 
         Ok(rows.iter().map(IdentityEventRecord::from).collect())
+    }
+
+    /// Get the highest block number for identity events on a network
+    pub async fn get_last_event_block(&self, network: &Network) -> anyhow::Result<i64> {
+        let query = format!(
+            "SELECT COALESCE(MAX(block_number), 0) FROM identity_events WHERE network = '{}'",
+            network
+        );
+
+        let row = self.client.query_one(&query, &[]).await?;
+        let block_number: i64 = row.get(0);
+
+        Ok(block_number)
     }
 
     pub async fn search_registration_records(
@@ -716,9 +748,100 @@ impl PostgresConnection {
         Ok(())
     }
 
+    /// Block a sender from contacting recipient via remailer
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn remailer_block_sender(
+        &self,
+        recipient: &AccountId32,
+        network: &Network,
+        blocked_address: &str,
+        reason: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let query = format!(
+            "INSERT INTO remailer_blocked (recipient_address, recipient_network, blocked_address, reason)
+             VALUES ($1, '{}'::network, $2, $3)
+             ON CONFLICT (recipient_address, recipient_network, blocked_address) DO UPDATE SET reason = $3",
+            network
+        );
+
+        self.client
+            .execute(&query, &[&recipient.to_string(), &blocked_address, &reason])
+            .await?;
+
+        info!("Blocked {} from contacting {} on {}", blocked_address, recipient, network);
+        Ok(())
+    }
+
+    /// Unblock a sender
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn remailer_unblock_sender(
+        &self,
+        recipient: &AccountId32,
+        network: &Network,
+        blocked_address: &str,
+    ) -> anyhow::Result<()> {
+        let query = format!(
+            "DELETE FROM remailer_blocked
+             WHERE recipient_address = $1 AND recipient_network = '{}'::network AND blocked_address = $2",
+            network
+        );
+
+        self.client
+            .execute(&query, &[&recipient.to_string(), &blocked_address])
+            .await?;
+
+        info!("Unblocked {} for {} on {}", blocked_address, recipient, network);
+        Ok(())
+    }
+
+    /// Get list of blocked senders for a recipient
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn remailer_get_blocked(
+        &self,
+        recipient: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<Vec<RemailerBlockedSender>> {
+        let query = format!(
+            "SELECT blocked_address, blocked_at, reason FROM remailer_blocked
+             WHERE recipient_address = $1 AND recipient_network = '{}'::network
+             ORDER BY blocked_at DESC",
+            network
+        );
+
+        let rows = self.client.query(&query, &[&recipient.to_string()]).await?;
+        let blocked: Vec<RemailerBlockedSender> = rows
+            .iter()
+            .map(|row| RemailerBlockedSender {
+                address: row.get("blocked_address"),
+                blocked_at: row.get("blocked_at"),
+                reason: row.get("reason"),
+            })
+            .collect();
+
+        Ok(blocked)
+    }
+
+    /// Check if a sender is blocked by recipient
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn remailer_is_blocked(
+        &self,
+        recipient: &AccountId32,
+        network: &Network,
+        sender: &str,
+    ) -> anyhow::Result<bool> {
+        let query = format!(
+            "SELECT 1 FROM remailer_blocked
+             WHERE recipient_address = $1 AND recipient_network = '{}'::network AND blocked_address = $2",
+            network
+        );
+
+        let rows = self.client.query(&query, &[&recipient.to_string(), &sender]).await?;
+        Ok(!rows.is_empty())
+    }
+
     pub async fn get_indexer_state(&self, network: &Network) -> anyhow::Result<IndexerState> {
         let query = "SELECT network::text, last_block_index, last_block_hash, updated_at FROM indexer_state WHERE network=$1";
-        let row = self.client.query_one(query, &[&network.to_string()]).await?;
+        let row = self.client.query_one(query, &[network]).await?;
         IndexerState::try_from(&row)
     }
 
@@ -726,7 +849,7 @@ impl PostgresConnection {
         let query = "INSERT INTO ip_ratelimiter (ip) VALUES ($1) \
             ON CONFLICT (ip, timestamp) DO UPDATE SET ip = EXCLUDED.ip, timestamp = CURRENT_TIMESTAMP";
 
-        self.client.execute(query, &[&ip.to_string()]).await?;
+        self.client.execute(query, &[ip]).await?;
 
         info!(ip=?ip, "Updating ratelimit");
         Ok(())
@@ -738,7 +861,7 @@ impl PostgresConnection {
         network: &Network,
     ) -> anyhow::Result<()> {
         let query = "INSERT INTO wallet_and_network_ratelimiter (address, network) \
-            VALUES ($1, $2) ON CONFLICT (address, network, timestamp) DO UPDATE SET \
+            VALUES ($1, $2::TEXT::network) ON CONFLICT (address, network, timestamp) DO UPDATE SET \
             address = EXCLUDED.address, network = EXCLUDED.network, timestamp = CURRENT_TIMESTAMP";
 
         self.client
@@ -773,25 +896,41 @@ impl PostgresConnection {
     }
 
     async fn get_rate(&self, arg: &Ratelimit) -> anyhow::Result<i64> {
-        let statement = arg.statement();
-        let params = arg.params();
-
-        let query_params: Vec<&(dyn ToSql + Sync)> = params
-            .iter()
-            .map(|v| v as &(dyn ToSql + Sync))
-            .collect::<Vec<_>>();
-
-        info!(statement=?statement, params=?query_params, "Ratelimit request");
-
         self.client.clear_type_cache();
 
-        Ok(self
-            .client
-            .query(&statement, &query_params)
-            .await?
-            .first()
-            .map(|row| row.get::<_, i64>(0))
-            .unwrap_or(0))
+        let count = if arg.is_ip_query() {
+            if let Some(ip) = &arg.ip {
+                let query = "SELECT COUNT(*) FROM ip_ratelimiter WHERE ip = $1 AND timestamp > NOW() - INTERVAL '1 hour'";
+                let ip_str = ip.to_string();
+                info!(query=?query, ip=?ip_str, "Ratelimit IP request");
+                self.client
+                    .query(query, &[&ip_str])
+                    .await?
+                    .first()
+                    .map(|row| row.get::<_, i64>(0))
+                    .unwrap_or(0)
+            } else {
+                0
+            }
+        } else {
+            match (&arg.wallet_id, &arg.network) {
+                (Some(wallet_id), Some(network)) => {
+                    let query = "SELECT COUNT(*) FROM wallet_and_network_ratelimiter WHERE address = $1 AND network = $2::TEXT::network AND timestamp > NOW() - INTERVAL '1 hour'";
+                    let wallet_str = wallet_id.to_string();
+                    let network_str = network.to_string();
+                    info!(query=?query, wallet=?wallet_str, network=?network, "Ratelimit wallet request");
+                    self.client
+                        .query(query, &[&wallet_str, &network_str])
+                        .await?
+                        .first()
+                        .map(|row| row.get::<_, i64>(0))
+                        .unwrap_or(0)
+                }
+                _ => 0,
+            }
+        };
+
+        Ok(count)
     }
 }
 
@@ -812,7 +951,7 @@ impl Query for Ratelimit {
         if self.is_ip_query() {
             statement.push_str("ip_ratelimiter WHERE ip = $1 ");
         } else {
-            statement.push_str("wallet_and_network_ratelimiter WHERE address = $1 AND network = $2 ");
+            statement.push_str("wallet_and_network_ratelimiter WHERE address = $1 AND network = $2::TEXT::network ");
         }
 
         statement.push_str("AND timestamp > NOW() - INTERVAL '1 hour'");
@@ -868,6 +1007,14 @@ impl From<(&AccountId32, &Network)> for Ratelimit {
             network: Some(value.1.clone()),
         }
     }
+}
+
+/// Blocked sender entry for remailer
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct RemailerBlockedSender {
+    pub address: String,
+    pub blocked_at: chrono::NaiveDateTime,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1259,7 +1406,7 @@ impl Query for TimelineQuery {
                 }
 
                 if v.network.is_some() {
-                    statement.push_str(&format!("network = ${} ", index));
+                    statement.push_str(&format!("network = ${}::TEXT::network ", index));
                     index += 1;
                 }
 
@@ -1419,7 +1566,7 @@ impl Query for RegistrationQuery {
             }
 
             if let Some(network) = &v.network {
-                statement.push_str(&format!("network = ${} AND ", index));
+                statement.push_str(&format!("network = ${}::TEXT::network AND ", index));
                 index += 1;
             }
 
@@ -1903,7 +2050,7 @@ impl Query for DeleteQuery<TimelineCondition> {
                 }
 
                 if v.network.is_some() {
-                    statement.push_str(&format!("network = ${}", index));
+                    statement.push_str(&format!("network = ${}::TEXT::network", index));
                     index += 1;
                 }
 
@@ -2290,6 +2437,22 @@ pub enum IdentityEventType {
     SubIdentityRemoved,
     #[postgres(name = "sub_identity_revoked")]
     SubIdentityRevoked,
+    #[postgres(name = "authority_added")]
+    AuthorityAdded,
+    #[postgres(name = "authority_removed")]
+    AuthorityRemoved,
+    #[postgres(name = "username_set")]
+    UsernameSet,
+    #[postgres(name = "username_queued")]
+    UsernameQueued,
+    #[postgres(name = "username_killed")]
+    UsernameKilled,
+    #[postgres(name = "primary_username_set")]
+    PrimaryUsernameSet,
+    #[postgres(name = "dangling_username_removed")]
+    DanglingUsernameRemoved,
+    #[postgres(name = "preapproval_expired")]
+    PreapprovalExpired,
 }
 
 impl Display for IdentityEventType {
@@ -2305,6 +2468,14 @@ impl Display for IdentityEventType {
             Self::SubIdentityAdded => "sub_identity_added",
             Self::SubIdentityRemoved => "sub_identity_removed",
             Self::SubIdentityRevoked => "sub_identity_revoked",
+            Self::AuthorityAdded => "authority_added",
+            Self::AuthorityRemoved => "authority_removed",
+            Self::UsernameSet => "username_set",
+            Self::UsernameQueued => "username_queued",
+            Self::UsernameKilled => "username_killed",
+            Self::PrimaryUsernameSet => "primary_username_set",
+            Self::DanglingUsernameRemoved => "dangling_username_removed",
+            Self::PreapprovalExpired => "preapproval_expired",
         };
         write!(f, "{}", s)
     }
