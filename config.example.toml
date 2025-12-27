@@ -108,6 +108,10 @@ redirect_url = "http://example.com/oauth/callback/github"
 [adapter.pgp]
 keyserver_url = "https://keyserver.ubuntu.com"
 
+[admin]
+# ss58 addresses that can perform admin actions (approve/reject/provide judgement)
+allowed_accounts = []
+
 [ratelimit]
 wallet_requests_hour_limit = 2
 ip_requests_hour_limit = 2
