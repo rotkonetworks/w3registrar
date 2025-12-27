@@ -1579,10 +1579,11 @@ impl Query for RegistrationQuery {
                 .to_owned();
         }
 
-        // Order by: our verification first, then any verification, then similarity
-        // judgement_by matching our registrar = priority 0
-        // judgement_by not null (others verified) = priority 1
-        // judgement_by null (not verified) = priority 2
+        // Combined ranking score (higher = better):
+        // - Network weight: polkadot=100, kusama=80, paseo=20 (mainnets matter more)
+        // - Verification bonus: our registrar=50, any verification=30, none=0
+        // - Similarity: 0-1 scaled, added to score when available
+        // This creates a blended score where all factors influence ranking
         let our_registrar_indices = Config::load_static()
             .registrar
             .networks
@@ -1591,15 +1592,23 @@ impl Query for RegistrationQuery {
             .collect::<Vec<_>>()
             .join(",");
 
+        // Combined score: network_weight + verification_bonus (+ similarity if available)
+        let ranking_score = format!(
+            "(CASE network WHEN 'polkadot' THEN 100 WHEN 'kusama' THEN 80 WHEN 'paseo' THEN 20 ELSE 10 END \
+             + CASE WHEN judgement_by IN ({}) THEN 50 WHEN judgement_by IS NOT NULL THEN 30 ELSE 0 END)",
+            our_registrar_indices
+        );
+
         if let Some(_space) = &self.space {
+            // With similarity: add sim (0-1) scaled to influence ranking
             statement.push_str(&format!(
-                " ORDER BY CASE WHEN judgement_by IN ({}) THEN 0 WHEN judgement_by IS NOT NULL THEN 1 ELSE 2 END, sim DESC",
-                our_registrar_indices
+                " ORDER BY {} + (sim * 20) DESC",
+                ranking_score
             ));
         } else {
             statement.push_str(&format!(
-                " ORDER BY CASE WHEN judgement_by IN ({}) THEN 0 WHEN judgement_by IS NOT NULL THEN 1 ELSE 2 END",
-                our_registrar_indices
+                " ORDER BY {} DESC",
+                ranking_score
             ));
         }
 
