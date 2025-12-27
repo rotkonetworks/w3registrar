@@ -1579,12 +1579,14 @@ impl Query for RegistrationQuery {
                 .to_owned();
         }
 
-        // Combined ranking score (higher = better):
-        // - Network weight: polkadot=100, kusama=80, paseo=20 (mainnets matter more)
-        // - Verification bonus: our registrar=50, any verification=30, none=0
-        // - Similarity: 0-1 scaled, added to score when available
-        // This creates a blended score where all factors influence ranking
-        let our_registrar_indices = Config::load_static()
+        // Combined ranking score from config (higher = better)
+        // All weights are configurable via [ranking] section in config
+        let cfg = Config::load_static();
+        let ranking = &cfg.ranking;
+        let nw = &ranking.network_weights;
+        let vw = &ranking.verification;
+
+        let our_registrar_indices = cfg
             .registrar
             .networks
             .values()
@@ -1594,16 +1596,18 @@ impl Query for RegistrationQuery {
 
         // Combined score: network_weight + verification_bonus (+ similarity if available)
         let ranking_score = format!(
-            "(CASE network WHEN 'polkadot' THEN 100 WHEN 'kusama' THEN 80 WHEN 'paseo' THEN 20 ELSE 10 END \
-             + CASE WHEN judgement_by IN ({}) THEN 50 WHEN judgement_by IS NOT NULL THEN 30 ELSE 0 END)",
-            our_registrar_indices
+            "(CASE network WHEN 'polkadot' THEN {} WHEN 'kusama' THEN {} WHEN 'paseo' THEN {} ELSE {} END \
+             + CASE WHEN judgement_by IN ({}) THEN {} WHEN judgement_by IS NOT NULL THEN {} ELSE 0 END)",
+            nw.polkadot, nw.kusama, nw.paseo, nw.other,
+            our_registrar_indices,
+            vw.our_registrar, vw.any_registrar
         );
 
         if let Some(_space) = &self.space {
-            // With similarity: add sim (0-1) scaled to influence ranking
+            // With similarity: add sim (0-1) scaled by configured weight
             statement.push_str(&format!(
-                " ORDER BY {} + (sim * 20) DESC",
-                ranking_score
+                " ORDER BY {} + (sim * {}) DESC",
+                ranking_score, ranking.similarity_weight
             ));
         } else {
             statement.push_str(&format!(

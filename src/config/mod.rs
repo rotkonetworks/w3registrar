@@ -34,6 +34,8 @@ pub struct Config {
     pub ratelimit: Ratelimit,
     #[serde(default)]
     pub admin: AdminConfig,
+    #[serde(default)]
+    pub ranking: RankingConfig,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -41,6 +43,84 @@ pub struct AdminConfig {
     /// List of SS58 addresses that can perform admin actions
     #[serde(default)]
     pub allowed_accounts: Vec<String>,
+}
+
+/// Search ranking configuration for ordering results
+#[derive(Debug, Deserialize, Clone)]
+pub struct RankingConfig {
+    /// Network weights for ranking (higher = more important)
+    #[serde(default)]
+    pub network_weights: NetworkWeights,
+    /// Verification bonus points
+    #[serde(default)]
+    pub verification: VerificationWeights,
+    /// Similarity score multiplier (0-1 similarity scaled by this)
+    #[serde(default = "default_similarity_weight")]
+    pub similarity_weight: u32,
+}
+
+fn default_similarity_weight() -> u32 {
+    200
+}
+
+impl Default for RankingConfig {
+    fn default() -> Self {
+        Self {
+            network_weights: NetworkWeights::default(),
+            verification: VerificationWeights::default(),
+            similarity_weight: 200,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct NetworkWeights {
+    #[serde(default = "default_polkadot_weight")]
+    pub polkadot: u32,
+    #[serde(default = "default_kusama_weight")]
+    pub kusama: u32,
+    #[serde(default = "default_paseo_weight")]
+    pub paseo: u32,
+    #[serde(default = "default_other_weight")]
+    pub other: u32,
+}
+
+fn default_polkadot_weight() -> u32 { 100 }
+fn default_kusama_weight() -> u32 { 80 }
+fn default_paseo_weight() -> u32 { 20 }
+fn default_other_weight() -> u32 { 10 }
+
+impl Default for NetworkWeights {
+    fn default() -> Self {
+        Self {
+            polkadot: 100,
+            kusama: 80,
+            paseo: 20,
+            other: 10,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct VerificationWeights {
+    /// Bonus for identities verified by our registrar
+    #[serde(default = "default_our_registrar")]
+    pub our_registrar: u32,
+    /// Bonus for identities verified by any registrar
+    #[serde(default = "default_any_registrar")]
+    pub any_registrar: u32,
+}
+
+fn default_our_registrar() -> u32 { 50 }
+fn default_any_registrar() -> u32 { 30 }
+
+impl Default for VerificationWeights {
+    fn default() -> Self {
+        Self {
+            our_registrar: 50,
+            any_registrar: 30,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

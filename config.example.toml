@@ -118,3 +118,19 @@ ip_requests_hour_limit = 2
 [ratelimit.exceptions]
 wallets = []
 ips = ["127.0.0.1", "0.0.0.0", "::"]
+
+# Search result ranking configuration
+# Results are ordered by combined score: network_weight + verification_bonus + (similarity * similarity_weight)
+# With default weights, a perfect text match (sim=1.0) dominates over network/verification
+[ranking]
+similarity_weight = 200  # multiplier for text similarity (0-1 range), most important factor
+
+[ranking.network_weights]
+polkadot = 100  # mainnet, highest priority
+kusama = 80     # canary network
+paseo = 20      # testnet
+other = 10      # unknown networks
+
+[ranking.verification]
+our_registrar = 50  # bonus for identities we verified
+any_registrar = 30  # bonus for any verified identity
