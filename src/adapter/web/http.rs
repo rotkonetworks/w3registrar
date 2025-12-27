@@ -248,4 +248,25 @@ mod tests {
             "https://gist.githubusercontent.com/user/abc123/raw/file.txt"
         );
     }
+
+    #[tokio::test]
+    async fn test_verify_real_gist() {
+        // Test with hitchhooker's real gist
+        let result = verify_http(
+            "https://gist.github.com/hitchhooker/b20acdcfcac24991fa91f0d211effd5f",
+            "w3r-test-1766825251",
+        )
+        .await;
+        assert!(result, "Should verify real gist containing token");
+    }
+
+    #[tokio::test]
+    async fn test_verify_gist_wrong_token() {
+        let result = verify_http(
+            "https://gist.github.com/hitchhooker/b20acdcfcac24991fa91f0d211effd5f",
+            "wrong-token-xyz",
+        )
+        .await;
+        assert!(!result, "Should fail for gist with wrong token");
+    }
 }
