@@ -44,6 +44,8 @@ pub struct ChallengeInfo {
     pub inbound_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outbound_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 impl AccountVerification {
@@ -65,12 +67,16 @@ impl AccountVerification {
     ) {
         use crate::config::{EmailMode, EmailProtocol, GLOBAL_CONFIG};
 
+        let cfg = GLOBAL_CONFIG.get();
+        let instructions = Self::get_instructions(account_type, &name, cfg);
+
         let mut challenge_info = ChallengeInfo {
             account_name: name,
             done: token.is_none(),
             token: token.clone(),
             inbound_token: None,
             outbound_token: None,
+            instructions,
         };
 
         if !matches!(account_type, AccountType::Email) {
@@ -80,7 +86,7 @@ impl AccountVerification {
             return;
         }
 
-        let cfg = match GLOBAL_CONFIG.get() {
+        let cfg = match cfg {
             Some(c) => c,
             None => {
                 self.challenges.insert(account_type.to_owned(), challenge_info);
@@ -109,6 +115,54 @@ impl AccountVerification {
         self.challenges.insert(account_type.to_owned(), challenge_info);
         self.updated_at = Utc::now();
         self.complete_all_challenges();
+    }
+
+    fn get_instructions(
+        account_type: &AccountType,
+        name: &str,
+        cfg: Option<&crate::config::Config>,
+    ) -> Option<String> {
+        match account_type {
+            AccountType::Email => {
+                let registrar_email = cfg.map(|c| c.adapter.email.email.as_str()).unwrap_or("registrar");
+                Some(format!(
+                    "send email with your token to {} or reply to our verification email",
+                    registrar_email
+                ))
+            }
+            AccountType::Matrix => {
+                let registrar_matrix = cfg
+                    .map(|c| format!("@{}:{}", c.adapter.matrix.username, c.adapter.matrix.homeserver))
+                    .unwrap_or_else(|| "@registrar".to_string());
+                Some(format!(
+                    "send message with your token to {}",
+                    registrar_matrix
+                ))
+            }
+            AccountType::Twitter => Some(
+                "include your token in a tweet or dm @parity".to_string()
+            ),
+            AccountType::Discord => Some(
+                "send your token in the designated verification channel".to_string()
+            ),
+            AccountType::Web => {
+                if name.contains("gist.github.com") {
+                    Some("paste your token in the gist content".to_string())
+                } else {
+                    Some(format!(
+                        "create {}/.well-known/polkadot.txt with your token or add DNS TXT record",
+                        name
+                    ))
+                }
+            }
+            AccountType::Github => Some(
+                "authorize via oauth link provided in token field".to_string()
+            ),
+            AccountType::PGPFingerprint => Some(
+                "sign token with your pgp key and submit via api".to_string()
+            ),
+            AccountType::Display | AccountType::Legal | AccountType::Image => None,
+        }
     }
 
     fn complete_all_challenges(&mut self) {
