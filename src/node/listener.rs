@@ -60,6 +60,12 @@ impl NodeListener {
 
         let network_cfg = cfg.registrar.require_network(network)?;
 
+        // Skip registration handling for inactive registrars (index-only mode)
+        if !network_cfg.active {
+            info!(network = %network, "skipping registration - registrar not active on this network");
+            return Ok(());
+        }
+
         if network_cfg.registrar_index != index {
             return Err(anyhow!(
                 "invalid registrar index on network {network}, expected {} but got {index}",
@@ -328,6 +334,11 @@ impl NodeListener {
         let cfg = Config::load_static();
 
         let network_cfg = cfg.registrar.require_network(network)?;
+
+        // Skip cancellation handling for inactive registrars (index-only mode)
+        if !network_cfg.active {
+            return Ok(());
+        }
 
         if network_cfg.registrar_index != index {
             return Err(anyhow!(

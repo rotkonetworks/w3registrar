@@ -256,10 +256,24 @@ impl RegistrarConfigs {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegistrarConfig {
     pub endpoint: String,
+    /// Whether this registrar is active (can sign judgements)
+    /// If false, the chain is only indexed for search but no judgements are processed
+    #[serde(default = "default_active")]
+    pub active: bool,
+    /// Registrar index on this chain (can be 0 for inactive/index-only mode)
+    #[serde(default)]
     pub registrar_index: RegistrarIndex,
+    /// Registrar account (can be empty for inactive/index-only mode)
+    #[serde(default)]
     pub registrar_account: String,
+    /// Path to keystore file (only required if active = true)
+    #[serde(default)]
     pub keystore_path: String,
     pub fields: Vec<String>,
+}
+
+fn default_active() -> bool {
+    true
 }
 
 static CONFIG: OnceCell<Config> = OnceCell::const_new();
