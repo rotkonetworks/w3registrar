@@ -5,7 +5,7 @@ use tracing::{error, info, info_span, instrument, Span};
 use crate::{
     api::Network,
     config::Config,
-    node::{events::process_identity_events, Client as NodeClient},
+    node::{events::process_identity_events, BlockHash, Client as NodeClient},
     postgres::{PostgresConnection, RegistrationQuery, RegistrationRecord},
 };
 
@@ -263,6 +263,158 @@ impl Indexer {
             network = %network,
             total_events = final_count,
             "backfill complete"
+        );
+
+        Ok(final_count)
+    }
+
+    /// Backfill all events from genesis to current block
+    /// Processes in batches with progress tracking and resumption support
+    /// Uses backward walking from batch end to start for each batch to get block hashes
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn backfill_full_history(&self, network: &Network) -> anyhow::Result<u32> {
+        use futures::stream::{self, StreamExt};
+
+        const BATCH_SIZE: u32 = 10000;
+        const MAX_CONCURRENT: usize = 50;
+        const NUM_CLIENTS: usize = 5;
+
+        let cfg = Config::load_static();
+        let network_cfg = cfg.registrar.require_network(network)?;
+
+        let client = NodeClient::from_url(&network_cfg.endpoint).await?;
+        let latest = client.blocks().at_latest().await?;
+        let latest_number = latest.number();
+
+        // Check where we left off (use identity_events table to find last indexed block)
+        let pg_conn = PostgresConnection::default().await?;
+        let last_indexed = pg_conn.get_last_event_block(network).await.unwrap_or(0) as u32;
+        let start_block = if last_indexed > 0 { last_indexed + 1 } else { 0 };
+
+        if start_block >= latest_number {
+            info!(network = %network, "full history already indexed up to block {}", latest_number);
+            return Ok(0);
+        }
+
+        let total_events = Arc::new(AtomicU32::new(0));
+        let total_blocks = latest_number - start_block;
+
+        info!(
+            network = %network,
+            start = start_block,
+            end = latest_number,
+            total_blocks = total_blocks,
+            "starting full history backfill"
+        );
+
+        // Create client pool
+        let mut clients = Vec::with_capacity(NUM_CLIENTS);
+        for _ in 0..NUM_CLIENTS {
+            clients.push(Arc::new(NodeClient::from_url(&network_cfg.endpoint).await?));
+        }
+
+        // Process backwards from latest - walk back in batches
+        // We walk backwards because we can chain parent_hash lookups
+        let mut current_end = latest_number;
+        let mut current_hash = latest.hash();
+
+        while current_end > start_block {
+            let batch_start = current_end.saturating_sub(BATCH_SIZE).max(start_block);
+            let batch_size = current_end - batch_start;
+
+            info!(
+                network = %network,
+                batch_start = batch_start,
+                batch_end = current_end,
+                progress = format!("{:.1}%", ((latest_number - current_end) as f64 / total_blocks as f64) * 100.0),
+                "collecting block hashes for batch"
+            );
+
+            // Collect block hashes by walking backwards
+            let mut block_hashes: Vec<(u32, BlockHash)> = Vec::with_capacity(batch_size as usize);
+            let mut walk_hash = current_hash;
+            let mut walk_number = current_end;
+
+            while walk_number > batch_start {
+                block_hashes.push((walk_number, walk_hash));
+
+                let block = match client.blocks().at(walk_hash).await {
+                    Ok(b) => b,
+                    Err(_) => break,
+                };
+
+                walk_hash = block.header().parent_hash;
+                walk_number = walk_number.saturating_sub(1);
+            }
+
+            // Include the batch_start block
+            if walk_number == batch_start {
+                block_hashes.push((walk_number, walk_hash));
+            }
+
+            // Update for next batch
+            current_hash = walk_hash;
+            current_end = batch_start;
+
+            info!(
+                network = %network,
+                collected = block_hashes.len(),
+                "processing {} blocks with {} concurrent workers",
+                block_hashes.len(),
+                MAX_CONCURRENT
+            );
+
+            // Process blocks in parallel
+            let network_clone = network.clone();
+            let clients_clone = clients.clone();
+            let total_events_clone = Arc::clone(&total_events);
+
+            stream::iter(block_hashes.into_iter().enumerate())
+                .map(|(idx, (block_num, block_hash))| {
+                    let client = Arc::clone(&clients_clone[idx % NUM_CLIENTS]);
+                    let network = network_clone.clone();
+                    let total_events = Arc::clone(&total_events_clone);
+
+                    async move {
+                        let block = match client.blocks().at(block_hash).await {
+                            Ok(b) => b,
+                            Err(_) => return,
+                        };
+
+                        let events = match block.events().await {
+                            Ok(e) => e,
+                            Err(_) => return,
+                        };
+
+                        let block_hash_hex = hex::encode(block_hash.0);
+                        let processed =
+                            process_identity_events(&events, &network, block_num, &block_hash_hex).await;
+
+                        if !processed.is_empty() {
+                            total_events.fetch_add(processed.len() as u32, Ordering::Relaxed);
+                        }
+                    }
+                })
+                .buffer_unordered(MAX_CONCURRENT)
+                .collect::<Vec<_>>()
+                .await;
+
+            // Log progress every batch
+            let events_so_far = total_events.load(Ordering::Relaxed);
+            info!(
+                network = %network,
+                blocks_processed = latest_number - current_end,
+                total_events = events_so_far,
+                "batch complete"
+            );
+        }
+
+        let final_count = total_events.load(Ordering::Relaxed);
+        info!(
+            network = %network,
+            total_events = final_count,
+            total_blocks = total_blocks,
+            "full history backfill complete"
         );
 
         Ok(final_count)

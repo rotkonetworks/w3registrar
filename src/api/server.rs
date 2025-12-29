@@ -1606,6 +1606,63 @@ async fn pong() -> &'static str {
     "PONG"
 }
 
+/// Get identity events for a wallet
+async fn get_events(
+    axum::extract::Path((network, wallet)): axum::extract::Path<(String, String)>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    let network = match Network::from_str(&network) {
+        Ok(n) => n,
+        Err(_) => return (axum::http::StatusCode::BAD_REQUEST, "invalid network").into_response(),
+    };
+
+    let limit = params.get("limit").and_then(|l| l.parse().ok()).unwrap_or(100i64);
+
+    let pg_conn = match PostgresConnection::default().await {
+        Ok(c) => c,
+        Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    match pg_conn.get_identity_events(&wallet, Some(&network), Some(limit)).await {
+        Ok(events) => axum::Json(events).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Trigger full history backfill for a network (admin endpoint)
+async fn trigger_backfill(
+    axum::extract::Path(network): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    let network = match Network::from_str(&network) {
+        Ok(n) => n,
+        Err(_) => return (axum::http::StatusCode::BAD_REQUEST, "invalid network").into_response(),
+    };
+
+    let network_name = format!("{}", network);
+    let network_for_spawn = network;
+
+    // Spawn backfill in background
+    tokio::spawn(async move {
+        let indexer = match Indexer::new().await {
+            Ok(i) => i,
+            Err(e) => {
+                error!(error=?e, "failed to create indexer for backfill");
+                return;
+            }
+        };
+
+        if let Err(e) = indexer.backfill_full_history(&network_for_spawn).await {
+            error!(network=?network_for_spawn, error=?e, "full history backfill failed");
+        }
+    });
+
+    (axum::http::StatusCode::ACCEPTED, format!("backfill started for {}", network_name)).into_response()
+}
+
 pub async fn spawn_http_serv() -> anyhow::Result<()> {
     let cfg = Config::load_static();
     let gh_config = cfg.adapter.github.clone();
@@ -1616,7 +1673,9 @@ pub async fn spawn_http_serv() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route(redirect_url.path(), get(github_oauth_callback))
-        .route("/ping", get(pong));
+        .route("/ping", get(pong))
+        .route("/events/:network/:wallet", get(get_events))
+        .route("/admin/backfill/:network", axum::routing::post(trigger_backfill));
     let listener = tokio::net::TcpListener::bind(&(http_config.host, http_config.port)).await?;
     axum::serve(listener, app).await?;
     Ok(())
