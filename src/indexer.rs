@@ -433,9 +433,29 @@ impl Indexer {
                     error!(network=?network, error=?e, "failed to index identities");
                 }
 
-                // Backfill last 10000 blocks to catch any missed events
-                if let Err(e) = clone.clone().backfill_events(&network, 10000).await {
-                    error!(network=?network, error=?e, "failed to backfill events");
+                // Check if we have event data - if not, do full backfill
+                let pg_conn = match PostgresConnection::default().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!(network=?network, error=?e, "failed to connect to postgres");
+                        return;
+                    }
+                };
+
+                let last_event_block = pg_conn.get_last_event_block(&network).await.unwrap_or(0);
+
+                if last_event_block == 0 {
+                    // No event data - do full history backfill
+                    info!(network=?network, "no event history found, starting full backfill from genesis");
+                    if let Err(e) = clone.clone().backfill_full_history(&network).await {
+                        error!(network=?network, error=?e, "failed to backfill full history");
+                    }
+                } else {
+                    // Have some data - just backfill last 10000 blocks to catch any missed events
+                    info!(network=?network, last_block=last_event_block, "event history exists, backfilling recent blocks");
+                    if let Err(e) = clone.clone().backfill_events(&network, 10000).await {
+                        error!(network=?network, error=?e, "failed to backfill events");
+                    }
                 }
 
                 // Index latest events (the NodeListener handles real-time events going forward)
