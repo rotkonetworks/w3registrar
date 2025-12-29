@@ -10,12 +10,11 @@ COPY . .
 RUN cargo clean
 RUN cargo install subxt-cli
 RUN mkdir -p ./metadata && ./scripts/metadata.sh
-RUN cargo update -p tracing-attributes --precise 0.1.28
 RUN cargo install --path ./ --locked
 
 FROM rust:latest
 RUN addgroup w3r
-RUN adduser --ingroup w3r w3r
+RUN adduser --disabled-password --gecos "" --ingroup w3r w3r
 RUN mkdir -p /etc/w3registrar
 RUN chown -R w3r:w3r /etc/w3registrar
 
