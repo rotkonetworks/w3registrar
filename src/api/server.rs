@@ -242,6 +242,9 @@ impl SocketListener {
             WebSocketMessage::RemailerGetBlocked(incoming) => {
                 self.handle_remailer_get_blocked_request(incoming).await
             }
+            WebSocketMessage::InitiateChallenge(incoming) => {
+                self.handle_initiate_challenge_request(incoming).await
+            }
         }
     }
 
@@ -1439,6 +1442,141 @@ impl SocketListener {
             "payload": {
                 "type": "ok",
                 "blocked": blocked
+            }
+        }))
+    }
+
+    /// Handle InitiateChallenge request - sends challenge to email/matrix before on-chain submission
+    #[instrument(skip_all, parent = &self.span)]
+    async fn handle_initiate_challenge_request(
+        &self,
+        request: InitiateChallengeRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        let cfg = Config::load_static();
+
+        if !cfg.registrar.is_network_supported(&request.network) {
+            return Ok(json!({
+                "type": "error",
+                "message": format!("Network {} not supported", request.network)
+            }));
+        }
+
+        // Validate field value is not empty
+        if request.field_value.trim().is_empty() {
+            return Ok(json!({
+                "type": "error",
+                "message": "Field value cannot be empty"
+            }));
+        }
+
+        info!(
+            account = %request.account,
+            field_type = ?request.field_type,
+            network = %request.network,
+            "Initiating challenge for field"
+        );
+
+        let mut redis_conn = RedisConnection::get_connection().await?;
+
+        // Get or create verification state
+        let mut verification = redis_conn
+            .get_verification_state(&request.network, &request.account)
+            .await?
+            .unwrap_or_else(|| AccountVerification::new(request.network.to_string()));
+
+        // Generate a new token for this field
+        let token = crate::token::Token::generate_sync(8);
+
+        // Create the account based on field type and value
+        let account = match request.field_type {
+            AccountType::Email => Account::Email(request.field_value.clone()),
+            AccountType::Matrix => Account::Matrix(request.field_value.clone()),
+            AccountType::Twitter => Account::Twitter(request.field_value.clone()),
+            AccountType::Discord => Account::Discord(request.field_value.clone()),
+            AccountType::Github => Account::Github(request.field_value.clone()),
+            AccountType::Web => Account::Web(request.field_value.clone()),
+            _ => {
+                return Ok(json!({
+                    "type": "error",
+                    "message": format!("Unsupported field type: {:?}", request.field_type)
+                }));
+            }
+        };
+
+        // Add/update the challenge
+        verification.add_challenge(&request.field_type, request.field_value.clone(), Some(token.clone()));
+
+        // Build accounts map for Redis
+        let mut accounts = std::collections::HashMap::new();
+        accounts.insert(account.clone(), false);
+
+        // Save to Redis
+        redis_conn
+            .init_verification_state(&request.network, &request.account, &verification, &accounts)
+            .await?;
+
+        // Send the challenge based on field type
+        match request.field_type {
+            AccountType::Email => {
+                if matches!(cfg.adapter.email.protocol, crate::config::EmailProtocol::Jmap)
+                    && matches!(
+                        cfg.adapter.email.mode,
+                        crate::config::EmailMode::Send | crate::config::EmailMode::Bidirectional
+                    )
+                {
+                    info!(
+                        "Sending email challenge to {} for {}/{}",
+                        request.field_value, request.network, request.account
+                    );
+                    if let Err(e) = send_email_challenge(
+                        &request.field_value,
+                        &token,
+                        &request.network,
+                        &request.account,
+                    )
+                    .await
+                    {
+                        error!("Failed to send email challenge: {}", e);
+                        return Ok(json!({
+                            "type": "error",
+                            "message": format!("Failed to send email challenge: {}", e)
+                        }));
+                    }
+                }
+            }
+            AccountType::Matrix => {
+                // Matrix challenges: user must DM the bot with their code
+                // TODO: Add proactive DM sending once Matrix client is shared globally
+                info!(
+                    "Matrix challenge initiated for {} - user must DM the bot with code: {}",
+                    request.field_value, token
+                );
+            }
+            _ => {
+                // Other field types don't have automated challenge sending yet
+                info!(
+                    "Challenge initiated for {:?} - manual verification required",
+                    request.field_type
+                );
+            }
+        }
+
+        // Return success with challenge info
+        Ok(json!({
+            "type": "JsonResult",
+            "payload": {
+                "type": "ok",
+                "message": {
+                    "InitiateChallengeResponse": {
+                        "field_type": format!("{:?}", request.field_type),
+                        "challenge_sent": matches!(request.field_type, AccountType::Email),
+                        "instructions": match request.field_type {
+                            AccountType::Email => "Check your email for the verification code",
+                            AccountType::Matrix => "DM our Matrix bot with your verification code",
+                            _ => "Complete the verification challenge"
+                        }
+                    }
+                }
             }
         }))
     }

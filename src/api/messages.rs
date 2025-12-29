@@ -342,6 +342,17 @@ pub struct AdminProvideJudgementRequest {
     pub timestamp: u64,
 }
 
+/// Request to initiate a challenge for a specific field (pre-verification flow)
+/// This allows users to verify email/matrix before submitting on-chain
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InitiateChallengeRequest {
+    pub network: Network,
+    #[serde(deserialize_with = "ss58_to_account_id32")]
+    pub account: AccountId32,
+    pub field_type: AccountType,
+    pub field_value: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", content = "payload")]
 pub enum WebSocketMessage {
@@ -359,6 +370,7 @@ pub enum WebSocketMessage {
     AdminApprove(AdminApproveRequest),
     AdminReject(AdminRejectRequest),
     AdminProvideJudgement(AdminProvideJudgementRequest),
+    InitiateChallenge(InitiateChallengeRequest),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -385,6 +397,7 @@ impl VersionedMessage {
             WebSocketMessage::AdminApprove(_) => "AdminApprove",
             WebSocketMessage::AdminReject(_) => "AdminReject",
             WebSocketMessage::AdminProvideJudgement(_) => "AdminProvideJudgement",
+            WebSocketMessage::InitiateChallenge(_) => "InitiateChallenge",
         }
     }
 }
