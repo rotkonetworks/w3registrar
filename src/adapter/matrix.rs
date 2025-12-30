@@ -374,14 +374,57 @@ pub async fn start_bot() -> anyhow::Result<()> {
     unreachable!("Matrix listener should never return");
 }
 
-/// Send a verification challenge to a Matrix user
+/// Get or create a DM room with a Matrix user
 /// Works with native Matrix users and bridged users (Telegram, WhatsApp, etc.)
 ///
 /// # Arguments
 /// * `matrix_id` - Full Matrix ID (e.g., `@user:server.org` or `@telegram_123:bridge.org`)
-/// * `challenge_token` - The verification code to send
-/// * `network` - Network for context in the message
-/// * `account_id` - Account being verified
+#[instrument(skip_all, fields(matrix_id = %matrix_id))]
+pub async fn get_or_create_dm(matrix_id: &str) -> anyhow::Result<Room> {
+    let client = get_matrix_client()
+        .ok_or_else(|| anyhow::anyhow!("Matrix client not initialized"))?;
+
+    let user_id = UserId::parse(matrix_id)
+        .map_err(|e| anyhow::anyhow!("Invalid Matrix ID '{}': {}", matrix_id, e))?;
+
+    // Try to find an existing DM room
+    if let Some(room) = client.get_dm_room(&user_id) {
+        info!("Found existing DM room: {}", room.room_id());
+        return Ok(room);
+    }
+
+    // Create a new DM room
+    use matrix_sdk::ruma::api::client::room::create_room::v3::Request as CreateRoomRequest;
+
+    info!("Creating new DM room with {}", matrix_id);
+    let mut request = CreateRoomRequest::new();
+    request.is_direct = true;
+    request.invite = vec![user_id.to_owned()];
+
+    let response = client.create_room(request).await?;
+    info!("Created new DM room: {}", response.room_id());
+
+    client
+        .get_room(&response.room_id())
+        .ok_or_else(|| anyhow::anyhow!("Failed to get newly created room"))
+}
+
+/// Send a plain text message to a Matrix room
+#[instrument(skip_all, fields(room_id = %room.room_id()))]
+pub async fn send_message(room: &Room, message: &str) -> anyhow::Result<()> {
+    room.send(RoomMessageEventContent::text_plain(message)).await?;
+    info!("Message sent to room {}", room.room_id());
+    Ok(())
+}
+
+/// Send a message to a Matrix user (creates DM if needed)
+#[instrument(skip_all, fields(matrix_id = %matrix_id))]
+pub async fn send_dm(matrix_id: &str, message: &str) -> anyhow::Result<()> {
+    let room = get_or_create_dm(matrix_id).await?;
+    send_message(&room, message).await
+}
+
+/// Send a verification challenge to a Matrix user
 #[instrument(skip_all, fields(matrix_id = %matrix_id, network = %network))]
 pub async fn send_challenge(
     matrix_id: &str,
@@ -389,42 +432,8 @@ pub async fn send_challenge(
     network: &Network,
     account_id: &AccountId32,
 ) -> anyhow::Result<()> {
-    let client = get_matrix_client()
-        .ok_or_else(|| anyhow::anyhow!("Matrix client not initialized - call init_matrix_client() first"))?;
-
-    // Parse the Matrix ID
-    let user_id = UserId::parse(matrix_id)
-        .map_err(|e| anyhow::anyhow!("Invalid Matrix ID '{}': {}", matrix_id, e))?;
-
     info!("Sending Matrix challenge to {} for {}/{}", matrix_id, network, account_id);
 
-    // Try to find an existing DM room with this user
-    let dm_room = client.get_dm_room(&user_id);
-
-    let room = match dm_room {
-        Some(room) => {
-            info!("Found existing DM room: {}", room.room_id());
-            room
-        }
-        None => {
-            // Create a new DM room
-            use matrix_sdk::ruma::api::client::room::create_room::v3::Request as CreateRoomRequest;
-
-            info!("Creating new DM room with {}", matrix_id);
-            let mut request = CreateRoomRequest::new();
-            request.is_direct = true;
-            request.invite = vec![user_id.to_owned()];
-
-            let response = client.create_room(request).await?;
-            info!("Created new DM room: {}", response.room_id());
-
-            client
-                .get_room(&response.room_id())
-                .ok_or_else(|| anyhow::anyhow!("Failed to get newly created room"))?
-        }
-    };
-
-    // Send the challenge message
     let message = format!(
         "🔐 W3Registrar Verification\n\n\
         Your verification code: {}\n\n\
@@ -432,9 +441,32 @@ pub async fn send_challenge(
         challenge_token, network
     );
 
-    room.send(RoomMessageEventContent::text_plain(&message)).await?;
-
+    send_dm(matrix_id, &message).await?;
     info!("Successfully sent Matrix challenge to {}", matrix_id);
+    Ok(())
+}
+
+/// Forward an email to a Matrix user (for remailer)
+#[instrument(skip_all, fields(matrix_id = %matrix_id))]
+pub async fn forward_email(
+    matrix_id: &str,
+    from: &str,
+    subject: Option<&str>,
+    body: &str,
+) -> anyhow::Result<()> {
+    info!("Forwarding email from {} to {}", from, matrix_id);
+
+    let subject_line = subject.map(|s| format!("Subject: {}\n", s)).unwrap_or_default();
+    let message = format!(
+        "📧 Forwarded Email\n\n\
+        From: {}\n\
+        {}\n\
+        {}",
+        from, subject_line, body
+    );
+
+    send_dm(matrix_id, &message).await?;
+    info!("Successfully forwarded email to {}", matrix_id);
     Ok(())
 }
 
