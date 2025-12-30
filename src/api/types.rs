@@ -516,6 +516,24 @@ impl Network {
             _ => Err(anyhow!("Unknown or not supported network '{network}'")),
         }
     }
+
+    /// Get the SS58 address prefix for this network
+    pub fn ss58_prefix(&self) -> u16 {
+        match self {
+            Network::Polkadot => 0,
+            Network::Paseo => 0,     // Paseo uses Polkadot format
+            Network::Kusama => 2,
+            Network::Rococo => 42,   // Generic Substrate format
+        }
+    }
+
+    /// Format an AccountId32 as SS58 string for this network
+    pub fn format_account(&self, account: &subxt::utils::AccountId32) -> String {
+        use sp_core::crypto::{AccountId32 as SpAccountId32, Ss58Codec};
+        let bytes: [u8; 32] = account.0;
+        let sp_account = SpAccountId32::from(bytes);
+        sp_account.to_ss58check_with_version(self.ss58_prefix().into())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

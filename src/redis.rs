@@ -472,7 +472,7 @@ impl RedisConnection {
                 "type": "ok",
                 "message": {
                     "AccountState": {
-                        "account": account_id.to_string(),
+                        "account": network.format_account(account_id),
                         "network": network,
                         "hashed_info": hash,
                         "verification_state": {
