@@ -16,6 +16,7 @@ use matrix_sdk::{
                 TextMessageEventContent,
             },
         },
+        UserId,
     },
     Client,
 };
@@ -23,6 +24,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::str::FromStr;
 use subxt::utils::AccountId32;
+use tokio::sync::OnceCell;
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, instrument, warn};
 
@@ -31,7 +33,24 @@ use crate::redis::RedisConnection;
 use crate::config::Config;
 use crate::{adapter::Adapter, api::Network, node::register_identity};
 
-// TODO: move those "independent" functions inside the Matrix struct (handle_content, etc.)
+/// Global Matrix client singleton - initialized once at startup
+/// Client already uses internal Arc, so we just store it directly
+static MATRIX_CLIENT: OnceCell<Client> = OnceCell::const_new();
+
+/// Initialize the global Matrix client (call once at startup)
+pub async fn init_matrix_client() -> anyhow::Result<()> {
+    let client = Matrix::login().await?;
+    MATRIX_CLIENT
+        .set(client)
+        .map_err(|_| anyhow::anyhow!("Matrix client already initialized"))?;
+    info!("Global Matrix client initialized");
+    Ok(())
+}
+
+/// Get the global Matrix client (must be initialized first)
+pub fn get_matrix_client() -> Option<Client> {
+    MATRIX_CLIENT.get().cloned()
+}
 
 struct Matrix {
     client: Client,
@@ -121,7 +140,18 @@ impl Matrix {
 
     #[instrument(skip_all)]
     async fn new() -> anyhow::Result<Self> {
-        let client = Self::login().await?;
+        // Initialize global client if not already done
+        if MATRIX_CLIENT.get().is_none() {
+            let client = Self::login().await?;
+            let _ = MATRIX_CLIENT.set(client);
+            info!("Global Matrix client initialized via new()");
+        }
+
+        let client = MATRIX_CLIENT
+            .get()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Failed to get Matrix client"))?;
+
         let mut room = RoomEventFilter::default();
         room.lazy_load_options = LazyLoadOptions::Enabled {
             include_redundant_members: true,
@@ -133,6 +163,7 @@ impl Matrix {
         let settings = SyncSettings::new()
             .filter(filter.into())
             .timeout(Duration::from_secs(30));
+
         Ok(Self { client, settings })
     }
 
@@ -341,6 +372,70 @@ async fn verify_device(device: &Device) -> anyhow::Result<()> {
 pub async fn start_bot() -> anyhow::Result<()> {
     Matrix::new().await?.listen().await;
     unreachable!("Matrix listener should never return");
+}
+
+/// Send a verification challenge to a Matrix user
+/// Works with native Matrix users and bridged users (Telegram, WhatsApp, etc.)
+///
+/// # Arguments
+/// * `matrix_id` - Full Matrix ID (e.g., `@user:server.org` or `@telegram_123:bridge.org`)
+/// * `challenge_token` - The verification code to send
+/// * `network` - Network for context in the message
+/// * `account_id` - Account being verified
+#[instrument(skip_all, fields(matrix_id = %matrix_id, network = %network))]
+pub async fn send_challenge(
+    matrix_id: &str,
+    challenge_token: &str,
+    network: &Network,
+    account_id: &AccountId32,
+) -> anyhow::Result<()> {
+    let client = get_matrix_client()
+        .ok_or_else(|| anyhow::anyhow!("Matrix client not initialized - call init_matrix_client() first"))?;
+
+    // Parse the Matrix ID
+    let user_id = UserId::parse(matrix_id)
+        .map_err(|e| anyhow::anyhow!("Invalid Matrix ID '{}': {}", matrix_id, e))?;
+
+    info!("Sending Matrix challenge to {} for {}/{}", matrix_id, network, account_id);
+
+    // Try to find an existing DM room with this user
+    let dm_room = client.get_dm_room(&user_id);
+
+    let room = match dm_room {
+        Some(room) => {
+            info!("Found existing DM room: {}", room.room_id());
+            room
+        }
+        None => {
+            // Create a new DM room
+            use matrix_sdk::ruma::api::client::room::create_room::v3::Request as CreateRoomRequest;
+
+            info!("Creating new DM room with {}", matrix_id);
+            let mut request = CreateRoomRequest::new();
+            request.is_direct = true;
+            request.invite = vec![user_id.to_owned()];
+
+            let response = client.create_room(request).await?;
+            info!("Created new DM room: {}", response.room_id());
+
+            client
+                .get_room(&response.room_id())
+                .ok_or_else(|| anyhow::anyhow!("Failed to get newly created room"))?
+        }
+    };
+
+    // Send the challenge message
+    let message = format!(
+        "🔐 W3Registrar Verification\n\n\
+        Your verification code: {}\n\n\
+        Reply with this code to verify your account on {}.",
+        challenge_token, network
+    );
+
+    room.send(RoomMessageEventContent::text_plain(&message)).await?;
+
+    info!("Successfully sent Matrix challenge to {}", matrix_id);
+    Ok(())
 }
 
 /// Extract sender account from state event

@@ -21,6 +21,7 @@ use crate::redis::RedisConnection;
 use crate::adapter::{
     email::jmap::send_email_challenge,
     github::{Github, GithubRedirectStepTwoParams},
+    matrix::send_challenge as send_matrix_challenge,
     pgp::PGPHelper,
     Adapter,
 };
@@ -1545,12 +1546,25 @@ impl SocketListener {
                 }
             }
             AccountType::Matrix => {
-                // Matrix challenges: user must DM the bot with their code
-                // TODO: Add proactive DM sending once Matrix client is shared globally
+                // Send Matrix DM with challenge (works with bridges too)
                 info!(
-                    "Matrix challenge initiated for {} - user must DM the bot with code: {}",
-                    request.field_value, token
+                    "Sending Matrix challenge to {} for {}/{}",
+                    request.field_value, request.network, request.account
                 );
+                if let Err(e) = send_matrix_challenge(
+                    &request.field_value,
+                    &token,
+                    &request.network,
+                    &request.account,
+                )
+                .await
+                {
+                    error!("Failed to send Matrix challenge: {}", e);
+                    return Ok(json!({
+                        "type": "error",
+                        "message": format!("Failed to send Matrix challenge: {}", e)
+                    }));
+                }
             }
             _ => {
                 // Other field types don't have automated challenge sending yet
@@ -1569,10 +1583,10 @@ impl SocketListener {
                 "message": {
                     "InitiateChallengeResponse": {
                         "field_type": format!("{:?}", request.field_type),
-                        "challenge_sent": matches!(request.field_type, AccountType::Email),
+                        "challenge_sent": matches!(request.field_type, AccountType::Email | AccountType::Matrix),
                         "instructions": match request.field_type {
                             AccountType::Email => "Check your email for the verification code",
-                            AccountType::Matrix => "DM our Matrix bot with your verification code",
+                            AccountType::Matrix => "Check your Matrix DMs for the verification code",
                             _ => "Complete the verification challenge"
                         }
                     }
