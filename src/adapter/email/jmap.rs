@@ -18,15 +18,17 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone)]
 pub struct JmapMail {
-    pub body: Option<String>,
     pub sender: String,
+    pub recipient: Option<String>,
+    pub subject: Option<String>,
+    pub body: Option<String>,
 }
 
 impl Adapter for JmapMail {}
 
 impl JmapMail {
-    fn new(sender: String, body: Option<String>) -> Self {
-        Self { body, sender }
+    fn new(sender: String, recipient: Option<String>, subject: Option<String>, body: Option<String>) -> Self {
+        Self { sender, recipient, subject, body }
     }
 
     async fn process_email(&self) -> anyhow::Result<()> {
@@ -245,20 +247,25 @@ Subject: {}
     async fn fetch_email(&self, email_id: &str) -> anyhow::Result<JmapMail> {
         let email = self.client.email_get(
             email_id,
-            [Property::From, Property::Preview].into(),
+            [Property::From, Property::To, Property::Subject, Property::Preview].into(),
         ).await?
         .ok_or_else(|| anyhow!("Email {} not found", email_id))?;
 
         let sender = email
             .from()
             .and_then(|addrs| addrs.first())
-            .and_then(|addr| Some(addr.email()))
-            .ok_or_else(|| anyhow!("No sender found for email"))?
-            .to_string();
+            .map(|addr| addr.email().to_string())
+            .ok_or_else(|| anyhow!("No sender found for email"))?;
 
+        let recipient = email
+            .to()
+            .and_then(|addrs| addrs.first())
+            .map(|addr| addr.email().to_string());
+
+        let subject = email.subject().map(|s| s.to_string());
         let body = email.preview().map(|s| s.to_string());
 
-        Ok(JmapMail::new(sender, body))
+        Ok(JmapMail::new(sender, recipient, subject, body))
     }
 
     async fn mark_as_seen(&self, email_id: &str) -> anyhow::Result<()> {

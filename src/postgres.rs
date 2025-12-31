@@ -748,6 +748,75 @@ impl PostgresConnection {
         Ok(())
     }
 
+    /// Get PGP key owner info for remailer forwarding
+    /// Returns (address, network, remailer_enabled, remailer_registered_only, matrix_id)
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn get_remailer_recipient(
+        &self,
+        fingerprint: &str,
+    ) -> anyhow::Result<Option<RemailerRecipient>> {
+        let query = "
+            SELECT p.address, p.network, p.remailer_enabled, p.remailer_registered_only,
+                   p.require_verified_pgp, r.matrix
+            FROM pgp_keys p
+            LEFT JOIN registration r ON p.address = r.wallet_id AND p.network = r.network
+            WHERE p.fingerprint = $1
+        ";
+
+        let rows = self.client.query(query, &[&fingerprint]).await?;
+
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
+        let row = &rows[0];
+        Ok(Some(RemailerRecipient {
+            address: row.get(0),
+            network: row.get(1),
+            remailer_enabled: row.get(2),
+            remailer_registered_only: row.get(3),
+            require_verified_pgp: row.get(4),
+            matrix_id: row.get(5),
+        }))
+    }
+
+    /// Get a registration by wallet_id and network
+    #[instrument(skip_all, parent = &self.span)]
+    pub async fn get_registration(
+        &self,
+        wallet_id: &AccountId32,
+        network: &Network,
+    ) -> anyhow::Result<Option<RegistrationRecord>> {
+        let query = format!(
+            "SELECT wallet_id, network::text, discord, twitter, matrix, email,
+                    display_name, github, legal, web, pgp_fingerprint
+             FROM registration
+             WHERE wallet_id = $1 AND network = '{}'::network",
+            network
+        );
+
+        let rows = self.client.query(&query, &[&wallet_id.to_string()]).await?;
+
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
+        let row = &rows[0];
+        Ok(Some(RegistrationRecord {
+            wallet_id: row.get(0),
+            discord: row.get(2),
+            twitter: row.get(3),
+            matrix: row.get(4),
+            email: row.get(5),
+            display_name: row.get(6),
+            github: row.get(7),
+            legal: row.get(8),
+            web: row.get(9),
+            pgp_fingerprint: row.get(10),
+            ..Default::default()
+        }))
+    }
+
     /// Block a sender from contacting recipient via remailer
     #[instrument(skip_all, parent = &self.span)]
     pub async fn remailer_block_sender(
@@ -1015,6 +1084,17 @@ pub struct RemailerBlockedSender {
     pub address: String,
     pub blocked_at: chrono::NaiveDateTime,
     pub reason: Option<String>,
+}
+
+/// Remailer recipient lookup result
+#[derive(Debug, Clone)]
+pub struct RemailerRecipient {
+    pub address: String,
+    pub network: String,
+    pub remailer_enabled: bool,
+    pub remailer_registered_only: bool,
+    pub require_verified_pgp: bool,
+    pub matrix_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
