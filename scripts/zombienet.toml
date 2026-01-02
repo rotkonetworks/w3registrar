@@ -1,0 +1,28 @@
+[settings]
+timeout = 180
+
+[relaychain]
+chain = "rococo-local"
+default_command = "polkadot"
+default_args = ["--detailed-log-output", "-lparachain=debug,xcm=trace"]
+
+[[relaychain.nodes]]
+name = "alice"
+validator = true
+args = ["--alice"]
+
+[[relaychain.nodes]]
+name = "bob"
+validator = true
+args = ["--bob"]
+
+# People Chain parachain (uses rococo-local chain spec with people runtime)
+[[parachains]]
+id = 1004
+chain = "people-rococo-local"
+default_command = "polkadot-omni-node"
+default_args = ["--detailed-log-output"]
+
+[[parachains.collators]]
+name = "people-collator-1"
+args = ["--alice"]
