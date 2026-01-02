@@ -469,6 +469,9 @@ pub struct PostgresConfig {
     pub cert_path: Option<PathBuf>,
     pub options: Option<String>,
     pub timeout: Option<u64>,
+    pub max_connections: Option<u32>,
+    /// Read replica host for search queries (optional)
+    pub read_replica_host: Option<String>,
 }
 
 impl Default for PostgresConfig {
@@ -483,6 +486,8 @@ impl Default for PostgresConfig {
             cert_path: None,
             options: None,
             timeout: None,
+            max_connections: Some(10),
+            read_replica_host: None,
         }
     }
 }

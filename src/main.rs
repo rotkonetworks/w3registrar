@@ -11,7 +11,7 @@ mod token;
 
 use anyhow::{Context as _, Result};
 use api::{spawn_http_serv, spawn_identity_indexer};
-use postgres::PostgresConnection;
+use postgres::{initialize_postgres, PostgresConnection};
 use std::panic;
 use tracing::{error, info, instrument};
 use tracing_subscriber::EnvFilter;
@@ -105,8 +105,11 @@ async fn main() -> Result<()> {
     // init redis conn pool
     RedisConnection::initialize_pool(&config.redis).await?;
 
-    // init postgress table
-    PostgresConnection::new(&config.postgres)
+    // init shared postgres client
+    initialize_postgres(&config.postgres).await?;
+
+    // init postgres tables
+    PostgresConnection::default()
         .await?
         .init()
         .await?;

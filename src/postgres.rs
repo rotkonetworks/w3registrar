@@ -14,14 +14,16 @@ use std::fmt::{format, Display};
 use std::net::IpAddr;
 use std::ops::Deref;
 use std::slice::Iter;
+use std::sync::Arc;
 use std::{str::FromStr, time::Duration};
 use subxt::ext::codec::Encode;
 use subxt::storage::{DefaultAddress, StorageKeyValuePair};
 use subxt::utils::{AccountId32, Yes};
+use tokio::sync::OnceCell;
 use tokio_postgres::types::FromSql;
 use tokio_postgres::{Client, GenericClient, NoTls, SimpleQueryMessage, Statement, ToStatement};
 use tracing::instrument;
-use tracing::{error, info, info_span, Span};
+use tracing::{error, info, info_span, debug, Span};
 
 use crate::api::TimeFilter;
 use crate::config::Exceptions;
@@ -42,9 +44,232 @@ use crate::{
     },
 };
 
+/// Global shared Postgres client - initialized once at startup
+/// Since we use Neon's pooler endpoint, we only need a single client
+/// that reuses the server-side connection pool
+static POSTGRES_CLIENT: OnceCell<Arc<Client>> = OnceCell::const_new();
+
+/// Global read replica client for search queries
+static POSTGRES_READ_REPLICA: OnceCell<Arc<Client>> = OnceCell::const_new();
+
+/// Initialize the global Postgres client
+pub async fn initialize_postgres(cfg: &PostgresConfig) -> anyhow::Result<()> {
+    info!("Initializing shared Postgres client");
+
+    let mut conn_cfg = tokio_postgres::Config::new();
+    conn_cfg
+        .user(&cfg.user)
+        .host(&cfg.host)
+        .port(cfg.port)
+        .dbname(&cfg.dbname);
+
+    if let Some(pwd) = &cfg.password {
+        conn_cfg.password(pwd);
+    }
+
+    if let Some(opts) = &cfg.options {
+        conn_cfg.options(opts);
+    }
+
+    if let Some(timeout) = cfg.timeout {
+        conn_cfg.connect_timeout(Duration::from_millis(timeout));
+    }
+
+    let client = match &cfg.cert_path {
+        Some(path) => {
+            let mut builder = SslConnector::builder(SslMethod::tls())?;
+            builder.set_ca_file(path)?;
+            let connector = MakeTlsConnector::new(builder.build());
+            let (client, connection) = conn_cfg.connect(connector).await?;
+
+            tokio::spawn(async move {
+                if let Err(e) = connection.await {
+                    error!(error = ?e, "postgres connection error");
+                }
+            });
+            client
+        }
+        None => {
+            let (client, connection) = conn_cfg.connect(NoTls).await?;
+
+            tokio::spawn(async move {
+                if let Err(e) = connection.await {
+                    error!(error = ?e, "postgres connection error");
+                }
+            });
+            client
+        }
+    };
+
+    POSTGRES_CLIENT
+        .set(Arc::new(client))
+        .map_err(|_| anyhow!("Postgres client already initialized"))?;
+
+    info!("Shared Postgres client initialized successfully");
+
+    // Initialize read replica if configured
+    if let Some(replica_host) = &cfg.read_replica_host {
+        info!("Initializing read replica client: {}", replica_host);
+
+        let mut replica_cfg = tokio_postgres::Config::new();
+        replica_cfg
+            .user(&cfg.user)
+            .host(replica_host)
+            .port(cfg.port)
+            .dbname(&cfg.dbname);
+
+        if let Some(pwd) = &cfg.password {
+            replica_cfg.password(pwd);
+        }
+
+        if let Some(opts) = &cfg.options {
+            replica_cfg.options(opts);
+        }
+
+        if let Some(timeout) = cfg.timeout {
+            replica_cfg.connect_timeout(Duration::from_millis(timeout));
+        }
+
+        let replica_client = match &cfg.cert_path {
+            Some(path) => {
+                let mut builder = SslConnector::builder(SslMethod::tls())?;
+                builder.set_ca_file(path)?;
+                let connector = MakeTlsConnector::new(builder.build());
+                let (client, connection) = replica_cfg.connect(connector).await?;
+
+                tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        error!(error = ?e, "read replica connection error");
+                    }
+                });
+                client
+            }
+            None => {
+                let (client, connection) = replica_cfg.connect(NoTls).await?;
+
+                tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        error!(error = ?e, "read replica connection error");
+                    }
+                });
+                client
+            }
+        };
+
+        POSTGRES_READ_REPLICA
+            .set(Arc::new(replica_client))
+            .map_err(|_| anyhow!("Read replica already initialized"))?;
+
+        info!("Read replica client initialized successfully");
+    }
+
+    Ok(())
+}
+
+/// Get the global shared Postgres client
+pub fn get_postgres_client() -> anyhow::Result<Arc<Client>> {
+    POSTGRES_CLIENT
+        .get()
+        .cloned()
+        .ok_or_else(|| anyhow!("Postgres client not initialized - call initialize_postgres first"))
+}
+
+/// Get the read replica client (falls back to primary if not configured)
+pub fn get_read_replica_client() -> Arc<Client> {
+    POSTGRES_READ_REPLICA
+        .get()
+        .cloned()
+        .unwrap_or_else(|| get_postgres_client().expect("Postgres not initialized"))
+}
+
 pub struct PostgresConnection {
     span: Span,
     client: Client,
+}
+
+/// Read-only connection wrapper for search queries (uses read replica)
+pub struct ReadOnlyConnection {
+    span: Span,
+    client: Arc<Client>,
+}
+
+impl ReadOnlyConnection {
+    pub async fn search_registration_records(
+        &self,
+        search_query: &RegistrationQuery,
+    ) -> anyhow::Result<Vec<RegistrationRecord>> {
+        let params = search_query.params();
+        let query_params: Vec<&(dyn ToSql + Sync)> = params
+            .iter()
+            .map(|v| v as &(dyn ToSql + Sync))
+            .collect::<Vec<_>>();
+
+        debug!(statement=?search_query.statement(), "Read replica search query");
+
+        Ok(self
+            .client
+            .query(&search_query.statement(), query_params.as_slice())
+            .await?
+            .iter()
+            .map(RegistrationRecord::from)
+            .collect())
+    }
+
+    pub async fn search_timeline_records(
+        &self,
+        search_query: &TimelineQuery,
+    ) -> anyhow::Result<Vec<TimelineRecord>> {
+        let params = search_query.params();
+        let query_params: Vec<&(dyn ToSql + Sync)> = params
+            .iter()
+            .map(|v| v as &(dyn ToSql + Sync))
+            .collect::<Vec<_>>();
+
+        debug!(statement=?search_query.statement(), "Read replica timeline query");
+
+        Ok(self
+            .client
+            .query(&search_query.statement(), query_params.as_slice())
+            .await?
+            .iter()
+            .map(TimelineRecord::from)
+            .collect())
+    }
+
+    pub async fn get_identity_events(
+        &self,
+        wallet_id: &str,
+        network: Option<&Network>,
+        limit: Option<i64>,
+    ) -> anyhow::Result<Vec<IdentityEventRecord>> {
+        let limit = limit.unwrap_or(100);
+
+        let (query, params): (String, Vec<&(dyn ToSql + Sync)>) = if let Some(net) = network {
+            (
+                format!(
+                    "SELECT wallet_id, network::TEXT, event_type::TEXT, block_number, block_hash, registrar_index, data, created_at
+                     FROM identity_events
+                     WHERE wallet_id = $1 AND network = '{}'
+                     ORDER BY block_number DESC, created_at DESC
+                     LIMIT $2",
+                    net
+                ),
+                vec![&wallet_id, &limit],
+            )
+        } else {
+            (
+                "SELECT wallet_id, network::TEXT, event_type::TEXT, block_number, block_hash, registrar_index, data, created_at
+                 FROM identity_events
+                 WHERE wallet_id = $1
+                 ORDER BY block_number DESC, created_at DESC
+                 LIMIT $2".to_string(),
+                vec![&wallet_id, &limit],
+            )
+        };
+
+        let rows = self.client.query(&query, &params).await?;
+        Ok(rows.iter().map(IdentityEventRecord::from).collect())
+    }
 }
 
 impl PostgresConnection {
@@ -615,10 +840,19 @@ impl PostgresConnection {
         Ok(Self { client, span })
     }
 
+    /// Get a postgres connection - uses shared client if available
     pub async fn default() -> anyhow::Result<Self> {
         let cfg = Config::load_static();
         let pg_config = cfg.postgres.clone();
         PostgresConnection::new(&pg_config).await
+    }
+
+    /// Get a read-only connection (uses read replica if configured)
+    pub fn read_only() -> anyhow::Result<ReadOnlyConnection> {
+        let client = get_read_replica_client();
+        let span = info_span!("postgres_readonly");
+        debug!("Using read replica for query");
+        Ok(ReadOnlyConnection { client, span })
     }
 
     /// Store a PGP public key in the database
@@ -1542,8 +1776,8 @@ impl TimelineQuery {
     }
 
     pub async fn exec(&self) -> anyhow::Result<Vec<TimelineRecord>> {
-        let mut pg_conn = PostgresConnection::default().await?;
-        info!("Timeline search query");
+        let pg_conn = PostgresConnection::read_only()?;
+        debug!("Timeline search query (read replica)");
         pg_conn.search_timeline_records(self).await
     }
 
@@ -1728,10 +1962,10 @@ impl Query for RegistrationQuery {
 }
 
 impl RegistrationQuery {
-    /// Executes the [RegistrationQuery]
+    /// Executes the [RegistrationQuery] using read replica
     pub async fn exec(&self) -> anyhow::Result<Vec<RegistrationRecord>> {
-        let mut pg_conn = PostgresConnection::default().await?;
-        info!("Registration search query");
+        let pg_conn = PostgresConnection::read_only()?;
+        debug!("Registration search query (read replica)");
         pg_conn.search_registration_records(self).await
     }
 
