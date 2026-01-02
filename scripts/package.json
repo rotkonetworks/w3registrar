@@ -1,0 +1,17 @@
+{
+  "name": "w3registrar-scripts",
+  "version": "1.0.0",
+  "description": "Scripts for W3Registrar governance and setup",
+  "scripts": {
+    "generate-proposal": "ts-node generate_registrar_proposal.ts"
+  },
+  "dependencies": {
+    "@polkadot/api": "^14.0.0",
+    "@polkadot/util-crypto": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}
