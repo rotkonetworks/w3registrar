@@ -47,6 +47,8 @@ cert_path = "/path/to/pg_cert.pem"
 # cert_path = "./cert.crt" # Optional
 # timeout = 30 # Optional
 # options = "key=value" # Optional
+# max_connections = 10 # Optional, connection pool size
+# read_replica_host = "replica.example.com" # Optional, for read-only queries
 
 [adapter]
 [adapter.matrix]
