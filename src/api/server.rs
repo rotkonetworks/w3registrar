@@ -21,7 +21,7 @@ use crate::redis::RedisConnection;
 use crate::adapter::{
     email::jmap::send_email_challenge,
     github::{Github, GithubRedirectStepTwoParams},
-    matrix::send_challenge as send_matrix_challenge,
+    matrix::{send_challenge as send_matrix_challenge, send_dm as send_matrix_dm},
     pgp::PGPHelper,
     Adapter,
 };
@@ -242,6 +242,9 @@ impl SocketListener {
             }
             WebSocketMessage::RemailerGetBlocked(incoming) => {
                 self.handle_remailer_get_blocked_request(incoming).await
+            }
+            WebSocketMessage::RemailerSendMessage(incoming) => {
+                self.handle_remailer_send_message_request(incoming).await
             }
             WebSocketMessage::InitiateChallenge(incoming) => {
                 self.handle_initiate_challenge_request(incoming).await
@@ -1447,6 +1450,98 @@ impl SocketListener {
         }))
     }
 
+    /// Handle RemailerSendMessage request - forward a message to another user via Matrix
+    #[instrument(skip_all, parent = &self.span)]
+    async fn handle_remailer_send_message_request(
+        &self,
+        request: RemailerSendMessageRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        let cfg = Config::load_static();
+
+        if !cfg.registrar.is_network_supported(&request.network) {
+            return Err(anyhow!("Network {} not supported", request.network));
+        }
+
+        // Verify timestamp to prevent replay attacks
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let age_ms = now.saturating_sub(request.timestamp);
+        const MAX_AGE_MS: u64 = 5 * 60 * 1000;
+
+        if age_ms > MAX_AGE_MS {
+            return Err(anyhow!(
+                "Signature timestamp too old: {} ms (max {} ms)",
+                age_ms,
+                MAX_AGE_MS
+            ));
+        }
+
+        // Verify signature
+        let message = format!(
+            "Send message\nFrom: {}\nTo: {}\nNetwork: {}\nRecipient Network: {}\nMessage: {}\nTimestamp: {}",
+            request.sender, request.recipient, request.network, request.recipient_network, request.message, request.timestamp
+        );
+
+        verify_signature(&request.sender, message.as_bytes(), &request.signature)?;
+
+        // Get recipient's registration to find their Matrix ID
+        let pg_conn = PostgresConnection::default().await?;
+        let recipient_reg = pg_conn
+            .get_registration(&request.recipient, &request.recipient_network)
+            .await?;
+
+        let matrix_id = match recipient_reg.and_then(|r| r.matrix) {
+            Some(m) if !m.is_empty() => m,
+            _ => {
+                return Ok(json!({
+                    "type": "JsonResult",
+                    "payload": {
+                        "type": "error",
+                        "message": "Recipient has no Matrix ID configured"
+                    }
+                }));
+            }
+        };
+
+        // Check if sender is blocked by recipient
+        if pg_conn
+            .remailer_is_blocked(&request.recipient, &request.recipient_network, &request.sender.to_string())
+            .await?
+        {
+            return Ok(json!({
+                "type": "JsonResult",
+                "payload": {
+                    "type": "error",
+                    "message": "You are blocked by this recipient"
+                }
+            }));
+        }
+
+        // Format and send the message
+        let formatted_message = format!(
+            "📬 Message from {}\nNetwork: {}\n\n{}",
+            request.sender, request.network, request.message
+        );
+
+        send_matrix_dm(&matrix_id, &formatted_message).await?;
+
+        info!(
+            "Remailer: forwarded message from {} to {} ({})",
+            request.sender, request.recipient, matrix_id
+        );
+
+        Ok(json!({
+            "type": "JsonResult",
+            "payload": {
+                "type": "ok",
+                "message": "Message sent successfully"
+            }
+        }))
+    }
+
     /// Handle InitiateChallenge request - sends challenge to email/matrix before on-chain submission
     #[instrument(skip_all, parent = &self.span)]
     async fn handle_initiate_challenge_request(
@@ -1826,8 +1921,8 @@ pub async fn spawn_http_serv() -> anyhow::Result<()> {
     let app = Router::new()
         .route(redirect_url.path(), get(github_oauth_callback))
         .route("/ping", get(pong))
-        .route("/events/:network/:wallet", get(get_events))
-        .route("/admin/backfill/:network", axum::routing::post(trigger_backfill));
+        .route("/events/{network}/{wallet}", get(get_events))
+        .route("/admin/backfill/{network}", axum::routing::post(trigger_backfill));
     let listener = tokio::net::TcpListener::bind(&(http_config.host, http_config.port)).await?;
     axum::serve(listener, app).await?;
     Ok(())
