@@ -17,3 +17,4 @@ cert.crt
 key.pem
 *.pem
 *.crt
+dump.rdb

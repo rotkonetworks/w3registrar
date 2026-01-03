@@ -123,6 +123,27 @@ pub struct RemailerGetBlockedRequest {
     pub timestamp: u64,
 }
 
+/// Send a message to another user via remailer
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RemailerSendMessageRequest {
+    /// Sender's network
+    pub network: Network,
+    /// Sender's account (for signature verification)
+    #[serde(deserialize_with = "ss58_to_account_id32")]
+    pub sender: AccountId32,
+    /// Recipient's account
+    #[serde(deserialize_with = "ss58_to_account_id32")]
+    pub recipient: AccountId32,
+    /// Recipient's network (may differ from sender)
+    pub recipient_network: Network,
+    /// Message content
+    pub message: String,
+    /// Signature from sender
+    pub signature: String,
+    /// Timestamp for replay protection
+    pub timestamp: u64,
+}
+
 mod date_format {
     use chrono::NaiveDate;
     use serde::{self, Deserialize, Deserializer, Serializer};
@@ -365,6 +386,7 @@ pub enum WebSocketMessage {
     RemailerBlock(RemailerBlockRequest),
     RemailerUnblock(RemailerUnblockRequest),
     RemailerGetBlocked(RemailerGetBlockedRequest),
+    RemailerSendMessage(RemailerSendMessageRequest),
     SearchRegistration(IncomingSearchRequest),
     GetAccountHistory(IncomingAccountHistoryRequest),
     AdminApprove(AdminApproveRequest),
@@ -392,6 +414,7 @@ impl VersionedMessage {
             WebSocketMessage::RemailerBlock(_) => "RemailerBlock",
             WebSocketMessage::RemailerUnblock(_) => "RemailerUnblock",
             WebSocketMessage::RemailerGetBlocked(_) => "RemailerGetBlocked",
+            WebSocketMessage::RemailerSendMessage(_) => "RemailerSendMessage",
             WebSocketMessage::SearchRegistration(_) => "SearchRegistration",
             WebSocketMessage::GetAccountHistory(_) => "GetAccountHistory",
             WebSocketMessage::AdminApprove(_) => "AdminApprove",
