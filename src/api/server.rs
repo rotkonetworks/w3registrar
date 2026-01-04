@@ -29,6 +29,7 @@ use crate::adapter::{
 use anyhow::anyhow;
 use anyhow::Result;
 use axum::{extract::Query, routing::get, Router};
+use tower_http::cors::{Any, CorsLayer};
 use futures::channel::mpsc::{self, Sender};
 use futures::stream::{SplitSink, SplitStream};
 use futures::StreamExt;
@@ -1918,11 +1919,18 @@ pub async fn spawn_http_serv() -> anyhow::Result<()> {
         .redirect_url
         .ok_or_else(|| anyhow!("GitHub redirect_url not configured"))?;
 
+    // allow any origin - we don't care where requests come from
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     let app = Router::new()
         .route(redirect_url.path(), get(github_oauth_callback))
         .route("/ping", get(pong))
         .route("/events/{network}/{wallet}", get(get_events))
-        .route("/admin/backfill/{network}", axum::routing::post(trigger_backfill));
+        .route("/admin/backfill/{network}", axum::routing::post(trigger_backfill))
+        .layer(cors);
     let listener = tokio::net::TcpListener::bind(&(http_config.host, http_config.port)).await?;
     axum::serve(listener, app).await?;
     Ok(())
