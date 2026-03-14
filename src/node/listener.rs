@@ -11,7 +11,7 @@ use crate::node::{
     events::{is_judgement_given, is_judgement_requested, is_judgement_unrequested, process_identity_events},
     filter_accounts,
     substrate::runtime_types::pallet_identity::types::Judgement,
-    Block, Client as NodeClient,
+    Client as NodeClient,
 };
 use crate::postgres::{PostgresConnection, RegistrationRecord};
 use crate::redis::RedisConnection;
@@ -182,17 +182,26 @@ impl NodeListener {
                 .get(&network)
                 .ok_or_else(|| anyhow!("no client for network {}", network))?;
 
-            let mut block_stream = client.blocks().subscribe_finalized().await?;
+            let mut block_stream = client.stream_blocks().await?;
             let network_name = network.clone();
             let mut self_clone = self.clone();
 
             let handle = tokio::spawn(async move {
                 while let Some(item) = block_stream.next().await {
                     match item {
-                        Ok(block) => {
-                            if let Ok(events) = block.events().await {
+                        Ok(block_ref) => {
+                            let at_block = match block_ref.at().await {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    error!(error = %e, "failed to get block");
+                                    continue;
+                                }
+                            };
+                            if let Ok(events) = at_block.events().fetch().await {
+                                let block_number = at_block.block_number();
+                                let block_hash = at_block.block_hash();
                                 self_clone
-                                    .process_block_events(events, &block, &network_name)
+                                    .process_block_events(events, block_number, block_hash, &network_name)
                                     .await;
                             }
                         }
@@ -214,11 +223,11 @@ impl NodeListener {
     async fn process_block_events(
         &mut self,
         events: subxt::events::Events<subxt::SubstrateConfig>,
-        block: &Block,
+        block_number: u64,
+        block_hash_val: sp_core::H256,
         network: &Network,
     ) {
-        let block_number = block.number();
-        let block_hash = hex::encode(block.hash().0);
+        let block_hash = hex::encode(block_hash_val.0);
 
         // Use shared event processor to extract and store all identity events
         let processed_events = process_identity_events(&events, network, block_number, &block_hash).await;
@@ -253,7 +262,7 @@ impl NodeListener {
                             // Get the original event to extract JudgementGiven details
                             for event_result in events.iter() {
                                 if let Ok(event) = event_result {
-                                    if let Ok(Some(jud)) = event.as_event::<crate::node::identity::events::JudgementGiven>() {
+                                    if let Ok(jud) = event.decode_as::<crate::node::identity::events::JudgementGiven>() {
                                         if jud.target == who {
                                             if let Ok(Some(record)) =
                                                 RegistrationRecord::from_judgement(&jud, network, client).await
@@ -263,7 +272,7 @@ impl NodeListener {
                                                         &record,
                                                         network,
                                                         block_number,
-                                                        &block.hash(),
+                                                        &block_hash_val,
                                                     )
                                                     .await
                                                 {
@@ -286,7 +295,7 @@ impl NodeListener {
         &self,
         record: &RegistrationRecord,
         network: &Network,
-        block_number: u32,
+        block_number: u64,
         block_hash: &sp_core::H256,
     ) -> anyhow::Result<()> {
         let conn = PostgresConnection::default().await?;

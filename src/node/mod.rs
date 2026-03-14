@@ -12,7 +12,7 @@ use sp_core::blake2_256;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
-use subxt::tx::Signer;
+use subxt::transactions::Signer;
 use subxt::utils::AccountId32;
 use subxt::SubstrateConfig;
 use subxt_signer::sr25519::Keypair;
@@ -23,7 +23,6 @@ use super::api::Account;
 use super::redis::RedisConnection;
 
 pub type Client = subxt::OnlineClient<SubstrateConfig>;
-pub type Block = subxt::blocks::Block<SubstrateConfig, Client>;
 pub type BlockHash = subxt::config::substrate::H256;
 type PairSigner = Keypair;
 
@@ -82,7 +81,7 @@ fn exponential_backoff(attempt: u32) -> Duration {
 /// Fetch the latest nonce for an account
 async fn fetch_latest_nonce(client: &Client, account: &AccountId32) -> Result<u64> {
     client
-        .tx()
+        .tx().await?
         .account_nonce(account)
         .await
         .map_err(|e| anyhow!("Failed to fetch nonce: {}", e))
@@ -104,11 +103,11 @@ macro_rules! impl_chain_ops {
                 client: &Client,
                 who: &AccountId32,
             ) -> Result<Registration<u128, IdentityInfo>> {
-                let storage = client.storage().at_latest().await?;
-                let identity = runtime::storage().identity().identity_of(who.clone());
-                match storage.fetch(&identity).await? {
+                let at_block = client.at_current_block().await?;
+                let identity = runtime::storage().identity().identity_of();
+                match at_block.storage().try_fetch(identity, (who.clone(),)).await? {
                     None => Err(anyhow!("No registration found for {}", who)),
-                    Some(reg) => Ok(reg),
+                    Some(val) => Ok(val.decode()?),
                 }
             }
 
@@ -146,12 +145,12 @@ macro_rules! impl_chain_ops {
                     "Generated identity hash"
                 );
 
-                use runtime::identity::calls::types::provide_judgement::Identity;
+                let identity_hash = sp_core::H256::from_str(&hash)?;
                 let inner_call = runtime::runtime_types::pallet_identity::pallet::Call::provide_judgement {
                     reg_index: network_cfg.registrar_index,
                     target: subxt::utils::MultiAddress::Id(who.clone()),
                     judgement,
-                    identity: Identity::from_str(&hash)?,
+                    identity: identity_hash,
                 };
 
                 let tx = runtime::tx().proxy().proxy(
@@ -165,13 +164,13 @@ macro_rules! impl_chain_ops {
                 info!("Signer loaded");
                 let mut resubmit_count = 0;
                 let mut current_fee_multiplier = 1.0;
-                let mut current_nonce = client.tx().account_nonce(&<Keypair as Signer<SubstrateConfig>>::account_id(&signer)).await?;
+                let mut current_nonce = client.tx().await?.account_nonce(&Signer::<SubstrateConfig>::account_id(&signer)).await?;
                 info!("Nonce fetched");
 
                 'tx_loop: while resubmit_count < MAX_RESUBMIT_ATTEMPTS {
                     let start_time = Instant::now();
-                    let latest_block = client.blocks().at_latest().await?;
-                    info!(block_hash=?hex::encode(latest_block.hash().0), "Latest block");
+                    let latest_block = client.at_current_block().await?;
+                    info!(block_hash=?hex::encode(latest_block.block_hash().0), "Latest block");
 
                     let tx_params = subxt::config::substrate::SubstrateExtrinsicParamsBuilder::new()
                         .mortal(10)
@@ -180,7 +179,7 @@ macro_rules! impl_chain_ops {
                         .build();
 
                     let mut tx_progress = client
-                        .tx()
+                        .tx().await?
                         .sign_and_submit_then_watch(&tx, &signer, tx_params)
                         .await?;
                     info!("Watching transactions");
@@ -194,7 +193,7 @@ macro_rules! impl_chain_ops {
                         }
 
                         match status? {
-                            subxt::tx::TxStatus::InFinalizedBlock(in_block) => {
+                            subxt::transactions::TransactionStatus::InFinalizedBlock(in_block) => {
                                 info!(transaction=?in_block.extrinsic_hash(), block=?in_block.block_hash(),
                                     "Transaction is finalized",
                                 );
@@ -214,7 +213,7 @@ macro_rules! impl_chain_ops {
                                     }
                                 }
                             }
-                            subxt::tx::TxStatus::NoLongerInBestBlock => {
+                            subxt::transactions::TransactionStatus::NoLongerInBestBlock => {
                                 current_fee_multiplier *= 1.2;
                                 info!(
                                     "Transaction no longer in best block, bumping fee multiplier to {}, attempting resubmission {}/{}",
@@ -226,20 +225,20 @@ macro_rules! impl_chain_ops {
                                 tokio::time::sleep(exponential_backoff(resubmit_count)).await;
                                 continue 'tx_loop;
                             }
-                            subxt::tx::TxStatus::Error { message } => {
+                            subxt::transactions::TransactionStatus::Error { message } => {
                                 if message.contains("nonce") {
                                     warn!("Nonce error detected, fetching latest nonce");
-                                    current_nonce = fetch_latest_nonce(&client, &<Keypair as Signer<SubstrateConfig>>::account_id(&signer)).await?;
+                                    current_nonce = fetch_latest_nonce(&client, &Signer::<SubstrateConfig>::account_id(&signer)).await?;
                                     resubmit_count += 1;
                                     tokio::time::sleep(exponential_backoff(resubmit_count)).await;
                                     continue 'tx_loop;
                                 }
                                 return Err(anyhow!("Transaction failed with error: {}", message));
                             }
-                            subxt::tx::TxStatus::Invalid { message } => {
+                            subxt::transactions::TransactionStatus::Invalid { message } => {
                                 return Err(anyhow!("Transaction is invalid: {}", message));
                             }
-                            subxt::tx::TxStatus::Dropped { message } => {
+                            subxt::transactions::TransactionStatus::Dropped { message } => {
                                 if message.contains("low priority") || message.contains("fee too low") {
                                     warn!(
                                         "Transaction dropped due to low fee, increasing fee multiplier to {}",
@@ -252,13 +251,13 @@ macro_rules! impl_chain_ops {
                                 }
                                 return Err(anyhow!("Transaction was dropped: {}", message));
                             }
-                            subxt::tx::TxStatus::Validated => {
+                            subxt::transactions::TransactionStatus::Validated => {
                                 info!("Transaction validated and added to the pool");
                             }
-                            subxt::tx::TxStatus::Broadcasted => {
+                            subxt::transactions::TransactionStatus::Broadcasted => {
                                 info!("Transaction broadcasted");
                             }
-                            subxt::tx::TxStatus::InBestBlock(in_block) => {
+                            subxt::transactions::TransactionStatus::InBestBlock(in_block) => {
                                 info!(
                                     "Transaction {:?} included in block {:?}",
                                     in_block.extrinsic_hash(),

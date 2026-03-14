@@ -31,8 +31,9 @@ impl Indexer {
 
                 let client = NodeClient::from_url(&network_cfg.endpoint).await?;
 
-                let block_index = client.blocks().at_latest().await?.number();
-                let block_hash = client.blocks().at_latest().await?.hash();
+                let at_block = client.at_current_block().await?;
+                let block_index = at_block.block_number();
+                let block_hash = at_block.block_hash();
 
                 if state.last_block_index != block_index as i64
                     || state.last_block_hash != block_hash
@@ -61,11 +62,11 @@ impl Indexer {
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
         let pg_conn = PostgresConnection::default().await?;
 
-        let mut iter = client
+        let at_block = client.at_current_block().await?;
+        let identity_query = super::node::storage().identity().identity_of();
+        let mut iter = at_block
             .storage()
-            .at_latest()
-            .await?
-            .iter(super::node::storage().identity().identity_of_iter())
+            .iter(identity_query, ())
             .await?;
 
         let mut chain_registrations = vec![];
@@ -73,10 +74,18 @@ impl Indexer {
             .search_registration_records(&RegistrationQuery::default())
             .await?;
 
-        while let Some(Ok(identity)) = iter.next().await {
-            if let Some(record) = RegistrationRecord::from_storage_pairs(&identity, network).await?
-            {
-                chain_registrations.push(record);
+        while let Some(Ok(kv)) = iter.next().await {
+            let key_bytes = kv.key_bytes();
+            if key_bytes.len() >= 32 {
+                let account_bytes: [u8; 32] = key_bytes[key_bytes.len() - 32..]
+                    .try_into()
+                    .unwrap();
+                let account_id = subxt::utils::AccountId32::from(account_bytes);
+                if let Ok(registration) = kv.value().decode() {
+                    if let Ok(Some(record)) = RegistrationRecord::from_storage_entry(&account_id, &registration, network).await {
+                        chain_registrations.push(record);
+                    }
+                }
             }
         }
 
@@ -103,21 +112,28 @@ impl Indexer {
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
         let pg_conn = PostgresConnection::default().await?;
 
-        let block = client.blocks().at_latest().await?;
-        let block_index = block.number();
-        let block_hash = block.hash();
+        let at_block = client.at_current_block().await?;
+        let block_index = at_block.block_number();
+        let block_hash = at_block.block_hash();
 
-        let mut iter = client
+        let identity_query = super::node::storage().identity().identity_of();
+        let mut iter = at_block
             .storage()
-            .at_latest()
-            .await?
-            .iter(super::node::storage().identity().identity_of_iter())
+            .iter(identity_query, ())
             .await?;
 
-        while let Some(Ok(identity)) = iter.next().await {
-            if let Some(record) = RegistrationRecord::from_storage_pairs(&identity, network).await?
-            {
-                pg_conn.save_registration(&record).await?;
+        while let Some(Ok(kv)) = iter.next().await {
+            let key_bytes = kv.key_bytes();
+            if key_bytes.len() >= 32 {
+                let account_bytes: [u8; 32] = key_bytes[key_bytes.len() - 32..]
+                    .try_into()
+                    .unwrap();
+                let account_id = subxt::utils::AccountId32::from(account_bytes);
+                if let Ok(registration) = kv.value().decode() {
+                    if let Ok(Some(record)) = RegistrationRecord::from_storage_entry(&account_id, &registration, network).await {
+                        pg_conn.save_registration(&record).await?;
+                    }
+                }
             }
         }
 
@@ -129,19 +145,18 @@ impl Indexer {
     }
 
     /// Index the latest block's events for a network
-    /// This can be called periodically or for catch-up indexing
     #[instrument(skip_all, parent = &self.span)]
     pub async fn index_latest_events(&self, network: &Network) -> anyhow::Result<u32> {
         let cfg = Config::load_static();
         let network_cfg = cfg.registrar.require_network(network)?;
 
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
-        let block = client.blocks().at_latest().await?;
-        let block_number = block.number();
-        let block_hash = block.hash();
+        let at_block = client.at_current_block().await?;
+        let block_number = at_block.block_number();
+        let block_hash = at_block.block_hash();
 
         // Get events
-        let events = block.events().await?;
+        let events = at_block.events().fetch().await?;
 
         // Process identity events using shared processor
         let block_hash_hex = hex::encode(block_hash.0);
@@ -160,20 +175,20 @@ impl Indexer {
     }
 
     /// Backfill events from the last N blocks concurrently
-    /// Uses shared client connections and parallel streams for speed
     #[instrument(skip_all, parent = &self.span)]
-    pub async fn backfill_events(&self, network: &Network, num_blocks: u32) -> anyhow::Result<u32> {
+    pub async fn backfill_events(&self, network: &Network, num_blocks: u64) -> anyhow::Result<u32> {
         use futures::stream::{self, StreamExt};
 
-        const MAX_CONCURRENT: usize = 100; // Process up to 100 blocks concurrently
-        const NUM_CLIENTS: usize = 5; // Use 5 client connections
+        const MAX_CONCURRENT: usize = 100;
+        const NUM_CLIENTS: usize = 5;
 
         let cfg = Config::load_static();
         let network_cfg = cfg.registrar.require_network(network)?;
 
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
-        let latest = client.blocks().at_latest().await?;
-        let latest_number = latest.number();
+        let latest = client.at_current_block().await?;
+        let latest_number = latest.block_number();
+        let latest_hash = latest.block_hash();
         let target_number = latest_number.saturating_sub(num_blocks);
 
         let total_events = Arc::new(AtomicU32::new(0));
@@ -187,19 +202,19 @@ impl Indexer {
         );
 
         // Collect block hashes by walking backwards
-        let mut block_hashes = Vec::with_capacity(num_blocks as usize);
-        let mut current_hash = latest.hash();
+        let mut block_hashes: Vec<(u64, BlockHash)> = Vec::with_capacity(num_blocks as usize);
+        let mut current_hash = latest_hash;
         let mut current_number = latest_number;
 
         while current_number >= target_number {
             block_hashes.push((current_number, current_hash));
 
-            let block = match client.blocks().at(current_hash).await {
+            let at_block = match client.at_block(current_hash).await {
                 Ok(b) => b,
                 Err(_) => break,
             };
 
-            current_hash = block.header().parent_hash;
+            current_hash = at_block.block_header().await?.parent_hash;
             if current_number == 0 {
                 break;
             }
@@ -230,11 +245,11 @@ impl Indexer {
                 let total_events = Arc::clone(&total_events_clone);
 
                 async move {
-                    let block = match client.blocks().at(block_hash).await {
+                    let at_block = match client.at_block(block_hash).await {
                         Ok(b) => b,
                         Err(_) => return,
                     };
-                    let events = match block.events().await {
+                    let events = match at_block.events().fetch().await {
                         Ok(e) => e,
                         Err(_) => return,
                     };
@@ -269,13 +284,11 @@ impl Indexer {
     }
 
     /// Backfill all events from genesis to current block
-    /// Processes in batches with progress tracking and resumption support
-    /// Uses backward walking from batch end to start for each batch to get block hashes
     #[instrument(skip_all, parent = &self.span)]
     pub async fn backfill_full_history(&self, network: &Network) -> anyhow::Result<u32> {
         use futures::stream::{self, StreamExt};
 
-        const BATCH_SIZE: u32 = 10000;
+        const BATCH_SIZE: u64 = 10000;
         const MAX_CONCURRENT: usize = 50;
         const NUM_CLIENTS: usize = 5;
 
@@ -283,12 +296,12 @@ impl Indexer {
         let network_cfg = cfg.registrar.require_network(network)?;
 
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
-        let latest = client.blocks().at_latest().await?;
-        let latest_number = latest.number();
+        let latest = client.at_current_block().await?;
+        let latest_number = latest.block_number();
 
-        // Check where we left off (use identity_events table to find last indexed block)
+        // Check where we left off
         let pg_conn = PostgresConnection::default().await?;
-        let last_indexed = pg_conn.get_last_event_block(network).await.unwrap_or(0) as u32;
+        let last_indexed = pg_conn.get_last_event_block(network).await.unwrap_or(0) as u64;
         let start_block = if last_indexed > 0 { last_indexed + 1 } else { 0 };
 
         if start_block >= latest_number {
@@ -313,10 +326,9 @@ impl Indexer {
             clients.push(Arc::new(NodeClient::from_url(&network_cfg.endpoint).await?));
         }
 
-        // Process backwards from latest - walk back in batches
-        // We walk backwards because we can chain parent_hash lookups
+        // Process backwards from latest
         let mut current_end = latest_number;
-        let mut current_hash = latest.hash();
+        let mut current_hash = latest.block_hash();
 
         while current_end > start_block {
             let batch_start = current_end.saturating_sub(BATCH_SIZE).max(start_block);
@@ -331,19 +343,19 @@ impl Indexer {
             );
 
             // Collect block hashes by walking backwards
-            let mut block_hashes: Vec<(u32, BlockHash)> = Vec::with_capacity(batch_size as usize);
+            let mut block_hashes: Vec<(u64, BlockHash)> = Vec::with_capacity(batch_size as usize);
             let mut walk_hash = current_hash;
             let mut walk_number = current_end;
 
             while walk_number > batch_start {
                 block_hashes.push((walk_number, walk_hash));
 
-                let block = match client.blocks().at(walk_hash).await {
+                let at_block = match client.at_block(walk_hash).await {
                     Ok(b) => b,
                     Err(_) => break,
                 };
 
-                walk_hash = block.header().parent_hash;
+                walk_hash = at_block.block_header().await?.parent_hash;
                 walk_number = walk_number.saturating_sub(1);
             }
 
@@ -376,12 +388,12 @@ impl Indexer {
                     let total_events = Arc::clone(&total_events_clone);
 
                     async move {
-                        let block = match client.blocks().at(block_hash).await {
+                        let at_block = match client.at_block(block_hash).await {
                             Ok(b) => b,
                             Err(_) => return,
                         };
 
-                        let events = match block.events().await {
+                        let events = match at_block.events().fetch().await {
                             Ok(e) => e,
                             Err(_) => return,
                         };
@@ -445,20 +457,18 @@ impl Indexer {
                 let last_event_block = pg_conn.get_last_event_block(&network).await.unwrap_or(0);
 
                 if last_event_block == 0 {
-                    // No event data - do full history backfill
                     info!(network=?network, "no event history found, starting full backfill from genesis");
                     if let Err(e) = clone.clone().backfill_full_history(&network).await {
                         error!(network=?network, error=?e, "failed to backfill full history");
                     }
                 } else {
-                    // Have some data - just backfill last 10000 blocks to catch any missed events
                     info!(network=?network, last_block=last_event_block, "event history exists, backfilling recent blocks");
                     if let Err(e) = clone.clone().backfill_events(&network, 10000).await {
                         error!(network=?network, error=?e, "failed to backfill events");
                     }
                 }
 
-                // Index latest events (the NodeListener handles real-time events going forward)
+                // Index latest events
                 if let Err(e) = clone.index_latest_events(&network).await {
                     error!(network=?network, error=?e, "failed to index latest events");
                 }

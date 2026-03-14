@@ -16,9 +16,7 @@ use std::ops::Deref;
 use std::slice::Iter;
 use std::sync::Arc;
 use std::{str::FromStr, time::Duration};
-use subxt::ext::codec::Encode;
-use subxt::storage::{DefaultAddress, StorageKeyValuePair};
-use subxt::utils::{AccountId32, Yes};
+use subxt::utils::AccountId32;
 use tokio::sync::OnceCell;
 use tokio_postgres::types::FromSql;
 use tokio_postgres::{Client, GenericClient, NoTls, SimpleQueryMessage, Statement, ToStatement};
@@ -1416,24 +1414,15 @@ impl RegistrationRecord {
         self
     }
 
-    pub async fn from_storage_pairs(
-        pairs: &StorageKeyValuePair<
-            DefaultAddress<(), Registration<u128, IdentityInfo>, (), (), Yes>,
-        >,
+    pub async fn from_storage_entry(
+        account_id: &AccountId32,
+        registration: &Registration<u128, IdentityInfo>,
         network: &Network,
     ) -> anyhow::Result<Option<Self>> {
-        let key_bytes = &pairs.key_bytes;
-        let account_bytes: [u8; 32] = key_bytes[key_bytes.len() - 32..]
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("Invalid key length for AccountId32"))?;
-
-        let account_id = AccountId32::from(account_bytes);
-
-        let pgp_fingerprint = pairs.value.info.pgp_fingerprint.map(hex::encode);
+        let pgp_fingerprint = registration.info.pgp_fingerprint.map(hex::encode);
 
         // Extract first positive judgement (Reasonable or KnownGood) from any registrar
-        let judgement_by = pairs
-            .value
+        let judgement_by = registration
             .judgements
             .0
             .iter()
@@ -1443,14 +1432,14 @@ impl RegistrationRecord {
         Ok(Some(Self {
             network: Some(network.to_owned()),
             wallet_id: account_id.to_string().to_owned(),
-            discord: identity_data_tostring(&pairs.value.info.discord),
-            twitter: identity_data_tostring(&pairs.value.info.twitter),
-            matrix: identity_data_tostring(&pairs.value.info.matrix),
-            email: identity_data_tostring(&pairs.value.info.email),
-            display_name: identity_data_tostring(&pairs.value.info.display),
-            github: identity_data_tostring(&pairs.value.info.github),
-            legal: identity_data_tostring(&pairs.value.info.legal),
-            web: identity_data_tostring(&pairs.value.info.web),
+            discord: identity_data_tostring(&registration.info.discord),
+            twitter: identity_data_tostring(&registration.info.twitter),
+            matrix: identity_data_tostring(&registration.info.matrix),
+            email: identity_data_tostring(&registration.info.email),
+            display_name: identity_data_tostring(&registration.info.display),
+            github: identity_data_tostring(&registration.info.github),
+            legal: identity_data_tostring(&registration.info.legal),
+            web: identity_data_tostring(&registration.info.web),
             pgp_fingerprint,
             timeline: None,
             judgement_by,
@@ -2807,7 +2796,7 @@ impl IdentityEvent {
         wallet_id: &AccountId32,
         network: &Network,
         event_type: IdentityEventType,
-        block_number: u32,
+        block_number: u64,
         block_hash: &str,
     ) -> Self {
         Self {

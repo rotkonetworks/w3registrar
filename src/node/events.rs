@@ -29,7 +29,7 @@ pub struct ProcessedEvent {
 pub async fn process_identity_events(
     events: &subxt::events::Events<SubstrateConfig>,
     network: &Network,
-    block_number: u32,
+    block_number: u64,
     block_hash: &str,
 ) -> Vec<ProcessedEvent> {
     let mut processed = Vec::new();
@@ -54,12 +54,22 @@ pub async fn process_identity_events(
     processed
 }
 
+/// Try to decode an event as type E, returning None if it's not that type
+fn try_decode<E: subxt::events::DecodeAsEvent + subxt::ext::scale_decode::IntoVisitor>(
+    event: &subxt::events::Event<SubstrateConfig>,
+) -> Option<E> {
+    if event.is::<E>() {
+        event.decode_as::<E>().ok()
+    } else {
+        None
+    }
+}
+
 /// Extract identity event data from a raw event
 fn extract_identity_event(
-    event: &subxt::events::EventDetails<SubstrateConfig>,
+    event: &subxt::events::Event<SubstrateConfig>,
 ) -> Option<ProcessedEvent> {
-    // JudgementRequested
-    if let Ok(Some(req)) = event.as_event::<JudgementRequested>() {
+    if let Some(req) = try_decode::<JudgementRequested>(event) {
         info!(requester = %req.who, "judgement requested");
         return Some(ProcessedEvent {
             event_type: IdentityEventType::JudgementRequested,
@@ -69,8 +79,7 @@ fn extract_identity_event(
         });
     }
 
-    // JudgementUnrequested
-    if let Ok(Some(req)) = event.as_event::<JudgementUnrequested>() {
+    if let Some(req) = try_decode::<JudgementUnrequested>(event) {
         info!(requester = %req.who, "judgement unrequested");
         return Some(ProcessedEvent {
             event_type: IdentityEventType::JudgementUnrequested,
@@ -80,8 +89,7 @@ fn extract_identity_event(
         });
     }
 
-    // JudgementGiven
-    if let Ok(Some(jud)) = event.as_event::<JudgementGiven>() {
+    if let Some(jud) = try_decode::<JudgementGiven>(event) {
         info!(target = %jud.target, registrar = jud.registrar_index, "judgement given");
         return Some(ProcessedEvent {
             event_type: IdentityEventType::JudgementGiven,
@@ -91,8 +99,7 @@ fn extract_identity_event(
         });
     }
 
-    // IdentitySet
-    if let Ok(Some(evt)) = event.as_event::<IdentitySet>() {
+    if let Some(evt) = try_decode::<IdentitySet>(event) {
         info!(who = %evt.who, "identity set");
         return Some(ProcessedEvent {
             event_type: IdentityEventType::IdentitySet,
@@ -102,8 +109,7 @@ fn extract_identity_event(
         });
     }
 
-    // IdentityCleared
-    if let Ok(Some(evt)) = event.as_event::<IdentityCleared>() {
+    if let Some(evt) = try_decode::<IdentityCleared>(event) {
         info!(who = %evt.who, "identity cleared");
         return Some(ProcessedEvent {
             event_type: IdentityEventType::IdentityCleared,
@@ -113,8 +119,7 @@ fn extract_identity_event(
         });
     }
 
-    // IdentityKilled
-    if let Ok(Some(evt)) = event.as_event::<IdentityKilled>() {
+    if let Some(evt) = try_decode::<IdentityKilled>(event) {
         info!(who = %evt.who, "identity killed");
         return Some(ProcessedEvent {
             event_type: IdentityEventType::IdentityKilled,
@@ -124,8 +129,7 @@ fn extract_identity_event(
         });
     }
 
-    // SubIdentityAdded
-    if let Ok(Some(evt)) = event.as_event::<SubIdentityAdded>() {
+    if let Some(evt) = try_decode::<SubIdentityAdded>(event) {
         info!(sub = %evt.sub, main = %evt.main, "sub identity added");
         return Some(ProcessedEvent {
             event_type: IdentityEventType::SubIdentityAdded,
@@ -135,8 +139,7 @@ fn extract_identity_event(
         });
     }
 
-    // SubIdentityRemoved
-    if let Ok(Some(evt)) = event.as_event::<SubIdentityRemoved>() {
+    if let Some(evt) = try_decode::<SubIdentityRemoved>(event) {
         info!(sub = %evt.sub, main = %evt.main, "sub identity removed");
         return Some(ProcessedEvent {
             event_type: IdentityEventType::SubIdentityRemoved,
@@ -146,8 +149,7 @@ fn extract_identity_event(
         });
     }
 
-    // SubIdentityRevoked
-    if let Ok(Some(evt)) = event.as_event::<SubIdentityRevoked>() {
+    if let Some(evt) = try_decode::<SubIdentityRevoked>(event) {
         info!(sub = %evt.sub, "sub identity revoked");
         return Some(ProcessedEvent {
             event_type: IdentityEventType::SubIdentityRevoked,
@@ -157,19 +159,17 @@ fn extract_identity_event(
         });
     }
 
-    // RegistrarAdded
-    if let Ok(Some(evt)) = event.as_event::<RegistrarAdded>() {
+    if let Some(evt) = try_decode::<RegistrarAdded>(event) {
         info!(registrar_index = evt.registrar_index, "registrar added");
         return Some(ProcessedEvent {
             event_type: IdentityEventType::RegistrarAdded,
-            account: None, // System event
+            account: None,
             registrar_index: Some(evt.registrar_index),
             data: None,
         });
     }
 
-    // AuthorityAdded
-    if let Ok(Some(evt)) = event.as_event::<AuthorityAdded>() {
+    if let Some(evt) = try_decode::<AuthorityAdded>(event) {
         info!(authority = %evt.authority, "authority added");
         return Some(ProcessedEvent {
             event_type: IdentityEventType::AuthorityAdded,
@@ -179,8 +179,7 @@ fn extract_identity_event(
         });
     }
 
-    // AuthorityRemoved
-    if let Ok(Some(evt)) = event.as_event::<AuthorityRemoved>() {
+    if let Some(evt) = try_decode::<AuthorityRemoved>(event) {
         info!(authority = %evt.authority, "authority removed");
         return Some(ProcessedEvent {
             event_type: IdentityEventType::AuthorityRemoved,
@@ -190,8 +189,7 @@ fn extract_identity_event(
         });
     }
 
-    // UsernameSet
-    if let Ok(Some(evt)) = event.as_event::<UsernameSet>() {
+    if let Some(evt) = try_decode::<UsernameSet>(event) {
         let username = String::from_utf8_lossy(&evt.username.0).to_string();
         info!(who = %evt.who, username = %username, "username set");
         return Some(ProcessedEvent {
@@ -202,8 +200,7 @@ fn extract_identity_event(
         });
     }
 
-    // UsernameQueued
-    if let Ok(Some(evt)) = event.as_event::<UsernameQueued>() {
+    if let Some(evt) = try_decode::<UsernameQueued>(event) {
         let username = String::from_utf8_lossy(&evt.username.0).to_string();
         info!(who = %evt.who, username = %username, "username queued");
         return Some(ProcessedEvent {
@@ -214,20 +211,18 @@ fn extract_identity_event(
         });
     }
 
-    // UsernameKilled
-    if let Ok(Some(evt)) = event.as_event::<UsernameKilled>() {
+    if let Some(evt) = try_decode::<UsernameKilled>(event) {
         let username = String::from_utf8_lossy(&evt.username.0).to_string();
         info!(username = %username, "username killed");
         return Some(ProcessedEvent {
             event_type: IdentityEventType::UsernameKilled,
-            account: None, // No account, just username
+            account: None,
             registrar_index: None,
             data: Some(serde_json::json!({"username": username})),
         });
     }
 
-    // PrimaryUsernameSet
-    if let Ok(Some(evt)) = event.as_event::<PrimaryUsernameSet>() {
+    if let Some(evt) = try_decode::<PrimaryUsernameSet>(event) {
         let username = String::from_utf8_lossy(&evt.username.0).to_string();
         info!(who = %evt.who, username = %username, "primary username set");
         return Some(ProcessedEvent {
@@ -238,8 +233,7 @@ fn extract_identity_event(
         });
     }
 
-    // DanglingUsernameRemoved
-    if let Ok(Some(evt)) = event.as_event::<DanglingUsernameRemoved>() {
+    if let Some(evt) = try_decode::<DanglingUsernameRemoved>(event) {
         let username = String::from_utf8_lossy(&evt.username.0).to_string();
         info!(who = %evt.who, username = %username, "dangling username removed");
         return Some(ProcessedEvent {
@@ -250,8 +244,7 @@ fn extract_identity_event(
         });
     }
 
-    // PreapprovalExpired
-    if let Ok(Some(evt)) = event.as_event::<PreapprovalExpired>() {
+    if let Some(evt) = try_decode::<PreapprovalExpired>(event) {
         info!(whose = %evt.whose, "preapproval expired");
         return Some(ProcessedEvent {
             event_type: IdentityEventType::PreapprovalExpired,
@@ -268,7 +261,7 @@ fn extract_identity_event(
 async fn store_event(
     processed: &ProcessedEvent,
     network: &Network,
-    block_number: u32,
+    block_number: u64,
     block_hash: &str,
 ) {
     let Ok(conn) = PostgresConnection::default().await else {
