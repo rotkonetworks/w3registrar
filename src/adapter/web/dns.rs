@@ -3,6 +3,8 @@ use once_cell::sync::OnceCell;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, instrument};
+
+use crate::adapter::constant_time_eq;
 use trust_dns_resolver::{
     config::{ResolverConfig, ResolverOpts},
     name_server::TokioConnectionProvider,
@@ -61,9 +63,9 @@ pub async fn verify_txt(domain: &str, challenge: &str) -> bool {
         Ok(records) => {
             debug!(domain = %domain, count = records.len(), "Found TXT records");
 
-            // Fast path: check for exact match
+            // Constant-time comparison to prevent timing attacks
             for record in &records {
-                if record == challenge {
+                if constant_time_eq(record, challenge) {
                     info!(domain = %domain, "TXT verification successful");
                     return true;
                 }

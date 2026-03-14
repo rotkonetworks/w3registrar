@@ -2,6 +2,8 @@ use reqwest::{Client, StatusCode};
 use std::time::Duration;
 use tracing::{info, instrument, warn};
 
+use crate::adapter::constant_time_eq;
+
 #[instrument(skip_all)]
 pub async fn verify_http(domain: &str, challenge: &str) -> bool {
     // Check if this is a GitHub gist URL
@@ -48,7 +50,7 @@ async fn verify_gist(gist_url: &str, challenge: &str) -> bool {
                 match response.text().await {
                     Ok(body) => {
                         let body_trimmed = body.trim();
-                        if body_trimmed == challenge || body_trimmed.contains(challenge) {
+                        if constant_time_eq(body_trimmed, challenge) || body_trimmed.contains(challenge) {
                             info!(gist = %gist_url, "Gist verification successful");
                             return true;
                         } else {
@@ -135,7 +137,7 @@ async fn verify_http_protocol(domain: &str, challenge: &str, protocol: &str) -> 
                     Ok(body) => {
                         // Check if the response body contains the challenge or is exactly the challenge
                         let body_trimmed = body.trim();
-                        if body_trimmed == challenge || body_trimmed.contains(challenge) {
+                        if constant_time_eq(body_trimmed, challenge) || body_trimmed.contains(challenge) {
                             info!(domain = %domain, "HTTP verification successful via .well-known");
                             return true;
                         } else {
@@ -166,7 +168,7 @@ async fn verify_http_protocol(domain: &str, challenge: &str, protocol: &str) -> 
                 match response.text().await {
                     Ok(body) => {
                         let body_trimmed = body.trim();
-                        if body_trimmed == challenge || body_trimmed.contains(challenge) {
+                        if constant_time_eq(body_trimmed, challenge) || body_trimmed.contains(challenge) {
                             info!(domain = %domain, "HTTP verification successful via alternative path");
                             return true;
                         } else {

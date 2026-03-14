@@ -216,8 +216,10 @@ macro_rules! impl_chain_ops {
                                 }
                             }
                             subxt::tx::TxStatus::NoLongerInBestBlock => {
+                                current_fee_multiplier *= 1.2;
                                 info!(
-                                    "Transaction no longer in best block, attempting resubmission {}/{}",
+                                    "Transaction no longer in best block, bumping fee multiplier to {}, attempting resubmission {}/{}",
+                                    current_fee_multiplier,
                                     resubmit_count + 1,
                                     MAX_RESUBMIT_ATTEMPTS
                                 );

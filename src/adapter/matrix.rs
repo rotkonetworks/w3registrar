@@ -31,7 +31,7 @@ use tracing::{error, info, instrument, warn};
 use crate::api::Account;
 use crate::redis::RedisConnection;
 use crate::config::Config;
-use crate::{adapter::Adapter, api::Network, node::register_identity};
+use crate::{adapter::{constant_time_eq, Adapter}, api::Network, node::register_identity};
 
 /// Global Matrix client singleton - initialized once at startup
 /// Client already uses internal Arc, so we just store it directly
@@ -541,8 +541,8 @@ async fn handle_content(
         None => return Ok(false),
     };
 
-    // check if the message matches the token (fixed comparison)
-    if text_content.body != *token {
+    // check if the message matches the token (constant-time comparison to prevent timing attacks)
+    if !constant_time_eq(&text_content.body, token) {
         return Ok(false);
     }
 
