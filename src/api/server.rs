@@ -6,40 +6,26 @@
 
 use super::messages::*;
 use super::types::*;
-use crate::config::{Config, RedisConfig, RegistrarConfig, GLOBAL_CONFIG};
-use crate::indexer::Indexer;
-use crate::node::{
-    self, filter_accounts,
-    substrate::runtime_types::{
-        pallet_identity::types::{Judgement, Registration},
-        people_paseo_runtime::people::IdentityInfo,
-    },
-    Client as NodeClient,
-};
+use crate::config::{Config, RedisConfig, GLOBAL_CONFIG};
+use crate::node::{self, filter_accounts, Client as NodeClient};
 use crate::postgres::{PostgresConnection, RegistrationRecord};
 use crate::redis::RedisConnection;
 use crate::adapter::{
     email::jmap::send_email_challenge,
-    github::{Github, GithubRedirectStepTwoParams},
     matrix::{send_challenge as send_matrix_challenge, send_dm as send_matrix_dm},
     pgp::PGPHelper,
-    Adapter,
 };
 
 use anyhow::anyhow;
 use anyhow::Result;
-use axum::{extract::Query, routing::get, Router};
-use tower_http::cors::{Any, CorsLayer};
 use futures::channel::mpsc::{self, Sender};
 use futures::stream::{SplitSink, SplitStream};
 use futures::StreamExt;
 use futures_util::SinkExt;
 use once_cell::sync::OnceCell;
-use redis::{self, Client as RedisClient, Msg};
+use redis::{self, Client as RedisClient};
 use serde_json::json;
-use sp_core::blake2_256;
 use std::net::{IpAddr, SocketAddr};
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use subxt::utils::AccountId32;
@@ -184,16 +170,10 @@ impl SocketListener {
             }
         }
 
-        let hash = self.hash_identity_info(&registration.info);
+        let hash = super::validation::hash_identity_info(&registration.info);
 
         conn.build_account_state_message(&request.network, &request.account, Some(hash))
             .await
-    }
-
-    fn hash_identity_info(&self, info: &IdentityInfo) -> String {
-        let info_bytes = format!("{:?}", info).into_bytes();
-        let hash = blake2_256(&info_bytes);
-        format!("0x{}", hex::encode(hash))
     }
 
     #[instrument(skip_all, parent = &self.span)]
@@ -312,116 +292,6 @@ impl SocketListener {
                 "message": format!("Unsupported version: {}", versioned_msg.version),
             })),
         }
-    }
-
-    pub async fn check_node(
-        id: AccountId32,
-        accounts: Vec<Account>,
-        network: &Network,
-    ) -> anyhow::Result<()> {
-        let cfg = Config::load_static();
-        let network_cfg = cfg.registrar.require_network(network)?;
-
-        let client = NodeClient::from_url(&network_cfg.endpoint).await?;
-        let registration = node::get_registration(&client, &id).await?;
-
-        info!(registration = %format!("{:?}", registration));
-
-        Self::is_complete(&registration, &accounts)?;
-        Self::has_paid_fee(registration.judgements.0)?;
-        Self::validate_account_types(&accounts, network_cfg)?;
-
-        Ok(())
-    }
-
-    fn validate_account_types(
-        accounts: &[Account],
-        network_cfg: &RegistrarConfig,
-    ) -> anyhow::Result<()> {
-        for account in accounts {
-            let acc_type = account.account_type();
-            let supported = network_cfg.fields.iter().any(|field| {
-                AccountType::from_str(field)
-                    .map(|f| f == acc_type)
-                    .unwrap_or(false)
-            });
-
-            if !supported {
-                return Err(anyhow!(
-                    "Account type {} is not supported on this network",
-                    acc_type,
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn has_paid_fee(judgements: Vec<(u32, Judgement<u128>)>) -> anyhow::Result<(), anyhow::Error> {
-        if judgements
-            .iter()
-            .any(|(_, j)| matches!(j, Judgement::FeePaid(_)))
-        {
-            Ok(())
-        } else {
-            Err(anyhow!("fee is not paid!"))
-        }
-    }
-
-    pub fn is_complete(
-        registration: &Registration<u128, IdentityInfo>,
-        expected: &[Account],
-    ) -> anyhow::Result<(), anyhow::Error> {
-        for acc in expected {
-            let (stored_acc, expected_acc) = match acc {
-                Account::Email(email_acc) => {
-                    (identity_data_tostring(&registration.info.email), email_acc)
-                }
-                Account::Discord(discord_acc) => (
-                    identity_data_tostring(&registration.info.discord),
-                    discord_acc,
-                ),
-                Account::Display(display_name) => (
-                    identity_data_tostring(&registration.info.display),
-                    display_name,
-                ),
-                Account::Matrix(matrix_acc) => (
-                    identity_data_tostring(&registration.info.matrix),
-                    matrix_acc,
-                ),
-                Account::Twitter(twit_acc) => {
-                    (identity_data_tostring(&registration.info.twitter), twit_acc)
-                }
-                Account::Web(web_acc) => (identity_data_tostring(&registration.info.web), web_acc),
-                Account::Github(github_acc) => (
-                    identity_data_tostring(&registration.info.github),
-                    github_acc,
-                ),
-                Account::Legal(_) => todo!(),
-                Account::Image(image) => (identity_data_tostring(&registration.info.image), image),
-                Account::PGPFingerprint(fingerprint) => (
-                    Some(hex::encode(
-                        registration
-                            .info
-                            .pgp_fingerprint
-                            .ok_or_else(|| anyhow!("Internal error"))?,
-                    )),
-                    &hex::encode(fingerprint),
-                ),
-            };
-
-            let stored_acc = stored_acc.ok_or_else(|| {
-                anyhow!(
-                    "{} acc {} not in identity obj",
-                    acc.account_type(),
-                    expected_acc
-                )
-            })?;
-
-            if !expected_acc.eq(&stored_acc) {
-                return Err(anyhow!("got {}, expected {}", expected_acc, stored_acc));
-            }
-        }
-        Ok(())
     }
 
     async fn send_message(
@@ -1701,249 +1571,7 @@ pub async fn spawn_ws_serv() -> anyhow::Result<()> {
     listener.listen().await
 }
 
-struct RedisSubscriber {
-    redis_cfg: RedisConfig,
-    span: Span,
-}
 
-impl RedisSubscriber {
-    fn new(redis_cfg: RedisConfig) -> Self {
-        let span = info_span!("redis_subscriber");
-        Self { redis_cfg, span }
-    }
-
-    #[instrument(skip_all, parent = &self.span)]
-    pub async fn listen(&mut self) -> anyhow::Result<()> {
-        let mut pubsub = RedisConnection::new_pubsub().await?;
-        pubsub.psubscribe("__keyspace@0__:*").await?;
-        let mut stream = pubsub.on_message();
-        while let Some(msg) = stream.next().await {
-            info!("Redis event occured");
-            if let Err(e) = self.handle_redis_message(msg).await {
-                error!(error = %e, "Failed to handle Redis message");
-                continue;
-            }
-        }
-        info!("Redis subscription ended");
-        Ok(())
-    }
-
-    #[instrument(skip_all, parent = &self.span)]
-    pub async fn process_state_change(
-        &self,
-        msg: &Msg,
-    ) -> anyhow::Result<Option<(AccountId32, serde_json::Value)>> {
-        let mut conn = RedisConnection::get_connection().await?;
-        let payload: String = msg.get_payload()?;
-        let channel = msg.get_channel_name();
-
-        info!(payload = ?payload, channel = ?channel, "Processing Redis message");
-
-        if !matches!(payload.as_str(), "set" | "del") {
-            info!("Ignoring Redis operation: {}", payload);
-            return Ok(None);
-        }
-
-        let key = match channel.strip_prefix("__keyspace@0__:") {
-            Some(k) => k,
-            None => return Ok(None),
-        };
-
-        let (account_id, network) = match key.split_once('|') {
-            Some(parts) => parts,
-            None => return Ok(None),
-        };
-
-        let id = AccountId32::from_str(account_id)?;
-        let network = Network::from_str(network)?;
-
-        let account_state = conn.build_account_state_message(&network, &id, None).await?;
-
-        Ok(Some((id, account_state)))
-    }
-
-    #[instrument(skip_all, parent = &self.span)]
-    async fn handle_redis_message(&self, msg: Msg) -> anyhow::Result<()> {
-        if let Ok(Some((id, value))) = self.process_state_change(&msg).await {
-            info!(
-                account_id = %id.to_string(),
-                new_state = %value.to_string(),
-                "Processed new state"
-            );
-        }
-        Ok(())
-    }
-}
-
-pub async fn spawn_redis_subscriber() -> anyhow::Result<()> {
-    let redis_cfg = Config::load_static().redis.clone();
-    RedisSubscriber::new(redis_cfg).listen().await
-}
-
-fn log_error_and_return(log: String) -> String {
-    error!(log);
-    log
-}
-
-async fn github_oauth_callback(Query(params): Query<GithubRedirectStepTwoParams>) -> String {
-    info!(params=?params, "PARAMS");
-
-    let gh = match Github::new(&params).await {
-        Ok(gh) => gh,
-        Err(e) => return log_error_and_return(format!("Error: {e}")),
-    };
-    info!(credentials = ?gh, "Github Credentials");
-
-    let gh_username = match gh.request_username().await {
-        Ok(username) => username,
-        Err(e) => return log_error_and_return(format!("Error: {e}")),
-    };
-    info!(username = ?gh_username, "Github Username");
-
-    let mut redis_connection = match RedisConnection::get_connection().await {
-        Ok(conn) => conn,
-        Err(e) => {
-            return log_error_and_return(format!("Error: {e}"));
-        }
-    };
-
-    let search_query = format!("github|{gh_username}|*");
-    let accounts = match redis_connection.search(&search_query).await {
-        Ok(res) => res,
-        Err(e) => return log_error_and_return(format!("Error: {e}")),
-    };
-
-    let reconstructed_url = match Github::reconstruct_request_url(&params.state) {
-        Ok(url) => url,
-        Err(e) => return log_error_and_return(format!("Error: {e}")),
-    };
-
-    for acc_str in accounts {
-        info!("Account: {}", acc_str);
-        let parts: Vec<&str> = acc_str.splitn(4, '|').collect();
-        if parts.len() != 4 {
-            continue;
-        }
-        info!("Parts: {:#?}", parts);
-        let account = match Account::from_str(&format!("{}|{}", parts[0], parts[1])) {
-            Ok(account) => account,
-            Err(e) => return log_error_and_return(format!("Error: {e}")),
-        };
-
-        let network = match Network::from_str(parts[2]) {
-            Ok(network) => network,
-            Err(e) => return log_error_and_return(format!("Error: {e}")),
-        };
-
-        if let Ok(account_id) = AccountId32::from_str(parts[3]) {
-            match <Github as Adapter>::handle_content(
-                reconstructed_url.as_str(),
-                &mut redis_connection,
-                &network,
-                &account_id,
-                &account,
-            )
-            .await
-            {
-                Ok(_) => return String::from("OK"),
-                Err(e) => return log_error_and_return(format!("Error: {e}")),
-            }
-        }
-    }
-
-    log_error_and_return("Error: Github account not found in the registration queue".to_string())
-}
-
-async fn pong() -> &'static str {
-    "PONG"
-}
-
-/// Get identity events for a wallet
-async fn get_events(
-    axum::extract::Path((network, wallet)): axum::extract::Path<(String, String)>,
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-
-    let network = match Network::from_str(&network) {
-        Ok(n) => n,
-        Err(_) => return (axum::http::StatusCode::BAD_REQUEST, "invalid network").into_response(),
-    };
-
-    let limit = params.get("limit").and_then(|l| l.parse().ok()).unwrap_or(100i64);
-
-    let pg_conn = match PostgresConnection::default().await {
-        Ok(c) => c,
-        Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-
-    match pg_conn.get_identity_events(&wallet, Some(&network), Some(limit)).await {
-        Ok(events) => axum::Json(events).into_response(),
-        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-}
-
-/// Trigger full history backfill for a network (admin endpoint)
-async fn trigger_backfill(
-    axum::extract::Path(network): axum::extract::Path<String>,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-
-    let network = match Network::from_str(&network) {
-        Ok(n) => n,
-        Err(_) => return (axum::http::StatusCode::BAD_REQUEST, "invalid network").into_response(),
-    };
-
-    let network_name = format!("{}", network);
-    let network_for_spawn = network;
-
-    // Spawn backfill in background
-    tokio::spawn(async move {
-        let indexer = match Indexer::new().await {
-            Ok(i) => i,
-            Err(e) => {
-                error!(error=?e, "failed to create indexer for backfill");
-                return;
-            }
-        };
-
-        if let Err(e) = indexer.backfill_full_history(&network_for_spawn).await {
-            error!(network=?network_for_spawn, error=?e, "full history backfill failed");
-        }
-    });
-
-    (axum::http::StatusCode::ACCEPTED, format!("backfill started for {}", network_name)).into_response()
-}
-
-pub async fn spawn_http_serv() -> anyhow::Result<()> {
-    let cfg = Config::load_static();
-    let gh_config = cfg.adapter.github.clone();
-    let http_config = cfg.http.clone();
-    let redirect_url = gh_config
-        .redirect_url
-        .ok_or_else(|| anyhow!("GitHub redirect_url not configured"))?;
-
-    // allow any origin - we don't care where requests come from
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
-    let app = Router::new()
-        .route(redirect_url.path(), get(github_oauth_callback))
-        .route("/ping", get(pong))
-        .route("/events/{network}/{wallet}", get(get_events))
-        .route("/admin/backfill/{network}", axum::routing::post(trigger_backfill))
-        .layer(cors);
-    let listener = tokio::net::TcpListener::bind(&(http_config.host, http_config.port)).await?;
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-
-#[instrument(name = "identity_indexer")]
-pub async fn spawn_identity_indexer() -> anyhow::Result<()> {
-    Indexer::new().await?.index().await
-}
 
 #[cfg(test)]
 mod unit_test {

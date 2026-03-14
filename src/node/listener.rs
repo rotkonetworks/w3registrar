@@ -81,7 +81,7 @@ impl NodeListener {
         let registration = node::get_registration(client, who).await?;
         let accounts = Account::into_accounts(&registration.info);
 
-        crate::api::server::SocketListener::check_node(who.clone(), accounts.clone(), network)
+        crate::api::validation::check_node(who.clone(), accounts.clone(), network)
             .await?;
 
         let mut conn = RedisConnection::get_connection().await?;
