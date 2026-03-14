@@ -289,7 +289,7 @@ impl NodeListener {
         block_number: u32,
         block_hash: &sp_core::H256,
     ) -> anyhow::Result<()> {
-        let mut conn = PostgresConnection::default().await?;
+        let conn = PostgresConnection::default().await?;
         info!(who = ?record.wallet_id(), registrar = ?record.judgement_by, "saving judgement to db");
         conn.save_registration(record).await?;
         conn.update_indexer_state(network, block_hash, &(block_number as i64))

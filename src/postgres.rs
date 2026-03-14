@@ -184,7 +184,7 @@ pub fn get_read_replica_client() -> Arc<Client> {
 
 pub struct PostgresConnection {
     span: Span,
-    client: Client,
+    client: Arc<Client>,
 }
 
 /// Read-only connection wrapper for search queries (uses read replica)
@@ -281,7 +281,7 @@ impl PostgresConnection {
     }
 
     /// Creates all necessary `types` to handle long term registration process
-    async fn init_types(&mut self) -> anyhow::Result<()> {
+    async fn init_types(&self) -> anyhow::Result<()> {
         info!("Creating enum types");
 
         self.exec("event_enum", "
@@ -317,7 +317,7 @@ impl PostgresConnection {
         Ok(())
     }
 
-    async fn auto_update_tables(&mut self) -> anyhow::Result<()> {
+    async fn auto_update_tables(&self) -> anyhow::Result<()> {
         let func = "
             CREATE OR REPLACE FUNCTION registration_update_search_text()
             RETURNS trigger AS $$
@@ -350,7 +350,7 @@ impl PostgresConnection {
     }
 
     /// Creates all necessary `tables` to handle long term registration process
-    async fn init_tables(&mut self) -> anyhow::Result<()> {
+    async fn init_tables(&self) -> anyhow::Result<()> {
         info!("Creating tables and indexes");
 
         // Core tables
@@ -460,12 +460,13 @@ impl PostgresConnection {
             ADD COLUMN IF NOT EXISTS judgement_at TIMESTAMP
         ").await?;
 
-        // Update search text for existing records
+        // Update search text only for rows where it's NULL (new rows without trigger)
         self.exec("update_search_text", "
             UPDATE registration SET search_text = CONCAT_WS(' ',
                 wallet_id, COALESCE(display_name, ''), network,
                 COALESCE(discord, ''), COALESCE(twitter, ''),
                 COALESCE(matrix, ''), COALESCE(email, ''), COALESCE(pgp_fingerprint, ''))
+            WHERE search_text IS NULL
         ").await?;
 
         Ok(())
@@ -473,7 +474,7 @@ impl PostgresConnection {
 
     /// Initate/create all necessary `tables` and `types` to handle registrations
     #[instrument(skip_all, parent = &self.span)]
-    pub async fn init(&mut self) -> anyhow::Result<()> {
+    pub async fn init(&self) -> anyhow::Result<()> {
         info!("Initiating postgess types");
         self.init_types().await?;
         info!("Initiating postgess tables");
@@ -561,7 +562,7 @@ impl PostgresConnection {
         Ok(())
     }
 
-    pub async fn save_registration(&mut self, record: &RegistrationRecord) -> anyhow::Result<()> {
+    pub async fn save_registration(&self, record: &RegistrationRecord) -> anyhow::Result<()> {
         info!(who = ?record.wallet_id(), "Writing record");
         let insert_reg_record = format!("
             INSERT INTO registration(wallet_id, discord, twitter, matrix, email, display_name, github, legal, web, pgp_fingerprint, network, judgement_by, judgement_at)
@@ -710,7 +711,7 @@ impl PostgresConnection {
     }
 
     pub async fn search_registration_records(
-        &mut self,
+        &self,
         search_query: &RegistrationQuery,
     ) -> anyhow::Result<Vec<RegistrationRecord>> {
         let params = search_query.params();
@@ -732,7 +733,7 @@ impl PostgresConnection {
     }
 
     pub async fn search_timeline_records(
-        &mut self,
+        &self,
         search_query: &TimelineQuery,
     ) -> anyhow::Result<Vec<TimelineRecord>> {
         let params = search_query.params();
@@ -753,7 +754,7 @@ impl PostgresConnection {
             .collect())
     }
 
-    pub async fn delete(&mut self, query: DeleteQuery<TimelineCondition>) -> anyhow::Result<()> {
+    pub async fn delete(&self, query: DeleteQuery<TimelineCondition>) -> anyhow::Result<()> {
         let params = query.params();
 
         let query_params: Vec<&(dyn ToSql + Sync)> = params
@@ -771,33 +772,32 @@ impl PostgresConnection {
 
     pub async fn new(cfg: &PostgresConfig) -> anyhow::Result<Self> {
         let mut conn_cfg = tokio_postgres::Config::new();
-        // this is because we have incompatible types of 'connection' (tls vs raw)
+        conn_cfg
+            .user(&cfg.user)
+            .host(&cfg.host)
+            .port(cfg.port)
+            .dbname(&cfg.dbname);
+
+        if let Some(pwd) = &cfg.password {
+            conn_cfg.password(pwd);
+        };
+
+        if let Some(opts) = &cfg.options {
+            conn_cfg.options(opts);
+        }
+
+        if let Some(timeout) = cfg.timeout {
+            conn_cfg.connect_timeout(Duration::from_millis(timeout));
+        }
+
         let client = match &cfg.cert_path {
             Some(path) => {
                 let mut builder = SslConnector::builder(SslMethod::tls())?;
                 builder.set_ca_file(path)?;
                 let connector = MakeTlsConnector::new(builder.build());
-                conn_cfg
-                    .user(&cfg.user)
-                    .host(&cfg.host)
-                    .port(cfg.port)
-                    .dbname(&cfg.dbname);
-
-                if let Some(pwd) = &cfg.password {
-                    conn_cfg.password(pwd);
-                };
-
-                if let Some(opts) = &cfg.options {
-                    conn_cfg.options(opts);
-                }
-
-                if let Some(timeout) = cfg.timeout {
-                    conn_cfg.connect_timeout(Duration::from_millis(timeout));
-                }
-
                 let (client, connection) = conn_cfg.connect(connector).await?;
 
-                let _join_handle = tokio::spawn(async move {
+                tokio::spawn(async move {
                     if let Err(e) = connection.await {
                         error!(error = ?e, "postgres connection error");
                     }
@@ -805,27 +805,9 @@ impl PostgresConnection {
                 client
             }
             None => {
-                conn_cfg
-                    .user(&cfg.user)
-                    .host(&cfg.host)
-                    .port(cfg.port)
-                    .dbname(&cfg.dbname);
-
-                if let Some(pwd) = &cfg.password {
-                    conn_cfg.password(pwd);
-                };
-
-                if let Some(opts) = &cfg.options {
-                    conn_cfg.options(opts);
-                }
-
-                if let Some(timeout) = cfg.timeout {
-                    conn_cfg.connect_timeout(Duration::from_millis(timeout));
-                }
-
                 let (client, connection) = conn_cfg.connect(NoTls).await?;
 
-                let _join_handle = tokio::spawn(async move {
+                tokio::spawn(async move {
                     if let Err(e) = connection.await {
                         error!(error = ?e, "postgres connection error");
                     }
@@ -833,18 +815,18 @@ impl PostgresConnection {
                 client
             }
         };
-        info!("New postgress connection established!");
+        info!("New postgres connection established!");
 
-        let span = info_span!("postgress_conn");
+        let span = info_span!("postgres_conn");
 
-        Ok(Self { client, span })
+        Ok(Self { client: Arc::new(client), span })
     }
 
-    /// Get a postgres connection - uses shared client if available
+    /// Get a postgres connection using the shared global client
     pub async fn default() -> anyhow::Result<Self> {
-        let cfg = Config::load_static();
-        let pg_config = cfg.postgres.clone();
-        PostgresConnection::new(&pg_config).await
+        let client = get_postgres_client()?;
+        let span = info_span!("postgres_conn");
+        Ok(Self { client, span })
     }
 
     /// Get a read-only connection (uses read replica if configured)
@@ -1280,7 +1262,7 @@ impl Query for Ratelimit {
 
 impl Ratelimit {
     async fn exec(&self) -> anyhow::Result<i64> {
-        let mut pg_conn = PostgresConnection::default().await?;
+        let pg_conn = PostgresConnection::default().await?;
         info!("Registration search query");
         pg_conn.get_rate(self).await
     }

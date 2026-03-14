@@ -59,7 +59,7 @@ impl Indexer {
         let network_cfg = cfg.registrar.require_network(network)?;
 
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
-        let mut pg_conn = PostgresConnection::default().await?;
+        let pg_conn = PostgresConnection::default().await?;
 
         let mut iter = client
             .storage()
@@ -101,7 +101,7 @@ impl Indexer {
         let network_cfg = cfg.registrar.require_network(network)?;
 
         let client = NodeClient::from_url(&network_cfg.endpoint).await?;
-        let mut pg_conn = PostgresConnection::default().await?;
+        let pg_conn = PostgresConnection::default().await?;
 
         let block = client.blocks().at_latest().await?;
         let block_index = block.number();

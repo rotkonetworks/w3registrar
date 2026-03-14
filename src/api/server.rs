@@ -119,15 +119,18 @@ impl SocketListener {
 
         let accounts_from_chain = Account::into_accounts(&registration.info);
         let accounts = if accounts_from_chain.is_empty() {
-            info!("No on-chain identity found, generating codes for all verifiable fields");
-            let verifiable_fields = vec![
-                Account::Email(String::new()),
-                Account::Twitter(String::new()),
-                Account::Github(String::new()),
-                Account::Matrix(String::new()),
-                Account::Discord(String::new()),
-                Account::Web(String::new()),
-            ];
+            info!("No on-chain identity found, generating codes for configured fields");
+            let verifiable_fields: Vec<Account> = network_cfg.fields.iter()
+                .filter_map(|field| match field.as_str() {
+                    "email" => Some(Account::Email(String::new())),
+                    "twitter" => Some(Account::Twitter(String::new())),
+                    "github" => Some(Account::Github(String::new())),
+                    "matrix" => Some(Account::Matrix(String::new())),
+                    "discord" => Some(Account::Discord(String::new())),
+                    "web" => Some(Account::Web(String::new())),
+                    _ => None,
+                })
+                .collect();
             Account::into_hashmap(verifiable_fields, false)
         } else {
             filter_accounts(
@@ -1113,9 +1116,10 @@ impl SocketListener {
         &self,
         request: IncomingAccountHistoryRequest,
     ) -> anyhow::Result<serde_json::Value> {
+        let limit = request.limit.unwrap_or(100).min(500);
         let pg_conn = PostgresConnection::default().await?;
         let events = pg_conn
-            .get_identity_events(&request.account, request.network.as_ref(), request.limit)
+            .get_identity_events(&request.account, request.network.as_ref(), Some(limit))
             .await?;
         Ok(serde_json::to_value(events)?)
     }
