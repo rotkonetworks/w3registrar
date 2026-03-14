@@ -92,12 +92,10 @@ impl Runner {
                     task.abort();
                 }
 
-                info!("forced shutdown complete");
-                std::process::exit(0);
+                info!("shutdown complete");
             }
             Err(e) => {
                 error!("failed to listen for interrupt: {}", e);
-                std::process::exit(1);
             }
         }
     }

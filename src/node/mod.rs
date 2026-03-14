@@ -137,8 +137,7 @@ macro_rules! impl_chain_ops {
                 let (client, network_cfg) = setup_network(&network).await?;
 
                 let registration = get_registration(&client, who).await?;
-                let info_bytes = format!("{:?}", registration.info).into_bytes();
-                let hash = hex::encode(blake2_256(&info_bytes));
+                let hash = hex::encode(blake2_256(&parity_scale_codec::Encode::encode(&registration.info)));
 
                 info!(
                     hash = %hash,

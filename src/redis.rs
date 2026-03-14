@@ -37,6 +37,13 @@ impl RedisPool {
             .build(manager)
             .await?;
 
+        // Enable keyspace notifications once at startup
+        {
+            let mut conn = pool.get().await
+                .map_err(|e| anyhow!("Failed to get initial Redis connection: {}", e))?;
+            Self::enable_keyspace_notifications(&mut conn).await?;
+        }
+
         let redis_pool = Arc::new(RedisPool { pool, url });
 
         REDIS_POOL
@@ -135,15 +142,9 @@ impl RedisConnection {
     #[instrument(skip_all, name = "redis_connection", parent = None)]
     pub async fn get_connection() -> anyhow::Result<Self> {
         let span = tracing::Span::current();
-        info!("Getting redis connection");
 
         let pool = RedisPool::get()?;
-        let mut conn = pool.connection().await?;
-
-        // Enable keyspace notifications
-        RedisPool::enable_keyspace_notifications(&mut conn).await?;
-
-        info!("Redis connection successfully established");
+        let conn = pool.connection().await?;
 
         // Clone the connection for our wrapper (MultiplexedConnection is cheap to clone)
         Ok(Self {
@@ -157,11 +158,6 @@ impl RedisConnection {
     pub async fn new_pubsub() -> anyhow::Result<RedisPubSub> {
         let pool = RedisPool::get()?;
         let pubsub = pool.pubsub().await?;
-
-        // Enable keyspace notifications on a separate connection
-        let mut conn = pool.connection().await?;
-        RedisPool::enable_keyspace_notifications(&mut conn).await?;
-
         Ok(RedisPubSub { pubsub })
     }
 
@@ -342,13 +338,16 @@ impl RedisConnection {
         account_id: &AccountId32,
         state: &AccountVerification,
     ) -> anyhow::Result<()> {
+        const TTL_SECONDS: i64 = 7 * 24 * 3600; // 7 days
+
         let main_key = format!("{account_id}|{network}");
         let main_value = serde_json::to_string(&state)?;
 
         // Use atomic transaction for all updates
         let mut pipe = redis::pipe();
         pipe.atomic();
-        pipe.cmd("SET").arg(&main_key).arg(&main_value);
+        pipe.cmd("SET").arg(&main_key).arg(&main_value)
+            .cmd("EXPIRE").arg(&main_key).arg(TTL_SECONDS);
 
         for (acc_type, info) in state.challenges.iter() {
             let acc_key =
@@ -356,7 +355,8 @@ impl RedisConnection {
             let key = format!("{acc_key}|{network}|{account_id}");
             pipe.cmd("SET")
                 .arg(&key)
-                .arg(&serde_json::to_string(&info)?);
+                .arg(&serde_json::to_string(&info)?)
+                .cmd("EXPIRE").arg(&key).arg(TTL_SECONDS);
         }
 
         pipe.exec_async(&mut self.conn).await?;
@@ -364,6 +364,7 @@ impl RedisConnection {
     }
 
     /// Initialize verification state (atomic)
+    /// Keys expire after 7 days to prevent unbounded growth from abandoned requests
     #[instrument(skip_all, parent = &self.span)]
     pub async fn init_verification_state(
         &mut self,
@@ -372,20 +373,24 @@ impl RedisConnection {
         state: &AccountVerification,
         accounts: &HashMap<Account, bool>,
     ) -> anyhow::Result<()> {
+        const TTL_SECONDS: i64 = 7 * 24 * 3600; // 7 days
+
         let main_key = format!("{account_id}|{network}");
         let main_value = serde_json::to_string(&state)?;
 
         // Use atomic transaction
         let mut pipe = redis::pipe();
         pipe.atomic();
-        pipe.cmd("SET").arg(&main_key).arg(&main_value);
+        pipe.cmd("SET").arg(&main_key).arg(&main_value)
+            .cmd("EXPIRE").arg(&main_key).arg(TTL_SECONDS);
 
         for account in accounts.keys() {
             let key = format!("{account}|{network}|{account_id}");
             if let Some(challenge_info) = state.challenges.get(&account.account_type()) {
                 pipe.cmd("SET")
                     .arg(&key)
-                    .arg(&serde_json::to_string(&challenge_info)?);
+                    .arg(&serde_json::to_string(&challenge_info)?)
+                    .cmd("EXPIRE").arg(&key).arg(TTL_SECONDS);
             }
         }
 
